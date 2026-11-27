@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Prism Files MCP App Server (Clean-Room Original, MIT, Zero External Dependencies)
- * Part of Anti-Claude Prism Suite v0.8.2
+ * Part of Anti-Claude Prism Suite v0.8.3
  *
  * Implements MCP stdio JSON-RPC 2.0 + SEP-1865 MCP Apps UI resources:
  *   - Model-visible tools (strictly 8):
@@ -46,7 +46,7 @@ export const APP_URI = 'ui://prism-files/app.html';
 export const INLINE_URI = 'ui://prism-files/inline.html';
 export const APP_MIME_TYPE = 'text/html;profile=mcp-app';
 export const CUA_EXTENSION_ID = 'lbmibnghmlnidfiihkegicaejaacmkca';
-const SERVER_INFO = { name: 'prism-files', version: '0.8.2' };
+const SERVER_INFO = { name: 'prism-files', version: '0.8.3' };
 const MAX_TEXT_PREVIEW_BYTES = 256 * 1024;
 const MAX_IMAGE_PREVIEW_BYTES = 4 * 1024 * 1024;
 const MAX_SAVE_BYTES = 512 * 1024;

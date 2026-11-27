@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.3 - 2026-11-27
+
+- **模型会诊中枢与网关配置防 SSRF / 防泄密纵深加固（[prism-profile.mjs](plugin/server/prism-profile.mjs) / [model-hub.mjs](plugin/server/model-hub.mjs)）**：
+  - **云元数据（IMDS）与保留地址精准拦截（100% 保留 Tailscale 与局域网兼容）**：`validateHttpEndpointUrl` 新增 `isBlockedMetadataOrSpecialHost`（含 8-word IPv6 数值展开解析），拦截 AWS/GCP/Azure（`169.254.169.254`、`fd00:ec2::254`）、阿里云 ECS（`100.100.100.200`）、未指定/链路本地/组播地址及其 IPv4-mapped IPv6（`[::ffff:a9fe:a9fe]`）/ NAT64 变形，同时完整保留 `localhost`、`[::1]`、RFC1918 局域网、Tailscale CGNAT（`100.64.0.0/10`）与 MagicDNS（`*.ts.net`）直连能力；
+  - **出站请求禁重定向与响应流字节硬上限**：`askModel` 出站 `POST` 与 `/models` 探测统一强制 `redirect: 'error'`（杜绝恶意网关 `302` 跨源重定向套取密钥或绕过主机校验），并通过 `readBoundedResponseText` 限制错误体（`16KB`）、`/models` 枚举（`2MB`）与 JSON 响应体（`4MB`）内存峰值。
+- **应用内一键自更新与构建发布供应链加固（[upstream-radar.mjs](plugin/server/upstream-radar.mjs) / [release.yml](.github/workflows/release.yml) / [upstream-watch.yml](.github/workflows/upstream-watch.yml)）**：
+  - **跨平台源码包 `.sha256` 强校验与纯 Node 二进制归档审计**：GitHub Release 新增附带 SHA-256 校验文件的官方源码归档 `Anti-Claude-Prism-Suite-Source.tar.gz(.sha256)`；WSL / macOS / Linux 自更新优先核验 `.sha256`（对缺失配套校验文件的异常资产报错阻断防降级），并在调用系统 `tar` 前通过纯 Node 二进制 USTAR/PAX/LongLink 头解析拦截软硬链接、设备节点与路径穿越（同时兼容 GNU `tar` 与 macOS `bsdtar`）；
+  - **CI 门禁与巡检 Issue 脱敏**：`release.yml` 增加 `plugin-cua` 语法门禁与 Tag / `package.json` / `CHANGELOG.md` 版本号一致性强校验；`upstream-watch.yml` 自动对非代码块 `@username` 与危险 HTML 标签转义并限制单 Issue 长度（`60k` 字符安全截断并自动闭合代码块）。
+- **日常高频性能细节打磨与上游雷达同步（[account-vault.mjs](plugin/server/account-vault.mjs) / [daemon.mjs](vendor/anti-claude/core/daemon.mjs) / [app.html](plugin/ui/app.html) / [prism-suite.js](extensions/prism-suite.js)）**：
+  - **凭据库 Provider 密钥 `60s` 纯内存缓存**：`getProviderSecret` 新增仅驻进程内存的 `60s` TTL 缓存（与更新/删除/`invalidateCache()` 实时联动），省去连续多轮模型会诊时重复拉起 PowerShell 读取系统凭据库的开销；
+  - **防后台锁仓库、隐藏态 `0%` GPU 停帧与原位编辑保撤销栈**：守护进程 `execGitAsync` 统一附加 `-c core.fsmonitor=false` 避免在用户仓库拉起常驻 `fsmonitor--daemon` 锁住目录；窗口隐藏时为 `<html>` 标记 `data-ag-prism-hidden="1"` 硬停像素伙伴舞台全部 CSS 动画；文件工作台编辑同一路径时原位复用 `<textarea>` 节点，完整保留光标选区与浏览器原生 `Ctrl+Z` 撤销历史；
+  - **上游基线同步**：核验并同步双端 [upstream.json](upstream.json) 中 `CursorTouch/Windows-MCP` 基线至最新 `ccbe664`（7 个监控源全部对齐最新状态）。
+
 ## 0.8.2 - 2026-11-27
 
 - **修复开启 `prism-cua` 插件时报 `MCP error` 的占位符与命名空间问题（[plugin-cua/mcp_config.json](plugin-cua/mcp_config.json)）**：

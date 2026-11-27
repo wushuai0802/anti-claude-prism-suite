@@ -1,7 +1,7 @@
 # Anti-Claude Prism Suite
 
 <p align="left">
-  <img src="https://img.shields.io/badge/version-v0.8.2-2563eb?style=flat-square" alt="Version v0.8.2" />
+  <img src="https://img.shields.io/badge/version-v0.8.3-2563eb?style=flat-square" alt="Version v0.8.3" />
   <img src="https://img.shields.io/badge/edition-All--in--One%20Standalone-059669?style=flat-square" alt="Standalone Edition" />
   <img src="https://img.shields.io/badge/kernel-Anti--Claude%20v3.1.9%20Bundled-7c3aed?style=flat-square" alt="Bundled Anti-Claude v3.1.9" />
   <img src="https://img.shields.io/badge/dependencies-0%20npm%20packages-d97706?style=flat-square" alt="Zero Runtime Dependencies" />
@@ -10,7 +10,7 @@
 
 **面向 Google Antigravity Desktop（Windows / WSL2 / macOS / Linux）的一体化独立完整版体验增强、跨厂商模型会诊、受控电脑操控（CUA）与多账号工程工作台套件。**
 
-自 **v0.6.0+** 起，本项目已**原生内嵌继承增强版 [Anti-Claude](https://github.com/hongqi7/Anti-Claude) `v3.1.9` 运行时内核（`vendor/anti-claude/`）**，并在 **v0.8.2** 全面升级为涵盖 **「内核增强 + 棱镜桌面交互扩展 + 七合一响应式工作台 + 默认关闭零开销受控电脑操控桥（独立可视化虚拟指针 + 四级防抢鼠路由 + Chrome/Edge MV3）+ 双模 SQLite FTS5 记忆 + 零依赖 SSE 模型会诊中枢 + 3 项内置工程 Skill」** 的全栈自包含套件：
+自 **v0.6.0+** 起，本项目已**原生内嵌继承增强版 [Anti-Claude](https://github.com/hongqi7/Anti-Claude) `v3.1.9` 运行时内核（`vendor/anti-claude/`）**，并在 **v0.8.3** 全面升级为涵盖 **「内核增强 + 棱镜桌面交互扩展 + 七合一响应式工作台 + 默认关闭零开销受控电脑操控桥（独立可视化虚拟指针 + 四级防抢鼠路由 + Chrome/Edge MV3）+ 双模 SQLite FTS5 记忆 + 零依赖 SSE 模型会诊中枢 + 3 项内置工程 Skill」** 的全栈自包含套件：
 - **新用户零前置依赖**：下载运行单个安装包（或执行一条 `node install.mjs`），一次性完成「底层 CDP 守护内核 + 棱镜视觉交互扩展 + Prism 七合一工作台插件 + 默认关闭的 `prism-cua` 受控电脑操控插件 + Chrome/Edge 浏览器受控桥 + 内置规则与技能」全栈部署，**无需单独安装其他前置项目**；
 - **默认关闭零上下文损耗 · 可视化虚拟指针防抢鼠 · 全局 `Esc` 急刹**：受控电脑与浏览器操控工具独立封装在同级插件 `prism-cua` 中并默认关闭，日常写代码聊天时 `0` 额外工具 Token 开销；操控期间渲染独立鼠标穿透 **AI 虚拟指针**，对已授权网页与标准桌面 UIA / Win32 控件实现 **`0px` 物理鼠标位移、零焦点抢占**，并在系统任意窗口按下物理 **`Esc`** 键毫秒级中断急刹；
 - **老用户无感平滑升级**：完整保留本地 `ui-prefs.json` 与已隐藏说明偏好，3-way 合并保护手改过的 `config.json`，点击工作台内 **「🚀 一键更新」** 即可连同底层内核与双插件同步原地升级；
@@ -115,7 +115,7 @@
 
 ```mermaid
 flowchart TB
-  subgraph PKG["Anti-Claude Prism Suite v0.8.2（单包独立完整版 · 零外部 npm 依赖）"]
+  subgraph PKG["Anti-Claude Prism Suite v0.8.3（单包独立完整版 · 零外部 npm 依赖）"]
     K["第 1 层 · 内置增强内核与本地 CUA Broker<br/>vendor/anti-claude/ + native/win-cua/ (v3.1.9 + 四级防抢鼠执行器 + 全局 Esc 急刹)"]
     E["第 2 层 · 棱镜前端扩展 & Chrome/Edge MV3 扩展桥<br/>extensions/prism-suite*.{css,js} + extensions/chrome-cua-bridge/"]
     P["第 3 层 · Prism 七合一工作台 & 双插件 MCP/Skills<br/>plugin/ (8 常驻工具) + plugin-cua/ (默认关闭 3 操控工具)"]
@@ -188,7 +188,7 @@ flowchart TB
 
 ### 四、受控电脑与浏览器操控桥（Default-Off `prism-cua` · 可视化虚拟指针 · `Esc` 急刹 · Chrome MV3 桥）
 
-针对传统 Windows Computer-Use 工具「常驻拖慢上下文、跟用户争抢物理鼠标与打字焦点、后台浏览器调试端口被封禁、最小化窗口截出纯黑图、误操作难紧急叫停」五大痛点，`v0.8.2` 采用受控架构：
+针对传统 Windows Computer-Use 工具「常驻拖慢上下文、跟用户争抢物理鼠标与打字焦点、后台浏览器调试端口被封禁、最小化窗口截出纯黑图、误操作难紧急叫停」五大痛点，`v0.8.3` 采用受控架构：
 
 1. **双插件 Default-Off + 工作台一键休眠零上下文损耗架构**：
    - `prism-files` 保持 8 个高频工具（且支持按组隐藏）；桌面与浏览器操控工具独立拆分为同级插件 **`prism-cua`**（安装后默认关闭，日常编码 `0` Token 开销）。需要让 AI 协助测试桌面软件或操作已登录网页时，在窗口左栏 **`技能与自定义 → 插件`** 开启一次 `prism-cua`，后续即可随时在工作台「电脑操控」页通过 **`🤖 AI 电脑操控工具按需开关`** 一键唤醒或休眠。
@@ -293,9 +293,9 @@ node install.mjs
 ## 安全、隐私与隔离承诺
 
 1. **绝不触碰本地对话库与工作区代码**：账号接力仅在 OS 原生凭据库（Windows Credential Manager / macOS Keychain / Linux Secret Service）的独立隔离命名空间 `prism-suite:account:<id>` 中备份与原子替换受验凭据，**100% 不改写 Antigravity 本地会话数据库、不修改 `~/.gemini/antigravity/brain/` 产物**；切换前强制校验 `id_token_email` 一致性，异常自动原子回滚。
-2. **零明文密钥落盘与跨域名防泄露**：本套件绝不后台扫描其他软件私密目录；`prism-profile.json` 强制 `0600` 权限且仅保存环境变量名或凭据库引用，当修改已绑凭据库网关的域名（Origin）时强制要求重验密钥，防止旧凭据被发往新主机；记忆库、检索与出站会诊提示词均内置多层敏感信息脱敏与外部远程记忆污点隔离（`[EXTERNAL_UNTRUSTED_MEMORY]`）。
-3. **敏感路径硬拦截与防 SSRF 护栏**：文件工作台底层拒绝预览或修改 `.env*`、`.ssh`、`.gnupg`、`.aws`、`.codex`、`.claude`、`.cc-switch`、私钥证书及 NTFS 备用数据流（ADS），对 `brain/` 目录强制只读保护，并对工作区文本保存启用 **SHA-256 乐观并发锁**；可选无 Key 公网搜索强制 DNS 解析锁定公网路由 IP，阻断内网探测与 DNS 重绑定。
-4. **严格校验的官方自更新白名单**：一键自更新仅信任官方 GitHub 域名与发布资产路径，强制验证单行 64 位 SHA-256 校验值并对归档条目执行符号链接与路径穿越安全审计。
+2. **零明文密钥落盘与跨域名/重定向防泄露**：本套件绝不后台扫描其他软件私密目录；`prism-profile.json` 强制 `0600` 权限且仅保存环境变量名或系统凭据库引用（进程内存仅作 `60s` 瞬时复用缓存），修改已绑凭据库网关域名时强制重验密钥，所有出站模型调用与 `/models` 探测均强制 `redirect: 'error'` 阻断 `302` 跨源泄密并实施响应体字节硬上限；记忆库、检索与出站会诊提示词均内置多层敏感信息脱敏与外部远程记忆污点隔离（`[EXTERNAL_UNTRUSTED_MEMORY]`）。
+3. **敏感路径硬拦截与 IMDS / SSRF 双重护栏**：文件工作台底层拒绝预览或修改 `.env*`、`.ssh`、`.gnupg`、`.aws`、`.codex`、`.claude`、`.cc-switch`、私钥证书及 NTFS 备用数据流（ADS），对 `brain/` 目录强制只读保护，并对工作区文本保存启用 **SHA-256 乐观并发锁**；网关端点校验精准拦截 AWS/GCP/Azure/阿里云 IMDS 元数据地址及其 IPv6 映射变形（完整保留 `localhost`、局域网与 Tailscale `*.ts.net` 直连），可选无 Key 公网搜索强制 DNS 解析锁定公网路由 IP。
+4. **双端 SHA-256 强校验与二进制归档审计的自更新白名单**：一键自更新仅信任官方 GitHub 域名与发布资产路径，对 Windows 安装器 `.exe` 与跨平台源码包 `.tar.gz` 均强制核验配套 `.sha256` 指纹，并在解压前执行纯 Node 二进制 USTAR/PAX 归档头与系统 `tar` 双重符号链接/路径穿越安全审计。
 
 ---
 

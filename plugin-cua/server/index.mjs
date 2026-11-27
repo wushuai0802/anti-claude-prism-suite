@@ -41,7 +41,7 @@ const MAX_STDIN_BUFFER_BYTES = 16 * 1024 * 1024;
 
 export const SERVER_INFO = Object.freeze({
   name: 'prism-cua_control',
-  version: '0.8.2'
+  version: '0.8.3'
 });
 
 const ASSERTION_SCHEMA = {

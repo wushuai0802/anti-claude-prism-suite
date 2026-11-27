@@ -13,8 +13,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("Anti-Claude Prism Suite 一键安装器")]
 [assembly: AssemblyDescription("Anti-Claude Prism Suite Standalone All-in-One Installer (Kernel + Extensions + prism-files + prism-cua + chrome-bridge)")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.8.2.0")]
-[assembly: AssemblyFileVersion("0.8.2.0")]
+[assembly: AssemblyVersion("0.8.3.0")]
+[assembly: AssemblyFileVersion("0.8.3.0")]
 
 namespace AntiClaudePrismSuiteInstaller
 {
@@ -1579,7 +1579,7 @@ namespace AntiClaudePrismSuiteInstaller
 
         private void InitializeUi()
         {
-            Text = "Anti-Claude Prism Suite 一键安装器 v0.8.2（独立完整版）";
+            Text = "Anti-Claude Prism Suite 一键安装器 v0.8.3（独立完整版）";
             Size = new Size(740, 660);
             MinimumSize = new Size(660, 580);
             StartPosition = FormStartPosition.CenterScreen;
@@ -1597,7 +1597,7 @@ namespace AntiClaudePrismSuiteInstaller
             header.Paint += PaintHeaderAccent;
 
             Label lblTitle = new Label();
-            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.8.2";
+            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.8.3";
             lblTitle.ForeColor = Color.White;
             lblTitle.Font = new Font("Microsoft YaHei UI", 13.5f, FontStyle.Bold);
             lblTitle.AutoSize = true;
@@ -2045,7 +2045,7 @@ namespace AntiClaudePrismSuiteInstaller
                         MessageBox.Show(
                             this,
                             isInstall
-                                ? "Anti-Claude Prism Suite v0.8.2（独立完整版）安装成功！\n\n已一并部署内置 Anti-Claude v3.1.9 增强内核、棱镜扩展套件、Chrome/Edge 扩展桥与双插件（prism-files + 默认关闭零开销的 prism-cua）。若 Antigravity 正在运行，重启一次应用即可全面生效。"
+                                ? "Anti-Claude Prism Suite v0.8.3（独立完整版）安装成功！\n\n已一并部署内置 Anti-Claude v3.1.9 增强内核、棱镜扩展套件、Chrome/Edge 扩展桥与双插件（prism-files + 默认关闭零开销的 prism-cua）。若 Antigravity 正在运行，重启一次应用即可全面生效。"
                                 : "已干净卸载选中的 Anti-Claude Prism Suite 组件。",
                             isInstall ? "安装成功" : "卸载完成",
                             MessageBoxButtons.OK,
