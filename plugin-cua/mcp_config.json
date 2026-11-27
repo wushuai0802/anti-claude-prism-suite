@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "prism-cua_control": {
+    "control": {
       "command": "node",
-      "args": ["--no-warnings", "${__dirname}/server/index.mjs"]
+      "args": ["--no-warnings", "${PLUGIN_ROOT}/server/index.mjs", "--data_dir=${PLUGIN_DATA}"]
     }
   }
 }

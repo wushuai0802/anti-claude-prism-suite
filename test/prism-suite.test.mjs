@@ -1528,11 +1528,11 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.8.1');
-    assert.equal(pluginJson.version, '0.8.1');
+    assert.equal(pkgJson.version, '0.8.2');
+    assert.equal(pluginJson.version, '0.8.2');
     assert.ok(Array.isArray(pluginJson.suggested_prompts) && pluginJson.suggested_prompts.length <= 3);
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
-    assert.match(jsSrc, /SUITE_VERSION = '0\.8\.1'/);
+    assert.match(jsSrc, /SUITE_VERSION = '0\.8\.2'/);
     assert.match(jsSrc, /COOKIE_PREFS_KEY = 'ag_prism_prefs_v1'/);
     assert.match(jsSrc, /getActiveInputBox/);
     assert.match(jsSrc, /getInputBoxEl: getActiveInputBox/);
@@ -1560,7 +1560,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(wfSrc, /composerFileDrop/);
     assert.match(jsSrc, /ag_claude_ux_quota_cache_v1/);
     assert.match(jsSrc, /readAntiClaudeQuotaCache/);
-    assert.match(inlineHtml, /version: '0\.8\.1'/);
+    assert.match(inlineHtml, /version: '0\.8\.2'/);
     assert.match(jsSrc, /__agPrismBridge/);
     assert.match(jsSrc, /bridge-ping/);
     assert.match(jsSrc, /bridge-pong/);
@@ -1592,7 +1592,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(csSrc, /EnsureDebugPortOnUserShortcuts/);
     assert.match(csSrc, /InstallKernel/);
     assert.match(csSrc, /prism-suite-00-prefs\.js/);
-    assert.match(csSrc, /v0\.8\.1/);
+    assert.match(csSrc, /v0\.8\.2/);
     const installPluginSlice = csSrc.slice(csSrc.indexOf('public static int InstallPlugin('), csSrc.indexOf('private static bool IsReparsePoint('));
     assert.doesNotMatch(installPluginSlice, /Directory\.Delete\(targetDir,\s*true\)/, 'InstallPlugin must update in-place without deleting prism-files root');
   } finally {
@@ -2049,6 +2049,11 @@ test('v0.7.0 Phase 1: 7-upstream CUA radar, 3 bundled progressive skills, SQLite
 
     const mcpCfg = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'mcp_config.json'), 'utf8'));
     assert.equal(mcpCfg.mcpServers.files.args.includes('--no-warnings'), true);
+    const cuaMcpRaw = fs.readFileSync(path.join(REPO, 'plugin-cua', 'mcp_config.json'), 'utf8');
+    assert.doesNotMatch(cuaMcpRaw, /\$\{__dirname\}/, 'plugin-cua mcp_config.json must use ${PLUGIN_ROOT}, never ${__dirname}');
+    const cuaMcpCfg = JSON.parse(cuaMcpRaw);
+    assert.ok(cuaMcpCfg.mcpServers.control, 'plugin-cua mcp_config.json server key must be "control" so host namespaces it as prism-cua_control');
+    assert.ok(cuaMcpCfg.mcpServers.control.args.includes('${PLUGIN_ROOT}/server/index.mjs'));
 
     const expectedSkills = ['prism-cross-model-council', 'prism-slot-relay', 'prism-upstream-absorb'];
     const pluginsDir = path.join(tmp, 'plugins');
@@ -2797,7 +2802,7 @@ test('v0.8.0 prism-cua end-to-end broker/MCP roundtrip, batch_actions, safety/CA
     // 1. Strict 3-tool model visibility & default-disabled plugin manifest
     const cuaPluginJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'plugin-cua', 'plugin.json'), 'utf8'));
     assert.equal(cuaPluginJson.name, 'prism-cua');
-    assert.equal(cuaPluginJson.version, '0.8.1');
+    assert.equal(cuaPluginJson.version, '0.8.2');
     assert.equal(cuaPluginJson.disabled, true, 'prism-cua must ship disabled by default');
     assert.deepEqual(CUA_TOOLS.map((t) => t.name), ['cua_status', 'cua_observe', 'cua_act']);
 
@@ -3037,7 +3042,7 @@ test('v0.8.1 visual virtual cursor overlay, 4-tier non-intrusive mouse routing (
     assert.match(winCuaCs, /NativeMethods\.SetCursorPos\(origCursor\.X,\s*origCursor\.Y\)/);
 
     // 2. Browser Shadow DOM virtual cursor & Workbench toggle UI invariants
-    assert.match(contentAgentJs, /AGENT_VERSION = '0\.8\.1'/);
+    assert.match(contentAgentJs, /AGENT_VERSION = '0\.8\.2'/);
     assert.match(contentAgentJs, /function pulseVirtualCursor\(/);
     assert.match(contentAgentJs, /__prism_cua_vcursor_host/);
     assert.match(contentAgentJs, /delivery:\s*'dom_virtual'/);

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.2 - 2026-11-27
+
+- **修复开启 `prism-cua` 插件时报 `MCP error` 的占位符与命名空间问题（[plugin-cua/mcp_config.json](plugin-cua/mcp_config.json)）**：
+  - 将 `plugin-cua/mcp_config.json` 中的入口路径占位符从宿主不解析的 `${__dirname}` 修正为标准 `${PLUGIN_ROOT}/server/index.mjs`（附 `--data_dir=${PLUGIN_DATA}`），消除启用插件时的 `MODULE_NOT_FOUND` 启动报错；
+  - 将服务键名修正为 `"control"`，使宿主自动拼接生成的 MCP 服务标识精准对齐为 `prism-cua_control`（消除此前重复前缀 `prism-cua_prism-cua_control`），并在 [prism-suite.test.mjs](test/prism-suite.test.mjs) 新增配置门禁断言防止回退。
+
 ## 0.8.1 - 2026-11-27
 
 - **新增独立「Prism AI 可视化虚拟指针」与 Windows 四级无感防抢鼠路由（实测后台操作 `0px` 物理鼠标位移、零焦点抢占）**：

@@ -1,7 +1,7 @@
 # Anti-Claude Prism Suite
 
 <p align="left">
-  <img src="https://img.shields.io/badge/version-v0.8.1-2563eb?style=flat-square" alt="Version v0.8.1" />
+  <img src="https://img.shields.io/badge/version-v0.8.2-2563eb?style=flat-square" alt="Version v0.8.2" />
   <img src="https://img.shields.io/badge/edition-All--in--One%20Standalone-059669?style=flat-square" alt="Standalone Edition" />
   <img src="https://img.shields.io/badge/kernel-Anti--Claude%20v3.1.9%20Bundled-7c3aed?style=flat-square" alt="Bundled Anti-Claude v3.1.9" />
   <img src="https://img.shields.io/badge/dependencies-0%20npm%20packages-d97706?style=flat-square" alt="Zero Runtime Dependencies" />
@@ -10,7 +10,7 @@
 
 **面向 Google Antigravity Desktop（Windows / WSL2 / macOS / Linux）的一体化独立完整版体验增强、跨厂商模型会诊、受控电脑操控（CUA）与多账号工程工作台套件。**
 
-自 **v0.6.0+** 起，本项目已**原生内嵌继承增强版 [Anti-Claude](https://github.com/hongqi7/Anti-Claude) `v3.1.9` 运行时内核（`vendor/anti-claude/`）**，并在 **v0.8.1** 全面升级为涵盖 **「内核增强 + 棱镜桌面交互扩展 + 七合一响应式工作台 + 默认关闭零开销受控电脑操控桥（独立可视化虚拟指针 + 四级防抢鼠路由 + Chrome/Edge MV3）+ 双模 SQLite FTS5 记忆 + 零依赖 SSE 模型会诊中枢 + 3 项内置工程 Skill」** 的全栈自包含套件：
+自 **v0.6.0+** 起，本项目已**原生内嵌继承增强版 [Anti-Claude](https://github.com/hongqi7/Anti-Claude) `v3.1.9` 运行时内核（`vendor/anti-claude/`）**，并在 **v0.8.2** 全面升级为涵盖 **「内核增强 + 棱镜桌面交互扩展 + 七合一响应式工作台 + 默认关闭零开销受控电脑操控桥（独立可视化虚拟指针 + 四级防抢鼠路由 + Chrome/Edge MV3）+ 双模 SQLite FTS5 记忆 + 零依赖 SSE 模型会诊中枢 + 3 项内置工程 Skill」** 的全栈自包含套件：
 - **新用户零前置依赖**：下载运行单个安装包（或执行一条 `node install.mjs`），一次性完成「底层 CDP 守护内核 + 棱镜视觉交互扩展 + Prism 七合一工作台插件 + 默认关闭的 `prism-cua` 受控电脑操控插件 + Chrome/Edge 浏览器受控桥 + 内置规则与技能」全栈部署，**无需单独安装其他前置项目**；
 - **默认关闭零上下文损耗 · 可视化虚拟指针防抢鼠 · 全局 `Esc` 急刹**：受控电脑与浏览器操控工具独立封装在同级插件 `prism-cua` 中并默认关闭，日常写代码聊天时 `0` 额外工具 Token 开销；操控期间渲染独立鼠标穿透 **AI 虚拟指针**，对已授权网页与标准桌面 UIA / Win32 控件实现 **`0px` 物理鼠标位移、零焦点抢占**，并在系统任意窗口按下物理 **`Esc`** 键毫秒级中断急刹；
 - **老用户无感平滑升级**：完整保留本地 `ui-prefs.json` 与已隐藏说明偏好，3-way 合并保护手改过的 `config.json`，点击工作台内 **「🚀 一键更新」** 即可连同底层内核与双插件同步原地升级；
@@ -115,7 +115,7 @@
 
 ```mermaid
 flowchart TB
-  subgraph PKG["Anti-Claude Prism Suite v0.8.1（单包独立完整版 · 零外部 npm 依赖）"]
+  subgraph PKG["Anti-Claude Prism Suite v0.8.2（单包独立完整版 · 零外部 npm 依赖）"]
     K["第 1 层 · 内置增强内核与本地 CUA Broker<br/>vendor/anti-claude/ + native/win-cua/ (v3.1.9 + 四级防抢鼠执行器 + 全局 Esc 急刹)"]
     E["第 2 层 · 棱镜前端扩展 & Chrome/Edge MV3 扩展桥<br/>extensions/prism-suite*.{css,js} + extensions/chrome-cua-bridge/"]
     P["第 3 层 · Prism 七合一工作台 & 双插件 MCP/Skills<br/>plugin/ (8 常驻工具) + plugin-cua/ (默认关闭 3 操控工具)"]
@@ -188,7 +188,7 @@ flowchart TB
 
 ### 四、受控电脑与浏览器操控桥（Default-Off `prism-cua` · 可视化虚拟指针 · `Esc` 急刹 · Chrome MV3 桥）
 
-针对传统 Windows Computer-Use 工具「常驻拖慢上下文、跟用户争抢物理鼠标与打字焦点、后台浏览器调试端口被封禁、最小化窗口截出纯黑图、误操作难紧急叫停」五大痛点，`v0.8.1` 采用受控架构：
+针对传统 Windows Computer-Use 工具「常驻拖慢上下文、跟用户争抢物理鼠标与打字焦点、后台浏览器调试端口被封禁、最小化窗口截出纯黑图、误操作难紧急叫停」五大痛点，`v0.8.2` 采用受控架构：
 
 1. **双插件 Default-Off + 工作台一键休眠零上下文损耗架构**：
    - `prism-files` 保持 8 个高频工具（且支持按组隐藏）；桌面与浏览器操控工具独立拆分为同级插件 **`prism-cua`**（安装后默认关闭，日常编码 `0` Token 开销）。需要让 AI 协助测试桌面软件或操作已登录网页时，在窗口左栏 **`技能与自定义 → 插件`** 开启一次 `prism-cua`，后续即可随时在工作台「电脑操控」页通过 **`🤖 AI 电脑操控工具按需开关`** 一键唤醒或休眠。
