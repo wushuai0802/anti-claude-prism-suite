@@ -12,7 +12,7 @@
     try { window.__agPrismSuiteDispose(); } catch {}
   }
 
-  const SUITE_VERSION = '0.8.4';
+  const SUITE_VERSION = '0.9.0';
   const REPO_RELEASES_API = 'https://api.github.com/repos/wushuai0802/anti-claude-prism-suite/releases/latest';
   const REPO_RELEASES_URL = 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/latest';
   const STORAGE_KEY = 'ag_prism_suite_prefs_v1';
@@ -50,7 +50,16 @@
   };
   const boolValidator = (v) => (typeof v === 'boolean' ? v : undefined);
 
-  // Full 38-key schema across prism-suite, prism-suite-fx, and prism-suite-workflow
+  function sanitizeFontFamilyPref(v) {
+    if (typeof v !== 'string') return undefined;
+    const s = v.replace(/[\r\n\0]+/g, ' ').trim();
+    if (s.length > 160) return undefined;
+    if (/[\x00-\x1f\x7f;{}<>\\]|\/\*|url\s*\(|expression\s*\(|@import/i.test(s)) return undefined;
+    if ((s.match(/"/g) || []).length % 2 !== 0 || (s.match(/'/g) || []).length % 2 !== 0) return undefined;
+    return s;
+  }
+
+  // Full 42-key schema across prism-suite, prism-suite-fx, and prism-suite-workflow
   const PREF_VALIDATORS = Object.freeze({
     lightPalette: enumValidator(['default', 'crystal', 'alabaster', 'sage']),
     darkPalette: enumValidator(['default', 'obsidian', 'basalt', 'marine']),
@@ -61,11 +70,18 @@
     mascot: boolValidator,
     mascotCountMode: enumValidator(['fixed', 'agents']),
     mascotMinCount: (v) => (Number.isFinite(Number(v)) ? clampMascotMinCount(v) : undefined),
-    mascotStyle: enumValidator(['trio', 'zoo', 'cyber', 'crab', 'cat', 'penguin', 'fox']),
+    mascotStyle: enumValidator(['trio', 'zoo', 'cyber', 'crab', 'cat', 'penguin', 'fox', 'shiba', 'robot', 'owlet', 'axolotl', 'bunny', 'frog', 'chick', 'slime']),
     mascotRoam: boolValidator,
     mascotVibe: enumValidator(['calm', 'lively']),
     mascotSize: (v) => (Number.isFinite(Number(v)) ? clampMascotSize(v) : undefined),
     thoughtMode: enumValidator(['off', 'bilingual', 'immersive']),
+    performanceMode: enumValidator(['power-save', 'balanced', 'vivid']),
+    ignoreReducedMotion: boolValidator,
+    chatFontFamily: sanitizeFontFamilyPref,
+    codeFontFamily: sanitizeFontFamilyPref,
+    opticalFacets: boolValidator,
+    semanticAfterglow: boolValidator,
+    compactQuotaPill: boolValidator,
     borderBeam: boolValidator,
     borderBeamMode: enumValidator(['always', 'busy']),
     borderBeamPalette: enumValidator(['theme', 'gemini', 'aurora', 'prism', 'neon', 'quota']),
@@ -192,7 +208,14 @@
     mascotRoam: true,          // Random run & leap along composer top while busy
     mascotVibe: 'lively',      // 'calm' | 'lively' (personality intensity)
     mascotSize: MASCOT_SIZE_DEFAULT, // 16..36 px (step 2)
-    thoughtMode: 'bilingual'   // 'off' | 'bilingual' | 'immersive'
+    thoughtMode: 'bilingual',  // 'off' | 'bilingual' | 'immersive'
+    performanceMode: 'balanced', // 'power-save' | 'balanced' | 'vivid'
+    ignoreReducedMotion: false,
+    chatFontFamily: '',
+    codeFontFamily: '',
+    opticalFacets: true,
+    semanticAfterglow: true,
+    compactQuotaPill: true
   };
 
   const registeredDefaults = Object.assign({}, DEFAULT_PREFS);
@@ -261,13 +284,20 @@
   const cleanups = [];
   const onCleanup = (fn) => cleanups.push(fn);
 
-  const REDUCED_MOTION = (() => {
+  const motionQuery = (() => {
     try {
-      return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      return typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
     } catch {
-      return false;
+      return null;
     }
   })();
+
+  function isEffectivelyReducedMotion(p = prefs) {
+    return (
+      (Boolean(motionQuery && motionQuery.matches) && !p.ignoreReducedMotion) ||
+      p.performanceMode === 'power-save'
+    );
+  }
 
   function escapeHtml(s) {
     return String(s == null ? '' : s)
@@ -434,7 +464,7 @@
       return false;
     }
     cancelPopoverClose(pop);
-    if (!REDUCED_MOTION && !disposed && !document.hidden) {
+    if (!isEffectivelyReducedMotion() && !disposed && !document.hidden) {
       pop.setAttribute('data-closing', '1');
       popCloseTimer = setTimeout(() => {
         popCloseTimer = 0;
@@ -455,7 +485,7 @@
       return false;
     }
     cancelOutlineClose(drawer);
-    if (!REDUCED_MOTION && !disposed && !document.hidden) {
+    if (!isEffectivelyReducedMotion() && !disposed && !document.hidden) {
       drawer.setAttribute('data-closing', '1');
       outlineCloseTimer = setTimeout(() => {
         outlineCloseTimer = 0;
@@ -559,8 +589,285 @@
 
   function getUserTurnElements() {
     const scope = getActiveViewportEl() || document;
-    const nodes = Array.from(scope.querySelectorAll('[data-testid="user-message-content"]'));
-    return nodes.filter((n) => isElementRendered(n) && (n.textContent || '').trim().length > 0);
+    const nodes = Array.from(scope.querySelectorAll('[data-testid="user-message-content"], [data-testid="user-input-step"]'));
+    const out = [];
+    const seenMsg = new Set();
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      if (!isElementRendered(n)) continue;
+      const host = (n.closest && (n.closest('[data-testid="user-input-step"]') || n.closest('[data-testid="user-message"]'))) || n;
+      if (seenMsg.has(host)) continue;
+      const contentEl = (host.matches && host.matches('[data-testid="user-message-content"]') && host)
+        || (host.querySelector && host.querySelector('[data-testid="user-message-content"]'))
+        || n;
+      const hasTxt = (contentEl.textContent || '').trim().length > 0;
+      const hasMedia = !hasTxt && Boolean(host.querySelector && host.querySelector('img, [data-testid*="attachment"], [data-testid*="media"], bdi.context-scope-mention'));
+      if (!hasTxt && !hasMedia) continue;
+      seenMsg.add(host);
+      out.push(contentEl);
+    }
+    return out;
+  }
+
+  // Per-conversation turn prompt summary cache for paginated/unmounted older turns (LRU capped at 12 conversations)
+  const navTurnPreviewByConv = new Map(); // convId -> Map<startStepIndex, string>
+  const navInFlightStepsByConv = new Map(); // convId -> Set<number>
+
+  function getConvPreviewMap(convId) {
+    if (!convId) return null;
+    if (!navTurnPreviewByConv.has(convId)) {
+      if (navTurnPreviewByConv.size >= 12) {
+        const oldestKey = navTurnPreviewByConv.keys().next().value;
+        navTurnPreviewByConv.delete(oldestKey);
+        navInFlightStepsByConv.delete(oldestKey);
+      }
+      navTurnPreviewByConv.set(convId, new Map());
+    }
+    return navTurnPreviewByConv.get(convId);
+  }
+
+  function extractPromptFromHostTurnSummary(turnSummary) {
+    if (!turnSummary || typeof turnSummary !== 'object') return '';
+    const stepVal = turnSummary?.firstStep?.step?.value;
+    if (stepVal && typeof stepVal === 'object') {
+      const parts = [];
+      if (Array.isArray(stepVal.items)) {
+        for (let i = 0; i < stepVal.items.length; i++) {
+          const it = stepVal.items[i];
+          const ch = it && it.chunk;
+          if (!ch) continue;
+          if (typeof ch.value === 'string') {
+            parts.push(ch.value);
+          } else if (ch.value && typeof ch.value === 'object') {
+            const label = ch.value.displayName || ch.value.filePath || ch.value.uri || ch.value.title || '';
+            if (label) parts.push(`@${String(label).split(/[\\/]/).pop()}`);
+          }
+        }
+      }
+      const cleaned = parts
+        .join(' ')
+        .replace(/<\/?USER_REQUEST>/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (cleaned) return cleaned;
+      const fb = String(stepVal.query || stepVal.userResponse || '')
+        .replace(/<\/?USER_REQUEST>/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (fb) return fb;
+      if (
+        (Array.isArray(stepVal.media) && stepVal.media.length) ||
+        (Array.isArray(stepVal.images) && stepVal.images.length) ||
+        (Array.isArray(turnSummary?.firstStep?.attachments) && turnSummary.firstStep.attachments.length)
+      ) {
+        return '[图片 / 附件提问]';
+      }
+    }
+    return '';
+  }
+
+  function probeHostNavigatorFiber(vp) {
+    if (!vp) return null;
+    try {
+      const keys = Object.keys(vp);
+      let fk = '';
+      for (let i = 0; i < keys.length; i++) {
+        if (keys[i].startsWith('__reactFiber$')) {
+          fk = keys[i];
+          break;
+        }
+      }
+      if (!fk) return null;
+      let cur = vp[fk];
+      let navCtx = null;
+      let navProps = null;
+      for (let d = 0; cur && d < 14; d++, cur = cur.return) {
+        const mp = cur.memoizedProps;
+        if (!mp || typeof mp !== 'object') continue;
+        if (!navCtx && mp.value && typeof mp.value === 'object' && Array.isArray(mp.value.turns) && typeof mp.value.jumpTo === 'function') {
+          navCtx = mp.value;
+        }
+        if (!navProps && Array.isArray(mp.turns) && typeof mp.fetchTurns === 'function') {
+          navProps = mp;
+        }
+        if (navCtx && navProps) break;
+      }
+      if (!navCtx || !Array.isArray(navCtx.turns) || navCtx.turns.length === 0) return null;
+      return {
+        convId: String((navProps && navProps.conversationId) || getActiveCascadeId() || window.location.pathname || ''),
+        turns: navCtx.turns,
+        total: navCtx.turns.length,
+        activeIndex: Number.isFinite(Number(navCtx.activeIndex)) ? Number(navCtx.activeIndex) : navCtx.turns.length - 1,
+        jumpTo: navCtx.jumpTo,
+        fetchTurns: navProps && typeof navProps.fetchTurns === 'function' ? navProps.fetchTurns : null,
+        sections: navProps && navProps.sections ? navProps.sections : null
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function getConversationNavSnapshot() {
+    const vp = getActiveViewportEl();
+    const domTurns = getUserTurnElements();
+    const hostNav = probeHostNavigatorFiber(vp);
+
+    if (!hostNav || hostNav.turns.length < domTurns.length) {
+      const curDomIdx = detectViewportTurnIndex(domTurns);
+      return {
+        mode: 'dom',
+        convId: String(getActiveCascadeId() || window.location.pathname || ''),
+        total: domTurns.length,
+        activeIndex: curDomIdx >= 0 ? curDomIdx : Math.max(0, domTurns.length - 1),
+        domTurns,
+        getPreview(idx) {
+          const el = domTurns[idx];
+          if (!el) return '';
+          const txt = getCachedTurnText(el);
+          return txt || '[图片 / 附件提问]';
+        },
+        getDomEl(idx) {
+          return domTurns[idx] || null;
+        },
+        ensurePreviews() {
+          return Promise.resolve(false);
+        },
+        jumpTo(idx) {
+          const targetEl = domTurns[idx];
+          if (!targetEl) return false;
+          jumpToTurn(targetEl, idx, domTurns.length);
+          return true;
+        }
+      };
+    }
+
+    const { convId, turns, total, fetchTurns } = hostNav;
+    const previewMap = getConvPreviewMap(convId);
+
+    // Seed mounted tail DOM turns into previewMap at 0 RPC cost when DOM turns correspond to the tail slice
+    if (previewMap && domTurns.length > 0 && domTurns.length <= total) {
+      const offset = total - domTurns.length;
+      for (let i = 0; i < domTurns.length; i++) {
+        const tMeta = turns[offset + i];
+        if (tMeta && Number.isFinite(Number(tMeta.startStepIndex)) && !previewMap.has(tMeta.startStepIndex)) {
+          const txt = getCachedTurnText(domTurns[i]) || '[图片 / 附件提问]';
+          if (txt) previewMap.set(tMeta.startStepIndex, txt);
+        }
+      }
+    }
+
+    // Refine activeIndex when user is scrolled at the very bottom or viewing mounted tail turns
+    let resolvedActive = Math.max(0, Math.min(total - 1, hostNav.activeIndex));
+    if (vp && domTurns.length > 0 && domTurns.length <= total) {
+      const distBottom = vp.scrollHeight - (vp.scrollTop + vp.clientHeight);
+      if (distBottom < 36) {
+        resolvedActive = total - 1;
+      } else {
+        const firstMountedRect = domTurns[0].getBoundingClientRect();
+        const vpRect = vp.getBoundingClientRect();
+        if (firstMountedRect.top <= vpRect.top + vpRect.height * 0.55) {
+          const localIdx = detectViewportTurnIndex(domTurns);
+          if (localIdx >= 0) {
+            resolvedActive = (total - domTurns.length) + localIdx;
+          }
+        }
+      }
+    }
+
+    const resolveMountedDomEl = (idx) => {
+      if (domTurns.length > 0 && domTurns.length <= total) {
+        const localIdx = idx - (total - domTurns.length);
+        if (localIdx >= 0 && localIdx < domTurns.length && domTurns[localIdx]?.isConnected) {
+          return domTurns[localIdx];
+        }
+      }
+      return null;
+    };
+
+    const ensurePreviews = async (centerIdx = 0, radius = 16, onUpdated = null) => {
+      if (!fetchTurns || !previewMap || !convId) return false;
+      let inFlight = navInFlightStepsByConv.get(convId);
+      if (!inFlight) {
+        inFlight = new Set();
+        navInFlightStepsByConv.set(convId, inFlight);
+      }
+      const lo = Math.max(0, centerIdx - radius);
+      const hi = Math.min(total - 1, centerIdx + radius);
+      const wantSteps = [];
+      for (let i = lo; i <= hi; i++) {
+        const st = turns[i]?.startStepIndex;
+        if (Number.isFinite(Number(st)) && !previewMap.has(st) && !inFlight.has(st)) {
+          wantSteps.push(st);
+          if (wantSteps.length >= 48) break;
+        }
+      }
+      if (!wantSteps.length) return false;
+      for (const s of wantSteps) inFlight.add(s);
+      try {
+        const resp = await fetchTurns({ conversationId: convId, stepIndices: wantSteps });
+        const list = Array.isArray(resp?.turns) ? resp.turns : [];
+        let added = false;
+        for (let i = 0; i < list.length; i++) {
+          const item = list[i];
+          const st = Number(item?.startStepIndex);
+          if (!Number.isFinite(st)) continue;
+          const promptTxt = extractPromptFromHostTurnSummary(item) || `第 ${turns.findIndex((t) => t.startStepIndex === st) + 1} 轮提问`;
+          previewMap.set(st, promptTxt);
+          added = true;
+        }
+        for (const s of wantSteps) {
+          if (!previewMap.has(s)) previewMap.set(s, '提问记录');
+        }
+        if (added && !disposed && typeof onUpdated === 'function') {
+          try { onUpdated(); } catch {}
+        }
+        return added;
+      } catch {
+        return false;
+      } finally {
+        for (const s of wantSteps) inFlight.delete(s);
+      }
+    };
+
+    return {
+      mode: 'host',
+      convId,
+      total,
+      turns,
+      activeIndex: resolvedActive,
+      domTurns,
+      getPreview(idx) {
+        const tMeta = turns[idx];
+        if (!tMeta) return '';
+        const cached = previewMap ? previewMap.get(tMeta.startStepIndex) : '';
+        if (cached) return cached;
+        const mounted = resolveMountedDomEl(idx);
+        if (mounted) {
+          const txt = getCachedTurnText(mounted) || '[图片 / 附件提问]';
+          if (previewMap && txt) previewMap.set(tMeta.startStepIndex, txt);
+          return txt;
+        }
+        return '';
+      },
+      getDomEl: resolveMountedDomEl,
+      ensurePreviews,
+      jumpTo(idx) {
+        if (idx < 0 || idx >= total) return false;
+        const mounted = resolveMountedDomEl(idx);
+        const preview = (this.getPreview(idx) || `第 ${idx + 1} 轮`).slice(0, 36);
+        if (mounted) {
+          jumpToTurn(mounted, idx, total);
+          return true;
+        }
+        try {
+          hostNav.jumpTo(idx);
+          showJumpToast(`第 ${idx + 1} / ${total} 轮 · ${preview}`);
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    };
   }
 
   function detectViewportTurnIndex(turns) {
@@ -584,7 +891,7 @@
   function jumpToTurn(el, index, total) {
     if (!el) return;
     const bubble = el.closest('[data-testid="user-message-bubble"]') || el.closest('[data-testid="user-message"]') || el;
-    bubble.scrollIntoView({ behavior: REDUCED_MOTION ? 'auto' : 'smooth', block: 'center' });
+    bubble.scrollIntoView({ behavior: isEffectivelyReducedMotion() ? 'auto' : 'smooth', block: 'center' });
     bubble.classList.remove('ag-ps-turn-pulse');
     void bubble.offsetWidth;
     bubble.classList.add('ag-ps-turn-pulse');
@@ -628,15 +935,13 @@
 
   function stepTurn(delta) {
     if (!prefs.outline) return;
-    const turns = getUserTurnElements();
-    if (!turns.length) {
+    const nav = getConversationNavSnapshot();
+    if (!nav.total) {
       showJumpToast('当前视图暂无可跳转的提问轮次');
       return;
     }
-    // Always compute relative to current viewport reading position (never stale after manual scroll)
-    const cur = detectViewportTurnIndex(turns);
-    const next = Math.max(0, Math.min(turns.length - 1, cur + delta));
-    jumpToTurn(turns[next], next, turns.length);
+    const next = Math.max(0, Math.min(nav.total - 1, nav.activeIndex + delta));
+    nav.jumpTo(next);
   }
 
   function isEditableTarget(el) {
@@ -744,34 +1049,63 @@
     return txt;
   }
 
-  function renderOutlineList(filter = '') {
+  function hydrateAllOutlinePreviews(nav) {
+    if (!nav || nav.mode !== 'host' || nav.total <= 0) return;
+    // Hydrate uncached older turns in 48-turn windows from newest to oldest
+    const centers = [];
+    for (let c = nav.total - 1; c >= 0; c -= 40) centers.push(c);
+    let idx = 0;
+    const stepNext = () => {
+      if (disposed || idx >= centers.length) return;
+      const drawer = document.getElementById('ag-ps-outline');
+      if (!drawer || drawer.getAttribute('data-open') !== '1') return;
+      const center = centers[idx++];
+      nav.ensurePreviews(center, 24, () => {
+        const inp = drawer.querySelector('.ag-ps-outline-search');
+        renderOutlineList(inp ? inp.value : '', true);
+      }).then(() => {
+        if (!disposed) setTimeout(stepNext, 20);
+      });
+    };
+    stepNext();
+  }
+
+  function renderOutlineList(filter = '', skipHydrate = false) {
     const drawer = document.getElementById('ag-ps-outline');
     if (!drawer) return;
     const list = drawer.querySelector('.ag-ps-outline-list');
     if (!list) return;
-    const turns = getUserTurnElements();
-    const curIdx = detectViewportTurnIndex(turns);
+    const nav = getConversationNavSnapshot();
+    const curIdx = nav.activeIndex;
     const q = String(filter || '').trim().toLowerCase();
     const items = [];
-    for (let i = 0; i < turns.length; i++) {
-      const txt = getCachedTurnText(turns[i]);
+    let missingAny = false;
+    for (let i = 0; i < nav.total; i++) {
+      const rawTxt = nav.getPreview(i);
+      if (!rawTxt) missingAny = true;
+      const txt = rawTxt || `第 ${i + 1} 轮提问（加载摘要中…）`;
       if (q && !txt.toLowerCase().includes(q)) continue;
-      items.push({ idx: i, txt, isCurrent: i === curIdx });
+      items.push({ idx: i, txt, isCurrent: i === curIdx, hasDom: Boolean(nav.getDomEl(i)) });
     }
     const countEl = drawer.querySelector('.ag-ps-outline-count');
-    if (countEl) countEl.textContent = `已加载 ${turns.length} 轮`;
+    if (countEl) countEl.textContent = `共 ${nav.total} 轮`;
+    if (missingAny && !skipHydrate) {
+      hydrateAllOutlinePreviews(nav);
+    }
 
     if (!items.length) {
       list.innerHTML = `<div style="padding:14px 8px;text-align:center;color:var(--muted-foreground)">暂无匹配提问（快捷键 Alt+↑/↓ 跳轮）</div>`;
       return;
     }
-    const extraBtns = (idx) =>
-      registeredOutlineActions
-        .map(
-          (act) =>
-            `<button type="button" class="ag-ps-outline-btw ag-ps-outline-act" data-outline-act="${escapeHtml(act.id)}" data-act-idx="${idx}" data-ag-ps-tip="${escapeHtml(act.title || act.label)}">${escapeHtml(act.label)}</button>`
-        )
-        .join('');
+    const extraBtns = (idx, hasDom) =>
+      hasDom
+        ? registeredOutlineActions
+            .map(
+              (act) =>
+                `<button type="button" class="ag-ps-outline-btw ag-ps-outline-act" data-outline-act="${escapeHtml(act.id)}" data-act-idx="${idx}" data-ag-ps-tip="${escapeHtml(act.title || act.label)}">${escapeHtml(act.label)}</button>`
+            )
+            .join('')
+        : '';
     list.innerHTML = items
       .map(
         (it) =>
@@ -780,7 +1114,7 @@
               <span class="ag-ps-outline-idx">#${it.idx + 1}</span>
               <span class="ag-ps-outline-txt" data-ag-ps-tip="${escapeHtml(it.txt)}">${escapeHtml(it.txt.slice(0, 60))}</span>
             </button>
-            ${extraBtns(it.idx)}
+            ${extraBtns(it.idx, it.hasDom)}
             <button type="button" class="ag-ps-outline-btw" data-btw-idx="${it.idx}" data-ag-ps-tip="作为 /btw 支线提问">btw</button>
           </div>`
       )
@@ -805,15 +1139,16 @@
     input.addEventListener('input', () => renderOutlineList(input.value));
     drawer.addEventListener('click', (e) => {
       e.stopPropagation();
+      const nav = getConversationNavSnapshot();
       const actEl = e.target.closest('[data-outline-act]');
       if (actEl) {
         e.stopPropagation();
         const actId = actEl.getAttribute('data-outline-act');
         const idx = Number(actEl.getAttribute('data-act-idx'));
         const act = registeredOutlineActions.find((a) => a.id === actId);
-        const turns = getUserTurnElements();
-        if (act && typeof act.onClick === 'function' && turns[idx]) {
-          try { act.onClick(idx, turns[idx], buildBusHelpers()); } catch {}
+        const domEl = nav.getDomEl(idx);
+        if (act && typeof act.onClick === 'function' && domEl) {
+          try { act.onClick(idx, domEl, buildBusHelpers()); } catch {}
         }
         closeOutlineAnimated(true);
         syncToolbarActiveStates();
@@ -823,8 +1158,8 @@
       if (btw) {
         e.stopPropagation();
         const idx = Number(btw.getAttribute('data-btw-idx'));
-        const turns = getUserTurnElements();
-        if (turns[idx]) insertBtwQuote(turns[idx].textContent || '');
+        const txt = nav.getPreview(idx);
+        if (txt) insertBtwQuote(txt);
         closeOutlineAnimated(true);
         syncToolbarActiveStates();
         return;
@@ -832,10 +1167,8 @@
       const row = e.target.closest('[data-turn-idx]');
       if (row) {
         const idx = Number(row.getAttribute('data-turn-idx'));
-        const turns = getUserTurnElements();
-        if (turns[idx]) {
-          jumpToTurn(turns[idx], idx, turns.length);
-          renderOutlineList(input ? input.value : '');
+        if (nav.jumpTo(idx)) {
+          renderOutlineList(input ? input.value : '', true);
         }
       }
     });
@@ -1004,7 +1337,7 @@
     wrap.setAttribute('data-sig', sig);
     wrap.setAttribute('data-scope', String(bookScopeIdx));
     wrap.innerHTML = `
-      <div class="ag-ps-book-row" role="button" tabindex="0"${scopeSwitched && !REDUCED_MOTION ? ' data-switching="1"' : ''} title="点击切换 今日 / 近12周 名著换算（基于精确总量 ${fmtTokens(scopeTokens)}）">
+      <div class="ag-ps-book-row" role="button" tabindex="0"${scopeSwitched && !isEffectivelyReducedMotion() ? ' data-switching="1"' : ''} title="点击切换 今日 / 近12周 名著换算（基于精确总量 ${fmtTokens(scopeTokens)}）">
         <span class="ag-ov-muted">📚 ${scopeLbl}体量</span>
         <span class="ag-ps-book-val">${escapeHtml(bookText)}</span>
       </div>
@@ -1089,7 +1422,7 @@
 
   function tickInkFade(now) {
     inkRafId = 0;
-    if (disposed || !prefs.inkStream || REDUCED_MOTION || !SUPPORTS_HIGHLIGHTS || !inkEntries.length) {
+    if (disposed || !prefs.inkStream || isEffectivelyReducedMotion() || !SUPPORTS_HIGHLIGHTS || !inkEntries.length) {
       clearInkHighlights();
       return;
     }
@@ -1123,7 +1456,7 @@
   function pushInkRange(textNode, fromIdx, toIdx) {
     if (mascotWaitingDoze) wakeMascotFromWait();
     else if (!mascotFirstTokenSeen) mascotFirstTokenSeen = true;
-    if (!SUPPORTS_HIGHLIGHTS || !prefs.inkStream || REDUCED_MOTION || !textNode || textNode.nodeType !== 3) return;
+    if (!SUPPORTS_HIGHLIGHTS || !prefs.inkStream || isEffectivelyReducedMotion() || !textNode || textNode.nodeType !== 3) return;
     if (toIdx <= fromIdx || toIdx > textNode.length) return;
     try {
       const range = document.createRange();
@@ -1147,7 +1480,7 @@
   }
 
   function syncStreamObserver(isBusy) {
-    if (disposed || !prefs.inkStream || REDUCED_MOTION || !SUPPORTS_HIGHLIGHTS || !isBusy || document.hidden) {
+    if (disposed || !prefs.inkStream || isEffectivelyReducedMotion() || !SUPPORTS_HIGHLIGHTS || !isBusy || document.hidden) {
       detachStreamObserver();
       if (!isBusy) clearInkHighlights();
       return;
@@ -1799,7 +2132,7 @@
       clickTimer: 0,
       roaming: false
     };
-    if (isEntering && !REDUCED_MOTION) {
+    if (isEntering && !isEffectivelyReducedMotion()) {
       el.setAttribute('data-entering', '1');
       setActorEmote(rec, '⚡', false, 620);
       rec.enterTimer = setTimeout(() => {
@@ -1850,7 +2183,7 @@
       hideCustomTooltip();
     }
 
-    if (REDUCED_MOTION || document.hidden) {
+    if (isEffectivelyReducedMotion() || document.hidden) {
       el.remove();
       return;
     }
@@ -2401,7 +2734,8 @@
         }
         const dist = Math.abs(targetX - actor.x);
         if (dist >= 10) {
-          const speedScale = syncMascotSpeedVars(dock) * (isCalm ? 0.72 : 1);
+          const vividBoost = prefs.performanceMode === 'vivid' ? 1.15 : 1;
+          const speedScale = syncMascotSpeedVars(dock) * (isCalm ? 0.72 : 1) * vividBoost;
           const doRollDash = !isCalm && dist >= 65 && Math.random() < (speedScale >= 1.35 ? 0.42 : 0.26);
           const baseSpeed = doRollDash ? 115 + Math.random() * 45 : 88 + Math.random() * 48;
           const speed = baseSpeed * speedScale;
@@ -2450,7 +2784,7 @@
   }
 
   function syncMascotRoaming(dock) {
-    if (!dock || !prefs.mascotRoam || REDUCED_MOTION || document.hidden || mascotWaitingDoze || (dock.clientWidth || 0) < 480) {
+    if (!dock || !prefs.mascotRoam || prefs.performanceMode === 'power-save' || isEffectivelyReducedMotion() || document.hidden || mascotWaitingDoze || (dock.clientWidth || 0) < 480) {
       if (mascotRoamingActive) stopMascotRoaming(!mascotWaitingDoze);
       return;
     }
@@ -2938,6 +3272,7 @@
       }
     }
     dock.setAttribute('data-vibe', prefs.mascotVibe === 'calm' ? 'calm' : 'lively');
+    setAttrIfChanged(dock, 'data-perf', prefs.performanceMode || 'balanced');
     syncMascotCompactGuard();
 
     const anyBusy = mascotActors.some((a) => a.busy);
@@ -2949,7 +3284,7 @@
         mascotBusyStartLen = sampleLatestResponseLen();
         mascotFirstTokenSeen = false;
         mascotWaitingDoze = false;
-        showMascotBubble(prefs.mascotRoam ? '开工啦！出发巡逻 ⚡' : '思考中… ⚡', 1800);
+        showMascotBubble(prefs.mascotRoam && !isEffectivelyReducedMotion() ? '开工啦！出发巡逻 ⚡' : '思考中… ⚡', 1800);
       } else if (!mascotFirstTokenSeen) {
         const curLen = sampleLatestResponseLen();
         if (Math.abs(curLen - mascotBusyStartLen) > 12) {
@@ -3126,6 +3461,86 @@
     }
   }
 
+  const THOUGHT_TOKEN_OR_URL_RE = /(?:https?|wss?|ftp):\/\/[^\s<>'"`]+|(?:^|(?<=[\s(（"'`「『【\[，。：；]))((?:[A-Za-z]:[\\/][^\s<>'"`():，。、；！？：「」『』【】（）《》\[\]]+|\/(?:mnt|home|Users|workspace|volume\d)\/[^\s<>'"`():，。、；！？：「」『』【】（）《》\[\]]+|(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.(?:mjs|cjs|js|ts|tsx|jsx|py|cs|go|rs|java|json|yml|yaml|md|css|html|sh|ps1)\b)(?:#L\d+(?:-L?\d+)?|:\d+(?::\d+)?)?)/g;
+
+  function stripThoughtFileRefLineSuffix(rawRef) {
+    return String(rawRef || '')
+      .trim()
+      .replace(/(?:#L\d+(?:-L?\d+)?|:\d+(?::\d+)?)$/i, '');
+  }
+
+  function renderThoughtTextWithFileRefs(rawText) {
+    const str = String(rawText || '');
+    if (!str) return '';
+    THOUGHT_TOKEN_OR_URL_RE.lastIndex = 0;
+    let out = '';
+    let lastIdx = 0;
+    let m;
+    while ((m = THOUGHT_TOKEN_OR_URL_RE.exec(str)) !== null) {
+      if (!m[1]) {
+        // Matched an http(s):// URL — emit escaped plain text without turning middle segments into file refs
+        out += escapeHtml(str.slice(lastIdx, m.index + m[0].length));
+        lastIdx = m.index + m[0].length;
+        continue;
+      }
+      let token = m[1];
+      let trailing = '';
+      const punctMatch = token.match(/([.,;]+)$/);
+      if (punctMatch) {
+        trailing = punctMatch[1];
+        token = token.slice(0, -trailing.length);
+      }
+      out += escapeHtml(str.slice(lastIdx, m.index));
+      if (token) {
+        const esc = escapeHtml(token);
+        out += `<button type="button" class="ag-ps-thought-file-ref" data-file-ref="${esc}" title="点击定位或复制源码位置">${esc}</button>`;
+      }
+      if (trailing) {
+        out += escapeHtml(trailing);
+      }
+      lastIdx = m.index + m[0].length;
+    }
+    out += escapeHtml(str.slice(lastIdx));
+    return out;
+  }
+
+  function onThoughtFileRefClick(e) {
+    if (disposed) return;
+    const btn = e.target && e.target.closest ? e.target.closest('.ag-ps-thought-file-ref') : null;
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rawRef = String(btn.getAttribute('data-file-ref') || '').trim();
+    if (!rawRef) return;
+    const refPath = stripThoughtFileRefLineSuffix(rawRef);
+    if (!refPath) return;
+    const shortRef = rawRef.length > 56 ? `…${rawRef.slice(-54)}` : rawRef;
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try { navigator.clipboard.writeText(rawRef).catch(() => {}); } catch {}
+    }
+    if (typeof window.__agProjectCall === 'function') {
+      Promise.resolve(window.__agProjectCall('revealFile', { targetPath: refPath }))
+        .then((res) => {
+          if (disposed) return;
+          if (res && res.ok) {
+            showJumpToast(`已定位并复制源码引用：${shortRef}`);
+          } else {
+            showJumpToast(`已复制源码路径：${shortRef}`);
+          }
+        })
+        .catch(() => {
+          if (!disposed) showJumpToast(`已复制源码路径：${shortRef}`);
+        });
+      return;
+    }
+    if (bridgeTargetWin) {
+      openPrismWorkbenchQuick('browse');
+    }
+    showJumpToast(`已复制源码路径：${shortRef}`);
+  }
+  document.addEventListener('click', onThoughtFileRefClick, true);
+  onCleanup(() => document.removeEventListener('click', onThoughtFileRefClick, true));
+
   function applyThoughtDisplay(bodyEl, zhText, mode) {
     if (!bodyEl || !bodyEl.parentElement) return;
     let box = bodyEl.parentElement.querySelector(':scope > .ag-ps-thought-zh');
@@ -3152,10 +3567,14 @@
     }
     const effectiveImmersive = mode === 'immersive' && !peeking;
     box.setAttribute('data-mode', effectiveImmersive ? 'immersive' : 'bilingual');
-    const hdrHtml = mode === 'immersive'
-      ? `<div class="ag-ps-thought-zh-hdr"><button type="button" class="ag-ps-thought-peek">${peeking ? '隐藏原文' : '查看原文'}</button></div>`
-      : `<div class="ag-ps-thought-zh-hdr"><span>译文</span></div>`;
-    box.innerHTML = `${hdrHtml}<div>${escapeHtml(zhText)}</div>`;
+    const renderSig = `${mode}|${peeking ? '1' : '0'}|${zhText}`;
+    if (box.getAttribute('data-render-sig') !== renderSig) {
+      box.setAttribute('data-render-sig', renderSig);
+      const hdrHtml = mode === 'immersive'
+        ? `<div class="ag-ps-thought-zh-hdr"><button type="button" class="ag-ps-thought-peek">${peeking ? '隐藏原文' : '查看原文'}</button></div>`
+        : `<div class="ag-ps-thought-zh-hdr"><span>译文</span></div>`;
+      box.innerHTML = `${hdrHtml}<div>${renderThoughtTextWithFileRefs(zhText)}</div>`;
+    }
     if (effectiveImmersive) {
       bodyEl.classList.add('ag-ps-thought-src-hidden');
       bodyEl.classList.remove('ag-ps-thought-src-dim');
@@ -3184,26 +3603,41 @@
       applyThoughtDisplay(bodyEl, '', 'off');
       return;
     }
+    const rawTxtNow = bodyEl.textContent || '';
+    const rawSig = `${rawTxtNow.length}:${rawTxtNow.slice(0, 24)}:${rawTxtNow.slice(-24)}`;
+    const memo = thoughtTextMemo.get(bodyEl);
+    if (memo && memo.zh && memo.rawSig === rawSig) {
+      const box = applyThoughtDisplay(bodyEl, memo.zh, mode);
+      if (triggerBtn && box) thoughtBoxByTrigger.set(triggerBtn, { box, bodyEl });
+      return;
+    }
     const srcText = extractCleanThoughtText(bodyEl);
     if (!looksMostlyEnglish(srcText)) return;
     const clipped = srcText.slice(0, 9800);
-    const memo = thoughtTextMemo.get(bodyEl);
     if (memo && memo.src === clipped && memo.zh) {
+      memo.rawSig = rawSig;
       const box = applyThoughtDisplay(bodyEl, memo.zh, mode);
       if (triggerBtn && box) thoughtBoxByTrigger.set(triggerBtn, { box, bodyEl });
       return;
     }
     if (thoughtInFlight.has(bodyEl)) return;
     const myVer = ++thoughtSeq;
-    thoughtTextMemo.set(bodyEl, { src: clipped, zh: memo ? memo.zh : '', ver: myVer });
+    const startRawSig = rawSig;
     thoughtInFlight.add(bodyEl);
+    let needFollowUp = false;
     Promise.resolve(window.__agProjectCall('translateText', { text: clipped, targetLang: 'zh-CN' }, 12000))
       .then((res) => {
         if (disposed || !bodyEl.isConnected) return;
-        const latest = thoughtTextMemo.get(bodyEl);
-        if (!latest || latest.ver !== myVer) return; // Discard stale response
         if (res && res.ok && res.translated && !res.skipped) {
-          thoughtTextMemo.set(bodyEl, { src: clipped, zh: res.translated, ver: myVer });
+          const curTxt = bodyEl.textContent || '';
+          const curSig = `${curTxt.length}:${curTxt.slice(0, 24)}:${curTxt.slice(-24)}`;
+          thoughtTextMemo.set(bodyEl, {
+            src: clipped,
+            zh: res.translated,
+            ver: myVer,
+            rawSig: curSig === startRawSig ? startRawSig : ''
+          });
+          if (curSig !== startRawSig) needFollowUp = true;
           const box = applyThoughtDisplay(bodyEl, res.translated, prefs.thoughtMode);
           if (triggerBtn && box) thoughtBoxByTrigger.set(triggerBtn, { box, bodyEl });
         }
@@ -3211,6 +3645,9 @@
       .catch(() => {})
       .finally(() => {
         thoughtInFlight.delete(bodyEl);
+        if (needFollowUp && !disposed && bodyEl.isConnected && prefs.thoughtMode !== 'off') {
+          translateThoughtContainer(bodyEl, triggerBtn);
+        }
       });
   }
 
@@ -3296,18 +3733,51 @@
     return '';
   }
 
+  let antiClaudeQuotaCacheMemo = undefined;
+  let antiClaudeQuotaCacheMemoAt = 0;
+  let antiClaudeQuotaCacheMemoFam = '';
+
+  function detectActiveComposerFamily() {
+    try {
+      const activeBox = getActiveInputBox();
+      const trig = (activeBox && activeBox.querySelector('button[data-testid="model-selector-trigger"]'))
+        || document.querySelector('button[data-testid="model-selector-trigger"]');
+      const label = ((trig && trig.textContent) || '').toLowerCase();
+      if (label.includes('claude') || label.includes('gpt')) return 'claude';
+      if (label.includes('gemini')) return 'gemini';
+    } catch {}
+    return '';
+  }
+
   function readAntiClaudeQuotaCache() {
+    const checkNowMs = Date.now();
+    const curFam = detectActiveComposerFamily();
+    if (
+      antiClaudeQuotaCacheMemo !== undefined &&
+      antiClaudeQuotaCacheMemoFam === curFam &&
+      checkNowMs - antiClaudeQuotaCacheMemoAt < 1000
+    ) {
+      return antiClaudeQuotaCacheMemo;
+    }
+    antiClaudeQuotaCacheMemoAt = checkNowMs;
+    antiClaudeQuotaCacheMemoFam = curFam;
     try {
       const raw = typeof localStorage === 'object' && localStorage ? localStorage.getItem(ANTI_CLAUDE_QUOTA_CACHE_KEY) : null;
-      if (!raw) return null;
+      if (!raw) {
+        antiClaudeQuotaCacheMemo = null;
+        return null;
+      }
       const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.groups) || parsed.groups.length === 0) return null;
+      if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.groups) || parsed.groups.length === 0) {
+        antiClaudeQuotaCacheMemo = null;
+        return null;
+      }
 
       const rawKey = String(parsed.accountKey || '').trim();
       const firstSeg = rawKey.split('|')[0].trim().toLowerCase();
       const accountEmail = firstSeg.includes('@') && firstSeg.length <= 254 ? firstSeg : '';
       const tierName = String(parsed.tierName || '').trim().slice(0, 48);
-      const nowMs = Date.now();
+      const nowMs = checkNowMs;
 
       const detectActiveFamily = () => {
         try {
@@ -3387,7 +3857,10 @@
         }
       }
 
-      if (!parsedGroups.length) return null;
+      if (!parsedGroups.length) {
+        antiClaudeQuotaCacheMemo = null;
+        return null;
+      }
       const activeFam = detectActiveFamily();
       const preferred = (activeFam && parsedGroups.find((g) => g.famKey === activeFam)) || parsedGroups[0];
       const all5 = parsedGroups.map((g) => g.g5).filter((n) => typeof n === 'number');
@@ -3398,7 +3871,7 @@
       const reset7dAt = preferred.r7 || (parsedGroups.find((g) => g.r7)?.r7 || '');
       const vals = [pct5h, pct7d].filter((n) => typeof n === 'number');
       const minPct = vals.length ? Math.min(...vals) : null;
-      return {
+      antiClaudeQuotaCacheMemo = {
         pct5h,
         pct7d,
         minPct,
@@ -3409,7 +3882,9 @@
         tierName,
         observedAt: Number(parsed.ts) || nowMs
       };
+      return antiClaudeQuotaCacheMemo;
     } catch {
+      antiClaudeQuotaCacheMemo = null;
       return null;
     }
   }
@@ -3817,6 +4292,10 @@
     savePrefs();
     if (key === 'mascotSize') {
       applyMascotSizeVars(document.getElementById('ag-ps-mascot-dock'), true);
+    } else if (key === 'performanceMode' || key === 'ignoreReducedMotion') {
+      const busy = isAgentGenerating();
+      syncStreamObserver(busy);
+      syncMascotDock(busy);
     }
     emitBus('prefs');
     const pop = document.getElementById('ag-ps-popover');
@@ -4207,7 +4686,7 @@
           syncUsageExtraMount();
           const card = document.querySelector('#ag-claude-ov-sections [data-ov-card="usage"]');
           if (card) {
-            card.scrollIntoView({ behavior: REDUCED_MOTION ? 'auto' : 'smooth', block: 'center' });
+            card.scrollIntoView({ behavior: isEffectivelyReducedMotion() ? 'auto' : 'smooth', block: 'center' });
             card.classList.remove('ag-ps-turn-pulse');
             void card.offsetWidth;
             card.classList.add('ag-ps-turn-pulse');
@@ -4377,6 +4856,15 @@
       savePrefs();
       emitBus('prefs');
       applyMascotSizeVars(document.getElementById('ag-ps-mascot-dock'), true);
+    });
+    pop.addEventListener('keydown', (e) => {
+      const extSecEl = e.target && e.target.closest ? e.target.closest('[data-ext-sec]') : null;
+      if (extSecEl) {
+        const sec = registeredPanelSections.find((s) => s.id === extSecEl.getAttribute('data-ext-sec'));
+        if (sec && typeof sec.onKeyDown === 'function') {
+          try { sec.onKeyDown(e, buildBusHelpers()); } catch {}
+        }
+      }
     });
     document.body.appendChild(pop);
     onCleanup(() => pop.remove());
@@ -5231,6 +5719,7 @@
     getViewportEl: getActiveViewportEl,
     getThemeAccent,
     getQuotaState,
+    getConversationNav: getConversationNavSnapshot,
     openWorkbench: openPrismWorkbenchQuick,
     showToast: showJumpToast,
     refreshPopover: () => {
@@ -5279,6 +5768,7 @@
     }
   });
 
+  syncToolbarButtons();
   tickAll();
   const intervalId = setInterval(tickAll, 2400);
   onCleanup(() => clearInterval(intervalId));

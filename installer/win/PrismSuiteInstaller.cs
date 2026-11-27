@@ -5,19 +5,58 @@ using System.Drawing;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Anti-Claude Prism Suite 一键安装器")]
 [assembly: AssemblyDescription("Anti-Claude Prism Suite Standalone All-in-One Installer (Kernel + Extensions + prism-files + prism-cua + chrome-bridge)")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.8.4.0")]
-[assembly: AssemblyFileVersion("0.8.4.0")]
+[assembly: AssemblyVersion("0.9.0.0")]
+[assembly: AssemblyFileVersion("0.9.0.0")]
 
 namespace AntiClaudePrismSuiteInstaller
 {
+    [ComImport]
+    [Guid("00021401-0000-0000-C000-000000000046")]
+    internal class ShellLinkCoClass
+    {
+    }
+
+    [ComImport]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    [Guid("000214F9-0000-0000-C000-000000000046")]
+    internal interface IShellLinkW
+    {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszFile, int cch, IntPtr pfd, uint fFlags);
+        void GetIDList(out IntPtr ppidl);
+        void SetIDList(IntPtr pidl);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cch);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszDir, int cch);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszArgs, int cch);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
+        void GetHotkey(out ushort pwHotkey);
+        void SetHotkey(ushort wHotkey);
+        void GetShowCmd(out int piShowCmd);
+        void SetShowCmd(int iShowCmd);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cch, out int piIcon);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
+        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, uint dwReserved);
+        void Resolve(IntPtr hwnd, uint fFlags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
+    }
+
+    internal sealed class NodeRuntimeResolution
+    {
+        public string ExePath;
+        public bool UseElectronAsNode;
+    }
+
     internal sealed class PayloadEntry
     {
         public string ResourceName;
@@ -248,6 +287,58 @@ namespace AntiClaudePrismSuiteInstaller
             return string.Join(Path.DirectorySeparatorChar.ToString(), parts);
         }
 
+        private const uint MOVEFILE_REPLACE_EXISTING = 0x00000001;
+        private const uint MOVEFILE_WRITE_THROUGH = 0x00000008;
+
+        private static readonly Guid FOLDERID_Desktop = new Guid("B4BFCC3A-DB2C-424C-B029-7FE99A87C641");
+        private static readonly Regex SafeWslDistroRegex = new Regex("^[A-Za-z0-9._-]+$", RegexOptions.CultureInvariant);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool MoveFileExW(string lpExistingFileName, string lpNewFileName, uint dwFlags);
+
+        [DllImport("shell32.dll", ExactSpelling = true)]
+        private static extern int SHGetKnownFolderPath(
+            [MarshalAs(UnmanagedType.LPStruct)] Guid rfid,
+            uint dwFlags,
+            IntPtr hToken,
+            out IntPtr ppszPath);
+
+        private static bool MoveReplaceFileAtomic(string srcTmpPath, string destPath)
+        {
+            if (MoveFileExW(srcTmpPath, destPath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+            {
+                return true;
+            }
+            // Fallback without WRITE_THROUGH for network/UNC redirectors (e.g. \\wsl.localhost 9P shares)
+            return MoveFileExW(srcTmpPath, destPath, MOVEFILE_REPLACE_EXISTING);
+        }
+
+        private static void CleanupUnlockedOldSiblings(string parentDir, string baseFileName)
+        {
+            if (string.IsNullOrEmpty(parentDir) || string.IsNullOrEmpty(baseFileName)) return;
+            try
+            {
+                string[] stale = Directory.GetFiles(parentDir, baseFileName + ".old.*");
+                for (int i = 0; i < stale.Length; i++)
+                {
+                    try
+                    {
+                        if (!IsExistingReparsePoint(stale[i]))
+                        {
+                            File.Delete(stale[i]);
+                        }
+                    }
+                    catch
+                    {
+                        // Still held by a running process; will be cleaned on next update/prune
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
         private static void WriteResourceToFile(Assembly asm, string resourceName, string destPath)
         {
             string parent = Path.GetDirectoryName(destPath);
@@ -284,7 +375,52 @@ namespace AntiClaudePrismSuiteInstaller
                 {
                     throw new InvalidOperationException("安全拦截：目标文件被替换为重解析点：" + destPath);
                 }
-                File.Copy(tmpPath, destPath, true);
+
+                if (!MoveReplaceFileAtomic(tmpPath, destPath))
+                {
+                    int firstErr = Marshal.GetLastWin32Error();
+                    bool hotSwapped = false;
+                    if (File.Exists(destPath) && !IsExistingReparsePoint(destPath))
+                    {
+                        try
+                        {
+                            FileAttributes curAttrs = File.GetAttributes(destPath);
+                            if ((curAttrs & FileAttributes.ReadOnly) != 0)
+                            {
+                                File.SetAttributes(destPath, curAttrs & ~FileAttributes.ReadOnly);
+                            }
+                        }
+                        catch { }
+
+                        string oldPath = destPath + ".old." + unchecked((uint)Environment.TickCount).ToString();
+                        if (File.Exists(oldPath))
+                        {
+                            oldPath = oldPath + "-" + Guid.NewGuid().ToString("N").Substring(0, 6);
+                        }
+                        if (!IsExistingReparsePoint(destPath) && MoveFileExW(destPath, oldPath, MOVEFILE_REPLACE_EXISTING))
+                        {
+                            if (MoveReplaceFileAtomic(tmpPath, destPath))
+                            {
+                                hotSwapped = true;
+                                try { File.Delete(oldPath); } catch { }
+                            }
+                            else
+                            {
+                                int secondErr = Marshal.GetLastWin32Error();
+                                try { MoveFileExW(oldPath, destPath, MOVEFILE_REPLACE_EXISTING); } catch { }
+                                throw new IOException(string.Format("原子替换运行中文件失败（Win32={0}）：{1}", secondErr, destPath));
+                            }
+                        }
+                    }
+
+                    if (!hotSwapped)
+                    {
+                        throw new IOException(string.Format("原子写入目标文件失败（Win32={0}）：{1}", firstErr, destPath));
+                    }
+                }
+
+                createdTmp = false;
+                CleanupUnlockedOldSiblings(parent, Path.GetFileName(destPath));
             }
             finally
             {
@@ -364,11 +500,103 @@ namespace AntiClaudePrismSuiteInstaller
         /// </summary>
         private static bool RunProcessNoHandleInherit(string exePath, string arguments, string workingDir, int timeoutMs)
         {
+            return RunProcessNoHandleInherit(exePath, arguments, workingDir, timeoutMs, false);
+        }
+
+        private static IntPtr BuildUnicodeEnvironmentBlock(Dictionary<string, string> overrides)
+        {
+            SortedDictionary<string, string> merged = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (System.Collections.DictionaryEntry de in Environment.GetEnvironmentVariables())
+            {
+                string k = de.Key as string;
+                if (!string.IsNullOrEmpty(k) && !k.Contains("="))
+                {
+                    merged[k] = Convert.ToString(de.Value) ?? string.Empty;
+                }
+            }
+            if (overrides != null)
+            {
+                foreach (KeyValuePair<string, string> kv in overrides)
+                {
+                    if (kv.Value == null) merged.Remove(kv.Key);
+                    else merged[kv.Key] = kv.Value;
+                }
+            }
+            StringBuilder sb = new StringBuilder();
+            foreach (KeyValuePair<string, string> kv in merged)
+            {
+                sb.Append(kv.Key).Append('=').Append(kv.Value).Append('\0');
+            }
+            sb.Append('\0');
+            byte[] bytes = Encoding.Unicode.GetBytes(sb.ToString());
+            IntPtr block = Marshal.AllocHGlobal(bytes.Length);
+            Marshal.Copy(bytes, 0, block, bytes.Length);
+            return block;
+        }
+
+        private static bool IsProcessRunningElevated()
+        {
+            try
+            {
+                using (System.Security.Principal.WindowsIdentity id = System.Security.Principal.WindowsIdentity.GetCurrent())
+                {
+                    System.Security.Principal.WindowsPrincipal pr = new System.Security.Principal.WindowsPrincipal(id);
+                    return pr.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static List<string> EnumerateShortcutFilesSafe(string rootDir)
+        {
+            List<string> results = new List<string>();
+            if (string.IsNullOrEmpty(rootDir) || !Directory.Exists(rootDir)) return results;
+            Stack<string> dirs = new Stack<string>();
+            dirs.Push(rootDir);
+            int visited = 0;
+            while (dirs.Count > 0 && visited < 256)
+            {
+                string cur = dirs.Pop();
+                visited++;
+                if (cur != rootDir && IsExistingReparsePoint(cur)) continue;
+                try
+                {
+                    string[] files = Directory.GetFiles(cur, "*Antigravity*.lnk", SearchOption.TopDirectoryOnly);
+                    for (int i = 0; i < files.Length; i++)
+                    {
+                        if (!IsExistingReparsePoint(files[i])) results.Add(files[i]);
+                    }
+                }
+                catch { }
+                try
+                {
+                    string[] subDirs = Directory.GetDirectories(cur, "*", SearchOption.TopDirectoryOnly);
+                    for (int i = 0; i < subDirs.Length; i++)
+                    {
+                        if (!IsExistingReparsePoint(subDirs[i])) dirs.Push(subDirs[i]);
+                    }
+                }
+                catch { }
+            }
+            return results;
+        }
+
+        private static bool RunProcessNoHandleInherit(string exePath, string arguments, string workingDir, int timeoutMs, bool useElectronAsNode)
+        {
+            const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
             const uint CREATE_NO_WINDOW = 0x08000000;
             const uint WAIT_OBJECT_0 = 0x00000000;
 
-            string prevNoNet = Environment.GetEnvironmentVariable("ANTI_CLAUDE_NO_NETWORK");
-            Environment.SetEnvironmentVariable("ANTI_CLAUDE_NO_NETWORK", "1");
+            Dictionary<string, string> envOverrides = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            envOverrides["ANTI_CLAUDE_NO_NETWORK"] = "1";
+            if (useElectronAsNode)
+            {
+                envOverrides["ELECTRON_RUN_AS_NODE"] = "1";
+            }
+            IntPtr envBlock = BuildUnicodeEnvironmentBlock(envOverrides);
             try
             {
                 STARTUPINFOW si = new STARTUPINFOW();
@@ -387,8 +615,8 @@ namespace AntiClaudePrismSuiteInstaller
                     IntPtr.Zero,
                     IntPtr.Zero,
                     false, // bInheritHandles = FALSE: strictly prevents pipe inheritance into daemon.mjs
-                    CREATE_NO_WINDOW,
-                    IntPtr.Zero,
+                    CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+                    envBlock,
                     workingDir,
                     ref si,
                     out pi);
@@ -421,7 +649,7 @@ namespace AntiClaudePrismSuiteInstaller
             }
             finally
             {
-                Environment.SetEnvironmentVariable("ANTI_CLAUDE_NO_NETWORK", prevNoNet);
+                if (envBlock != IntPtr.Zero) Marshal.FreeHGlobal(envBlock);
             }
         }
 
@@ -443,9 +671,108 @@ namespace AntiClaudePrismSuiteInstaller
             }
         }
 
-        public static string FindWindowsNodeExe()
+        private static string GetUserDesktopFolderPath()
+        {
+            IntPtr ptr = IntPtr.Zero;
+            try
+            {
+                int hr = SHGetKnownFolderPath(FOLDERID_Desktop, 0, IntPtr.Zero, out ptr);
+                if (hr == 0 && ptr != IntPtr.Zero)
+                {
+                    string known = Marshal.PtrToStringUni(ptr);
+                    if (!string.IsNullOrEmpty(known))
+                    {
+                        return known;
+                    }
+                }
+            }
+            catch
+            {
+            }
+            finally
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    try { Marshal.FreeCoTaskMem(ptr); } catch { }
+                }
+            }
+            return Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        }
+
+        private static bool TryReadShortcut(string lnkPath, out string targetPath, out string arguments)
+        {
+            targetPath = string.Empty;
+            arguments = string.Empty;
+            object comObj = null;
+            try
+            {
+                comObj = new ShellLinkCoClass();
+                IPersistFile persist = (IPersistFile)comObj;
+                persist.Load(lnkPath, 0);
+                IShellLinkW link = (IShellLinkW)comObj;
+                StringBuilder sbTarget = new StringBuilder(1024);
+                link.GetPath(sbTarget, sbTarget.Capacity, IntPtr.Zero, 0);
+                StringBuilder sbArgs = new StringBuilder(2048);
+                link.GetArguments(sbArgs, sbArgs.Capacity);
+                targetPath = sbTarget.ToString();
+                arguments = sbArgs.ToString();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                if (comObj != null && Marshal.IsComObject(comObj))
+                {
+                    try { Marshal.FinalReleaseComObject(comObj); } catch { }
+                }
+            }
+        }
+
+        private static bool IsTrustedExecutableLocation(string candidatePath, bool elevated)
+        {
+            if (string.IsNullOrEmpty(candidatePath)) return false;
+            if (!elevated) return true;
+            try
+            {
+                string full = Path.GetFullPath(candidatePath);
+                string[] trustedRoots = new string[]
+                {
+                    Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                    Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+                };
+                for (int i = 0; i < trustedRoots.Length; i++)
+                {
+                    string root = trustedRoots[i];
+                    if (string.IsNullOrEmpty(root)) continue;
+                    string normRoot = Path.GetFullPath(root).TrimEnd('\\') + "\\";
+                    if (full.StartsWith(normRoot, StringComparison.OrdinalIgnoreCase)) return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private static List<string> CollectWindowsNodeCandidates()
         {
             List<string> candidates = new List<string>();
+            bool elevated = IsProcessRunningElevated();
+            string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            string pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            string localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+            // Standard protected/user-owned install directories always take priority over arbitrary %PATH%
+            if (!string.IsNullOrEmpty(pf)) candidates.Add(Path.Combine(Path.Combine(pf, "nodejs"), "node.exe"));
+            if (!string.IsNullOrEmpty(pf86)) candidates.Add(Path.Combine(Path.Combine(pf86, "nodejs"), "node.exe"));
+            if (!string.IsNullOrEmpty(localApp)) candidates.Add(Path.Combine(Path.Combine(localApp, "Programs"), Path.Combine("nodejs", "node.exe")));
+            if (!string.IsNullOrEmpty(profile)) candidates.Add(Path.Combine(Path.Combine(profile, ".volta"), Path.Combine("bin", "node.exe")));
+
             string pathEnv = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
             string[] pathDirs = pathEnv.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
             for (int i = 0; i < pathDirs.Length; i++)
@@ -455,26 +782,23 @@ namespace AntiClaudePrismSuiteInstaller
                     string dir = pathDirs[i].Trim().Trim('"');
                     if (dir.Length > 0)
                     {
-                        candidates.Add(Path.Combine(dir, "node.exe"));
+                        string cand = Path.Combine(dir, "node.exe");
+                        if (IsTrustedExecutableLocation(cand, elevated))
+                        {
+                            candidates.Add(cand);
+                        }
                     }
                 }
                 catch { }
             }
 
-            string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-            string pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-            string localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-
-            if (!string.IsNullOrEmpty(pf)) candidates.Add(Path.Combine(Path.Combine(pf, "nodejs"), "node.exe"));
-            if (!string.IsNullOrEmpty(localApp)) candidates.Add(Path.Combine(Path.Combine(localApp, "Programs"), Path.Combine("nodejs", "node.exe")));
-            if (!string.IsNullOrEmpty(profile)) candidates.Add(Path.Combine(Path.Combine(profile, ".volta"), Path.Combine("bin", "node.exe")));
-            if (!string.IsNullOrEmpty(pf86)) candidates.Add(Path.Combine(Path.Combine(pf86, "nodejs"), "node.exe"));
-
             // nvm-windows symlink or active dir
             string nvmSymlink = Environment.GetEnvironmentVariable("NVM_SYMLINK");
-            if (!string.IsNullOrEmpty(nvmSymlink)) candidates.Add(Path.Combine(nvmSymlink.Trim().Trim('"'), "node.exe"));
+            if (!string.IsNullOrEmpty(nvmSymlink))
+            {
+                string nvmCand = Path.Combine(nvmSymlink.Trim().Trim('"'), "node.exe");
+                if (IsTrustedExecutableLocation(nvmCand, elevated)) candidates.Add(nvmCand);
+            }
             if (!string.IsNullOrEmpty(appData))
             {
                 string nvmDir = Path.Combine(appData, "nvm");
@@ -492,6 +816,88 @@ namespace AntiClaudePrismSuiteInstaller
                     catch { }
                 }
             }
+            return candidates;
+        }
+
+        private static int GetNodeMajorVersion(string nodeExe, bool useElectronAsNode)
+        {
+            if (string.IsNullOrEmpty(nodeExe) || !File.Exists(nodeExe)) return 0;
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = nodeExe;
+                psi.Arguments = "--version";
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                psi.StandardOutputEncoding = Encoding.UTF8;
+                if (useElectronAsNode)
+                {
+                    psi.EnvironmentVariables["ELECTRON_RUN_AS_NODE"] = "1";
+                }
+                string raw = RunProcessAndReadStdout(psi, 3000);
+                if (string.IsNullOrEmpty(raw)) return 0;
+                Match m = Regex.Match(raw.Trim(), @"v?(\d+)\.\d+");
+                if (m.Success)
+                {
+                    int major = 0;
+                    if (int.TryParse(m.Groups[1].Value, out major))
+                    {
+                        return major;
+                    }
+                }
+            }
+            catch
+            {
+            }
+            return 0;
+        }
+
+        public static string FindWindowsNodeExe()
+        {
+            List<string> candidates = CollectWindowsNodeCandidates();
+            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string firstExisting = null;
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(candidates[i]) || !File.Exists(candidates[i])) continue;
+                    string full = Path.GetFullPath(candidates[i]);
+                    if (!seen.Add(full)) continue;
+                    if (firstExisting == null) firstExisting = full;
+                    if (GetNodeMajorVersion(full, false) >= 22)
+                    {
+                        return full;
+                    }
+                }
+                catch { }
+            }
+            return firstExisting;
+        }
+
+        public static string FindAntigravityExe()
+        {
+            List<string> candidates = new List<string>();
+            string localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            string pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+
+            if (!string.IsNullOrEmpty(localApp))
+            {
+                candidates.Add(Path.Combine(Path.Combine(localApp, "Programs"), Path.Combine("Antigravity", "Antigravity.exe")));
+                candidates.Add(Path.Combine(Path.Combine(localApp, "Programs"), Path.Combine("antigravity", "Antigravity.exe")));
+            }
+            if (!string.IsNullOrEmpty(pf))
+            {
+                candidates.Add(Path.Combine(pf, Path.Combine("Antigravity", "Antigravity.exe")));
+            }
+            if (!string.IsNullOrEmpty(pf86))
+            {
+                candidates.Add(Path.Combine(pf86, Path.Combine("Antigravity", "Antigravity.exe")));
+            }
+            candidates.Add(@"D:\Program Files\Antigravity\Antigravity.exe");
 
             for (int i = 0; i < candidates.Count; i++)
             {
@@ -504,6 +910,97 @@ namespace AntiClaudePrismSuiteInstaller
                 }
                 catch { }
             }
+
+            bool elevated = IsProcessRunningElevated();
+            // Probe running Antigravity process if open
+            try
+            {
+                Process[] procs = Process.GetProcessesByName("Antigravity");
+                for (int p = 0; p < procs.Length; p++)
+                {
+                    try
+                    {
+                        string modFile = procs[p].MainModule.FileName;
+                        if (!string.IsNullOrEmpty(modFile) && File.Exists(modFile) && IsTrustedExecutableLocation(modFile, elevated))
+                        {
+                            return Path.GetFullPath(modFile);
+                        }
+                    }
+                    catch { }
+                    finally
+                    {
+                        try { procs[p].Dispose(); } catch { }
+                    }
+                }
+            }
+            catch { }
+
+            // Fallback: discover custom install path from Desktop / Start Menu shortcuts via IShellLinkW
+            string[] shortcutRoots = new string[]
+            {
+                GetUserDesktopFolderPath(),
+                Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory),
+                Environment.GetFolderPath(Environment.SpecialFolder.Programs),
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms)
+            };
+            HashSet<string> visitedRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int r = 0; r < shortcutRoots.Length; r++)
+            {
+                string root = shortcutRoots[r];
+                if (string.IsNullOrEmpty(root) || !visitedRoots.Add(root) || !Directory.Exists(root)) continue;
+                List<string> links = EnumerateShortcutFilesSafe(root);
+                for (int k = 0; k < links.Count; k++)
+                {
+                    string scTarget;
+                    string scArgs;
+                    if (TryReadShortcut(links[k], out scTarget, out scArgs)
+                        && !string.IsNullOrEmpty(scTarget)
+                        && scTarget.EndsWith("Antigravity.exe", StringComparison.OrdinalIgnoreCase)
+                        && File.Exists(scTarget)
+                        && IsTrustedExecutableLocation(scTarget, elevated))
+                    {
+                        return Path.GetFullPath(scTarget);
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        public static NodeRuntimeResolution ResolveNodeOrElectronRuntime()
+        {
+            List<string> nodeCandidates = CollectWindowsNodeCandidates();
+            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < nodeCandidates.Count; i++)
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(nodeCandidates[i]) || !File.Exists(nodeCandidates[i])) continue;
+                    string full = Path.GetFullPath(nodeCandidates[i]);
+                    if (!seen.Add(full)) continue;
+                    if (GetNodeMajorVersion(full, false) >= 22)
+                    {
+                        return new NodeRuntimeResolution
+                        {
+                            ExePath = full,
+                            UseElectronAsNode = false
+                        };
+                    }
+                }
+                catch { }
+            }
+
+            string agyExe = FindAntigravityExe();
+            if (!string.IsNullOrEmpty(agyExe) && File.Exists(agyExe))
+            {
+                return new NodeRuntimeResolution
+                {
+                    ExePath = agyExe,
+                    UseElectronAsNode = true
+                };
+            }
+
             return null;
         }
 
@@ -512,67 +1009,59 @@ namespace AntiClaudePrismSuiteInstaller
             int updated = 0;
             try
             {
-                string[] userRoots = new string[]
+                string[] rawRoots = new string[]
                 {
+                    GetUserDesktopFolderPath(),
                     Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
                     Environment.GetFolderPath(Environment.SpecialFolder.Programs)
                 };
-                Type shellType = Type.GetTypeFromProgID("WScript.Shell");
-                if (shellType == null) return 0;
-                object shell = Activator.CreateInstance(shellType);
-                try
+                HashSet<string> seenRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                for (int r = 0; r < rawRoots.Length; r++)
                 {
-                    for (int r = 0; r < userRoots.Length; r++)
+                    string root = rawRoots[r];
+                    if (string.IsNullOrEmpty(root) || !seenRoots.Add(root) || !Directory.Exists(root)) continue;
+                    List<string> links = EnumerateShortcutFilesSafe(root);
+                    for (int k = 0; k < links.Count; k++)
                     {
-                        if (string.IsNullOrEmpty(userRoots[r]) || !Directory.Exists(userRoots[r])) continue;
-                        string[] links;
+                        if (IsExistingReparsePoint(links[k])) continue;
+                        object comObj = null;
                         try
                         {
-                            links = Directory.GetFiles(userRoots[r], "*Antigravity*.lnk", SearchOption.AllDirectories);
+                            comObj = new ShellLinkCoClass();
+                            IPersistFile persist = (IPersistFile)comObj;
+                            persist.Load(links[k], 0);
+                            IShellLinkW link = (IShellLinkW)comObj;
+
+                            StringBuilder sbTarget = new StringBuilder(1024);
+                            link.GetPath(sbTarget, sbTarget.Capacity, IntPtr.Zero, 0);
+                            string targetPath = sbTarget.ToString();
+                            if (!targetPath.EndsWith("Antigravity.exe", StringComparison.OrdinalIgnoreCase)) continue;
+
+                            StringBuilder sbArgs = new StringBuilder(4096);
+                            link.GetArguments(sbArgs, sbArgs.Capacity);
+                            if (sbArgs.Length >= sbArgs.Capacity - 64) continue; // Guard against truncating abnormally long arguments
+                            string args = sbArgs.ToString();
+                            if (args.IndexOf("--remote-debugging-port", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+
+                            string nextArgs = string.IsNullOrEmpty(args.Trim())
+                                ? "--remote-debugging-port=0"
+                                : (args.Trim() + " --remote-debugging-port=0");
+                            link.SetArguments(nextArgs);
+                            persist.Save(links[k], true);
+                            updated++;
+                            log(string.Format("  [快捷方式] 已自动启用 CDP 调试端口: {0}", links[k]));
                         }
                         catch
                         {
-                            continue;
+                            // Safely skip read-only or locked shortcuts
                         }
-                        for (int k = 0; k < links.Length; k++)
+                        finally
                         {
-                            object shortcut = null;
-                            try
+                            if (comObj != null && Marshal.IsComObject(comObj))
                             {
-                                shortcut = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { links[k] });
-                                if (shortcut == null) continue;
-                                Type scType = shortcut.GetType();
-                                string targetPath = Convert.ToString(scType.InvokeMember("TargetPath", BindingFlags.GetProperty, null, shortcut, null)) ?? string.Empty;
-                                if (!targetPath.EndsWith("Antigravity.exe", StringComparison.OrdinalIgnoreCase)) continue;
-                                string args = Convert.ToString(scType.InvokeMember("Arguments", BindingFlags.GetProperty, null, shortcut, null)) ?? string.Empty;
-                                if (args.IndexOf("--remote-debugging-port", StringComparison.OrdinalIgnoreCase) >= 0) continue;
-                                string nextArgs = string.IsNullOrEmpty(args.Trim())
-                                    ? "--remote-debugging-port=0"
-                                    : (args.Trim() + " --remote-debugging-port=0");
-                                scType.InvokeMember("Arguments", BindingFlags.SetProperty, null, shortcut, new object[] { nextArgs });
-                                scType.InvokeMember("Save", BindingFlags.InvokeMethod, null, shortcut, null);
-                                updated++;
-                                log(string.Format("  [快捷方式] 已自动启用 CDP 调试端口: {0}", links[k]));
-                            }
-                            catch
-                            {
-                                // Safely skip read-only or locked shortcuts
-                            }
-                            finally
-                            {
-                                if (shortcut != null && Marshal.IsComObject(shortcut))
-                                {
-                                    try { Marshal.FinalReleaseComObject(shortcut); } catch { }
-                                }
+                                try { Marshal.FinalReleaseComObject(comObj); } catch { }
                             }
                         }
-                    }
-                }
-                finally
-                {
-                    if (shell != null && Marshal.IsComObject(shell))
-                    {
-                        try { Marshal.FinalReleaseComObject(shell); } catch { }
                     }
                 }
             }
@@ -626,8 +1115,26 @@ namespace AntiClaudePrismSuiteInstaller
                 throw new InvalidOperationException("无法解析目标目录根路径：" + fullTarget);
             }
 
+            // Allow legitimate disk-relocation NTFS Junctions on C:\Users or %USERPROFILE% itself
+            // while strictly blocking any symlink/junction inside %USERPROFILE%\.gemini\... downward!
+            string rawProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string cleanProfile = !string.IsNullOrEmpty(rawProfile) ? TrimTrailingSepPreserveRoot(rawProfile) : string.Empty;
+            bool startedAtUserProfile = false;
+            if (!string.IsNullOrEmpty(cleanProfile)
+                && (string.Equals(fullTarget, cleanProfile, StringComparison.OrdinalIgnoreCase)
+                    || IsInsideRoot(fullTarget, cleanProfile))
+                && (string.Equals(walkRoot, Path.GetPathRoot(cleanProfile) ?? string.Empty, StringComparison.OrdinalIgnoreCase)
+                    || IsInsideRoot(cleanProfile, walkRoot)
+                    || string.Equals(walkRoot, cleanProfile, StringComparison.OrdinalIgnoreCase)))
+            {
+                walkRoot = cleanProfile;
+                startedAtUserProfile = true;
+            }
+
             string rootPath = Path.GetPathRoot(walkRoot) ?? string.Empty;
-            if (!string.Equals(walkRoot, rootPath, StringComparison.OrdinalIgnoreCase) && IsExistingReparsePoint(walkRoot))
+            if (!startedAtUserProfile
+                && !string.Equals(walkRoot, rootPath, StringComparison.OrdinalIgnoreCase)
+                && IsExistingReparsePoint(walkRoot))
             {
                 throw new InvalidOperationException("安全拦截：锚点父目录为符号链接或目录联接：" + walkRoot);
             }
@@ -766,9 +1273,9 @@ namespace AntiClaudePrismSuiteInstaller
             if (activateHostDaemon)
             {
                 EnsureDebugPortOnUserShortcuts(log);
-                string nodeExe = FindWindowsNodeExe();
+                NodeRuntimeResolution rt = ResolveNodeOrElectronRuntime();
                 string installScript = Path.Combine(runtimeDir, "install.mjs");
-                if (!string.IsNullOrEmpty(nodeExe) && File.Exists(installScript))
+                if (rt != null && !string.IsNullOrEmpty(rt.ExePath) && File.Exists(installScript))
                 {
                     try
                     {
@@ -792,10 +1299,14 @@ namespace AntiClaudePrismSuiteInstaller
                             ? string.Format("\"{0}\" install --no-auto-update", installScript)
                             : string.Format("\"{0}\" install --no-auto-update --no-agents-rule", installScript);
 
-                        bool finishedInTime = RunProcessNoHandleInherit(nodeExe, installArgs, runtimeDir, 25000);
+                        bool finishedInTime = RunProcessNoHandleInherit(rt.ExePath, installArgs, runtimeDir, 25000, rt.UseElectronAsNode);
                         if (!finishedInTime)
                         {
                             log("  [提示] Anti-Claude 内核守护进程激活超时，将在下次登录时通过启动项自动拉起。");
+                        }
+                        else if (rt.UseElectronAsNode)
+                        {
+                            log("  [内核] 已复用 Antigravity 内置 Electron Node 运行时（ELECTRON_RUN_AS_NODE=1，免装 Node.js）激活后台守护进程与开机自启");
                         }
                         else
                         {
@@ -809,7 +1320,7 @@ namespace AntiClaudePrismSuiteInstaller
                 }
                 else
                 {
-                    log("  [提示] 未在 Windows PATH 检测到 Node.js (>=22)；内核文件已就位，安装 Node.js 后重跑安装器即可自动拉起守护进程。");
+                    log("  [提示] 未检测到系统 Node.js (>=22) 或本机 Antigravity.exe；内核文件已就位，安装 Antigravity 或 Node.js 后重跑安装器即可自动拉起守护进程。");
                 }
             }
 
@@ -826,18 +1337,18 @@ namespace AntiClaudePrismSuiteInstaller
 
             if (deactivateHostDaemon)
             {
-                string nodeExe = FindWindowsNodeExe();
-                if (!string.IsNullOrEmpty(nodeExe) && File.Exists(installScript))
+                NodeRuntimeResolution rt = ResolveNodeOrElectronRuntime();
+                if (rt != null && !string.IsNullOrEmpty(rt.ExePath) && File.Exists(installScript))
                 {
                     try
                     {
                         string uninstallArgs = string.Format("\"{0}\" uninstall", installScript);
-                        RunProcessNoHandleInherit(nodeExe, uninstallArgs, runtimeDir, 20000);
+                        RunProcessNoHandleInherit(rt.ExePath, uninstallArgs, runtimeDir, 20000, rt.UseElectronAsNode);
                     }
                     catch { }
                 }
 
-                // Fallback: ensure Windows Startup VBS is removed even if node.exe was absent
+                // Fallback: ensure Windows Startup VBS is removed even if runtime was absent
                 try
                 {
                     string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
@@ -1190,8 +1701,10 @@ namespace AntiClaudePrismSuiteInstaller
             try
             {
                 List<string> searchRoots = new List<string>();
+                HashSet<string> seenRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 string[] candidates = new string[]
                 {
+                    GetUserDesktopFolderPath(),
                     Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
                     Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory),
                     Environment.GetFolderPath(Environment.SpecialFolder.Programs),
@@ -1199,7 +1712,7 @@ namespace AntiClaudePrismSuiteInstaller
                 };
                 for (int i = 0; i < candidates.Length; i++)
                 {
-                    if (!string.IsNullOrEmpty(candidates[i]) && Directory.Exists(candidates[i]))
+                    if (!string.IsNullOrEmpty(candidates[i]) && seenRoots.Add(candidates[i]) && Directory.Exists(candidates[i]))
                     {
                         searchRoots.Add(candidates[i]);
                     }
@@ -1220,9 +1733,27 @@ namespace AntiClaudePrismSuiteInstaller
                     }
                     for (int k = 0; k < links.Length; k++)
                     {
-                        foundShortcuts++;
                         try
                         {
+                            string targetPath;
+                            string args;
+                            if (TryReadShortcut(links[k], out targetPath, out args))
+                            {
+                                if (!string.IsNullOrEmpty(targetPath)
+                                    && !targetPath.EndsWith("Antigravity.exe", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    continue;
+                                }
+                                foundShortcuts++;
+                                if (!string.IsNullOrEmpty(args)
+                                    && args.IndexOf("--remote-debugging-port", StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    withDebugPort++;
+                                }
+                                continue;
+                            }
+
+                            foundShortcuts++;
                             byte[] raw = File.ReadAllBytes(links[k]);
                             string ascii = Encoding.ASCII.GetString(raw);
                             string utf16 = Encoding.Unicode.GetString(raw);
@@ -1391,6 +1922,10 @@ namespace AntiClaudePrismSuiteInstaller
 
         private static string ResolveWslUncPath(string distro, string relativeSubPath)
         {
+            if (string.IsNullOrEmpty(distro) || !Regex.IsMatch(distro, "^[A-Za-z0-9._-]+$"))
+            {
+                return null;
+            }
             string[] prefixes = new string[]
             {
                 @"\\wsl.localhost\" + distro,
@@ -1418,11 +1953,15 @@ namespace AntiClaudePrismSuiteInstaller
 
         private static string QueryWslHomeWithTimeout(string distro, int timeoutMs)
         {
+            if (string.IsNullOrEmpty(distro) || !Regex.IsMatch(distro, "^[A-Za-z0-9._-]+$"))
+            {
+                return null;
+            }
             try
             {
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = "wsl.exe";
-                psi.Arguments = string.Format("-d \"{0}\" -- sh -c \"printf %s \\\"$HOME\\\" </dev/null\"", distro.Replace("\"", string.Empty));
+                psi.Arguments = string.Format("-d \"{0}\" -- sh -c \"printf %s \\\"$HOME\\\" </dev/null\"", distro);
                 psi.UseShellExecute = false;
                 psi.CreateNoWindow = true;
                 psi.RedirectStandardOutput = true;
@@ -1479,7 +2018,7 @@ namespace AntiClaudePrismSuiteInstaller
                 for (int i = 0; i < lines.Length; i++)
                 {
                     string name = lines[i].Trim();
-                    if (name.Length > 0 && seen.Add(name))
+                    if (name.Length > 0 && SafeWslDistroRegex.IsMatch(name) && seen.Add(name))
                     {
                         distros.Add(name);
                     }
@@ -1579,7 +2118,7 @@ namespace AntiClaudePrismSuiteInstaller
 
         private void InitializeUi()
         {
-            Text = "Anti-Claude Prism Suite 一键安装器 v0.8.4（独立完整版）";
+            Text = "Anti-Claude Prism Suite 一键安装器 v0.9.0（独立完整版）";
             Size = new Size(740, 660);
             MinimumSize = new Size(660, 580);
             StartPosition = FormStartPosition.CenterScreen;
@@ -1597,7 +2136,7 @@ namespace AntiClaudePrismSuiteInstaller
             header.Paint += PaintHeaderAccent;
 
             Label lblTitle = new Label();
-            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.8.4";
+            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.9.0";
             lblTitle.ForeColor = Color.White;
             lblTitle.Font = new Font("Microsoft YaHei UI", 13.5f, FontStyle.Bold);
             lblTitle.AutoSize = true;
@@ -2045,7 +2584,7 @@ namespace AntiClaudePrismSuiteInstaller
                         MessageBox.Show(
                             this,
                             isInstall
-                                ? "Anti-Claude Prism Suite v0.8.4（独立完整版）安装成功！\n\n已一并部署内置 Anti-Claude v3.1.9 增强内核、棱镜扩展套件、Chrome/Edge 扩展桥与双插件（prism-files + 默认关闭零开销的 prism-cua）。若 Antigravity 正在运行，重启一次应用即可全面生效。"
+                                ? "Anti-Claude Prism Suite v0.9.0（独立完整版）安装成功！\n\n已一并部署内置 Anti-Claude v3.1.9 增强内核、棱镜扩展套件、Chrome/Edge 扩展桥与双插件（prism-files + 默认关闭零开销的 prism-cua）。若 Antigravity 正在运行，重启一次应用即可全面生效。"
                                 : "已干净卸载选中的 Anti-Claude Prism Suite 组件。",
                             isInstall ? "安装成功" : "卸载完成",
                             MessageBoxButtons.OK,
@@ -2054,6 +2593,7 @@ namespace AntiClaudePrismSuiteInstaller
                 });
             });
             worker.IsBackground = true;
+            try { worker.SetApartmentState(ApartmentState.STA); } catch { }
             worker.Start();
         }
 

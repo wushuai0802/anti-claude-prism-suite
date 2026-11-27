@@ -3219,13 +3219,15 @@
           loading: false,
           items: [],
           query: '',
-          selectedPath: ''
+          selectedPath: '',
+          seq: 0
         },
         pins: {
           loaded: false,
           loading: false,
           items: [],
-          selectedPath: ''
+          selectedPath: '',
+          seq: 0
         },
         preview: {
           visible: false,
@@ -3377,6 +3379,29 @@
       let quotaWaitRetryTimer = 0;
       let quotaWaitRetryCount = 0;
       let cuaLeaseTimer = 0;
+      let deferredAccountsRender = false;
+      let deferredCuaRender = false;
+      let workbenchPointerDown = false;
+      let prefsSaveSeq = 0;
+
+      function hasActiveFormInput(container) {
+        const ae = document.activeElement;
+        if (!container || !ae || !container.contains(ae)) return false;
+        if (ae.isContentEditable) return true;
+        return typeof ae.matches === 'function' && ae.matches('input, textarea, select, [contenteditable="true"]');
+      }
+
+      function flushDeferredFormRenders() {
+        if (workbenchPointerDown) return;
+        if (deferredAccountsRender && !hasActiveFormInput(accountsWrap)) {
+          deferredAccountsRender = false;
+          if (appState.activeTab === 'accounts') renderAccounts();
+        }
+        if (deferredCuaRender && !hasActiveFormInput(cuaWrap)) {
+          deferredCuaRender = false;
+          if (appState.activeTab === 'cua') renderCuaTab();
+        }
+      }
       const btnFeedbackMap = new WeakMap();
       const activeFeedbackTimers = new Set();
       const FILE_TABS = new Set(['browse', 'artifacts', 'pins']);
@@ -3741,7 +3766,13 @@
             if (targetAcc && res.effectiveQuota) {
               targetAcc.effectiveQuota = res.effectiveQuota;
               targetAcc.lastQuota = res.effectiveQuota;
-              if (appState.activeTab === 'accounts') renderAccounts();
+              if (appState.activeTab === 'accounts') {
+                if (hasActiveFormInput(accountsWrap)) {
+                  deferredAccountsRender = true;
+                } else {
+                  renderAccounts();
+                }
+              }
             }
           }
         } catch {}
@@ -4459,10 +4490,12 @@
       }
 
       async function loadArtifacts() {
+        const seq = ++appState.artifacts.seq;
         appState.artifacts.loading = true;
         renderArtifacts();
         try {
           const res = await callServerTool('list_recent_artifacts', { limit: 60 });
+          if (seq !== appState.artifacts.seq) return;
           appState.artifacts.loading = false;
           appState.artifacts.loaded = true;
           if (res) {
@@ -4472,6 +4505,7 @@
           }
           renderArtifacts();
         } catch (err) {
+          if (seq !== appState.artifacts.seq) return;
           appState.artifacts.loading = false;
           renderArtifacts();
           showToast(err?.message || '读取最近产物失败', true);
@@ -4479,17 +4513,22 @@
       }
 
       async function loadPins() {
+        const seq = ++appState.pins.seq;
         appState.pins.loading = true;
         renderPins();
         try {
           const res = await callServerTool('get_state', {});
-          appState.pins.loading = false;
+          if (seq !== appState.pins.seq) return;
           appState.pins.loaded = true;
           applyStateResult(res);
         } catch (err) {
-          appState.pins.loading = false;
-          renderPins();
+          if (seq !== appState.pins.seq) return;
           showToast(err?.message || '读取收藏夹失败', true);
+        } finally {
+          if (seq === appState.pins.seq) {
+            appState.pins.loading = false;
+            renderPins();
+          }
         }
       }
 
@@ -4520,9 +4559,12 @@
       }
 
       async function persistPrefs(patch) {
+        const seq = ++prefsSaveSeq;
         try {
           const res = await callServerTool('update_state', patch);
-          applyStateResult(res);
+          if (seq === prefsSaveSeq) {
+            applyStateResult(res);
+          }
           return true;
         } catch (err) {
           showToast(err?.message || '保存设置失败', true);
@@ -6258,7 +6300,11 @@
             appState.accounts.error = err?.message || '读取账号接力状态失败';
           }
         }
-        renderAccounts();
+        if (silent && hasActiveFormInput(accountsWrap)) {
+          deferredAccountsRender = true;
+        } else {
+          renderAccounts();
+        }
       }
 
       function stopCountdown(clearState = true) {
@@ -6378,6 +6424,8 @@
       }
 
       function renderAccounts() {
+        deferredAccountsRender = false;
+        const prevAccountsScrollTop = accountsWrap ? accountsWrap.scrollTop : 0;
         renderTopbar();
         const st = appState.accounts;
         const d = st.data;
@@ -6415,7 +6463,7 @@
           accountsWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.8.4，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.9.0，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
                 `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
                 `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
               `</article>`
@@ -7218,7 +7266,7 @@
               ? `<span class="pill pill-warn">新版本 ${escapeHtml(suInfo.latestTag)}</span>`
               : st.radarLoading
                 ? '<span class="pill">检查中</span>'
-                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.8.4</span>');
+                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.9.0</span>');
         const expSnap = st.exposure || null;
         const expMcp = expSnap?.mcpExposure || appState.prefs?.mcpExposure || { fileTools: true, memoryTools: true, modelHubTools: true };
         const activeMcpCnt = (expMcp.fileTools !== false ? 2 : 0) + (expMcp.memoryTools !== false ? 4 : 0) + (expMcp.modelHubTools !== false ? 2 : 0);
@@ -7294,6 +7342,9 @@
             `<div class="accounts-col-main">${mainParts.join('')}</div>` +
             `<div class="accounts-col-side">${sideParts.join('')}</div>` +
           `</div>`;
+        if (prevAccountsScrollTop > 0) {
+          accountsWrap.scrollTop = prevAccountsScrollTop;
+        }
       }
 
       function formatCuaRemainText(expiresAtMs) {
@@ -7356,11 +7407,17 @@
           }
         }
         syncCuaLeaseCountdownTimer();
-        renderCua();
+        if (silent && hasActiveFormInput(cuaWrap)) {
+          deferredCuaRender = true;
+        } else {
+          renderCua();
+        }
       }
 
       function renderCua() {
         if (!cuaWrap) return;
+        deferredCuaRender = false;
+        const prevCuaScrollTop = cuaWrap.scrollTop;
         renderTopbar();
         const st = appState.cua;
         const d = st.data;
@@ -7395,7 +7452,7 @@
           cuaWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-cua-action="refresh">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.8.4，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程；请在 Plugins Manager 重载插件或重启一次 Antigravity。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.9.0，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程；请在 Plugins Manager 重载插件或重启一次 Antigravity。</p>` +
               `</article>`
             : `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">读取电脑操控状态失败</span><button type="button" class="mini-btn is-primary" data-cua-action="refresh">重试</button></div>` +
@@ -7639,7 +7696,11 @@
             `<div class="cua-col-main">${controlCardHtml}${browserCardHtml}</div>` +
             `<div class="cua-col-side">${rightColHtml}</div>` +
           `</div>`;
+        if (prevCuaScrollTop > 0) {
+          cuaWrap.scrollTop = prevCuaScrollTop;
+        }
       }
+      const renderCuaTab = renderCua;
 
       // Apply open_prism_files tool result
       function applyOpenToolResult(sc) {
@@ -7935,7 +7996,26 @@
         });
       }
 
+      document.addEventListener('pointerdown', () => {
+        workbenchPointerDown = true;
+      }, { passive: true, signal });
+
+      const clearWorkbenchPointerGuard = () => {
+        if (!workbenchPointerDown) return;
+        workbenchPointerDown = false;
+        if (deferredAccountsRender || deferredCuaRender) {
+          setTimeout(flushDeferredFormRenders, 80);
+        }
+      };
+      document.addEventListener('pointerup', clearWorkbenchPointerGuard, { passive: true, signal });
+      document.addEventListener('pointercancel', clearWorkbenchPointerGuard, { passive: true, signal });
+
       if (cuaWrap) {
+        cuaWrap.addEventListener('focusout', () => {
+          if (!deferredCuaRender) return;
+          setTimeout(flushDeferredFormRenders, 120);
+        }, { signal });
+
         cuaWrap.addEventListener('click', async (event) => {
           const btn = event.target.closest('button[data-cua-action]');
           if (!btn) return;
@@ -8027,6 +8107,11 @@
       }
 
       // Accounts Relay & Upstream Radar Event Delegation
+      accountsWrap.addEventListener('focusout', () => {
+        if (!deferredAccountsRender) return;
+        setTimeout(flushDeferredFormRenders, 120);
+      }, { signal });
+
       accountsWrap.addEventListener('toggle', (event) => {
         const det = event.target;
         if (det && det.matches && det.matches('details.relay-accordion[data-sec]')) {
@@ -8372,7 +8457,7 @@
             appState.accounts.selfUpdateChecking = false;
             appState.accounts.selfUpdateInfo = info;
             renderAccounts();
-            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.8.4'}`);
+            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.9.0'}`);
           } else if (act === 'self-update-repair-ask') {
             appState.accounts.selfUpdateConfirmRepair = true;
             renderAccounts();
@@ -9909,7 +9994,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.8.4' },
+            appInfo: { name: 'prism-files', version: '0.9.0' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};

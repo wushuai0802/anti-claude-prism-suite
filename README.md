@@ -1,7 +1,7 @@
 # Anti-Claude Prism Suite
 
 <p align="left">
-  <img src="https://img.shields.io/badge/version-v0.8.4-2563eb?style=flat-square" alt="Version v0.8.4" />
+  <img src="https://img.shields.io/badge/version-v0.9.0-2563eb?style=flat-square" alt="Version v0.9.0" />
   <img src="https://img.shields.io/badge/edition-All--in--One%20Standalone-059669?style=flat-square" alt="Standalone Edition" />
   <img src="https://img.shields.io/badge/kernel-Anti--Claude%20v3.1.9%20Bundled-7c3aed?style=flat-square" alt="Bundled Anti-Claude v3.1.9" />
   <img src="https://img.shields.io/badge/dependencies-0%20npm%20packages-d97706?style=flat-square" alt="Zero Runtime Dependencies" />
@@ -10,11 +10,11 @@
 
 **面向 Google Antigravity Desktop（Windows / WSL2 / macOS / Linux）的一体化独立完整版体验增强、跨厂商模型会诊、受控电脑操控（CUA）与多账号工程工作台套件。**
 
-自 **v0.6.0+** 起，本项目已**原生内嵌继承增强版 [Anti-Claude](https://github.com/hongqi7/Anti-Claude) `v3.1.9` 运行时内核（`vendor/anti-claude/`）**，并在 **v0.8.4** 全面升级为涵盖 **「内核增强 + 棱镜桌面交互扩展 + 七合一响应式工作台 + 默认关闭零开销受控电脑操控桥（独立可视化虚拟指针 + 四级防抢鼠路由 + Chrome/Edge MV3）+ 双模 SQLite FTS5 记忆 + 零依赖 SSE 模型会诊中枢 + 3 项内置工程 Skill」** 的全栈自包含套件：
-- **新用户零前置依赖**：下载运行单个安装包（或执行一条 `node install.mjs`），一次性完成「底层 CDP 守护内核 + 棱镜视觉交互扩展 + Prism 七合一工作台插件 + 默认关闭的 `prism-cua` 受控电脑操控插件 + Chrome/Edge 浏览器受控桥 + 内置规则与技能」全栈部署，**无需单独安装其他前置项目**；
-- **默认关闭零上下文损耗 · 可视化虚拟指针防抢鼠 · 全局 `Esc` 急刹**：受控电脑与浏览器操控工具独立封装在同级插件 `prism-cua` 中并默认关闭，日常写代码聊天时 `0` 额外工具 Token 开销；操控期间渲染独立鼠标穿透 **AI 虚拟指针**，对已授权网页与标准桌面 UIA / Win32 控件实现 **`0px` 物理鼠标位移、零焦点抢占**，并在系统任意窗口按下物理 **`Esc`** 键毫秒级中断急刹；
-- **老用户无感平滑升级**：完整保留本地 `ui-prefs.json` 与已隐藏说明偏好，3-way 合并保护手改过的 `config.json`，点击工作台内 **「🚀 一键更新」** 即可连同底层内核与双插件同步原地升级；
-- **零外部运行时依赖 · 零全局 Body 观察器 · Windows 零闪黑框**：全栈基于原生 Node.js ESM（`>=22`，含内置 `node:sqlite`）、`.NET Framework 4.8` 系统自带编译器与浏览器原生 API 实现；空闲 `0fps` 停帧、输入框打字 `0ms` 额外开销，全链路 Windows 子进程均强制 `windowsHide: true` 杜绝终端黑框闪烁。
+自 **v0.6.0+** 起，本项目已**原生内嵌继承增强版 [Anti-Claude](https://github.com/hongqi7/Anti-Claude) `v3.1.9` 运行时内核（`vendor/anti-claude/`）**，并在 **v0.9.0** 全面升级为涵盖 **「免预装 Node.js 一键运行内核 + 棱镜光学微交互与自定义字体扩展 + 七合一响应式工作台 + 默认关闭零开销受控电脑操控桥（独立可视化虚拟指针 + 四级防抢鼠路由 + Chrome/Edge MV3）+ 双模 SQLite FTS5 记忆 + 零依赖 SSE 模型会诊中枢 + 3 项内置工程 Skill」** 的全栈自包含套件：
+- **真正零前置依赖（免装系统 Node.js 亦可运行）**：Windows 用户双击运行单个安装包，即使电脑未安装 Node.js 也会自动复用本机 `Antigravity.exe` 内置 Electron 运行时（`ELECTRON_RUN_AS_NODE=1`）一次性完成「底层 CDP 守护内核 + 棱镜视觉交互扩展 + Prism 七合一工作台 + 默认关闭的 `prism-cua` + Chrome/Edge 浏览器受控桥 + 内置规则与技能」全栈部署；
+- **默认关闭零上下文损耗 · 可视化虚拟指针防抢鼠 · 全局 `Esc` 急刹**：受控电脑与浏览器操控工具独立封装在同级插件 `prism-cua` 中并默认关闭，日常写代码聊天时 `0` 额外工具 Token 开销；操控期间渲染独立鼠标穿透 **AI 虚拟指针**，对已授权网页与标准桌面 UIA / Win32 控件实现 **`0px` 物理鼠标位移、零焦点抢占**，全链路硬拦截密码/验证码/支付框（含 `Ctrl+V` 剪贴板粘贴防护），并在系统任意窗口按下物理 **`Esc`** 键毫秒级中断急刹；
+- **老用户无感平滑升级 · 全链路杀软零误报卫生**：完整保留本地 `ui-prefs.json` 与已隐藏说明偏好，支持运行中进程免停机 `.old` 原子热替换，采用纯二进制 `[MS-SHLLINK]` `.lnk` 编解码与标准 `[ComImport] IShellLinkW` 彻底告别 `WScript.Shell` 误报特征；
+- **零外部运行时依赖 · 零全局 Body 观察器 · 三档性能与光学质感**：全栈基于原生 ESM、`.NET Framework 4.8` 系统自带编译器与浏览器原生 API 实现；支持 `省电 / 均衡 / 满血` 三档性能模式、对话/代码独立自定义字体、长代码块吸顶折叠防跳飞、思考块 `#L` 源码直跳及 `0fps` 语义边缘余晖与紧凑双池额度胶囊。
 
 ---
 
@@ -115,7 +115,7 @@
 
 ```mermaid
 flowchart TB
-  subgraph PKG["Anti-Claude Prism Suite v0.8.4（单包独立完整版 · 零外部 npm 依赖）"]
+  subgraph PKG["Anti-Claude Prism Suite v0.9.0（单包独立完整版 · 零外部 npm 依赖）"]
     K["第 1 层 · 内置增强内核与本地 CUA Broker<br/>vendor/anti-claude/ + native/win-cua/ (v3.1.9 + 四级防抢鼠执行器 + 全局 Esc 急刹)"]
     E["第 2 层 · 棱镜前端扩展 & Chrome/Edge MV3 扩展桥<br/>extensions/prism-suite*.{css,js} + extensions/chrome-cua-bridge/"]
     P["第 3 层 · Prism 七合一工作台 & 双插件 MCP/Skills<br/>plugin/ (8 常驻工具) + plugin-cua/ (默认关闭 3 操控工具)"]
@@ -164,9 +164,10 @@ flowchart TB
 4. **名著体量换算 + 12 周热力图 + 五级水墨吐字 + 思考中译**
    - 概览底部嵌入今日 / 12 周 Token 名著折算与周一对齐热力图；
    - 水墨吐字仅在流式输出期局部挂载 `CSS.highlights`（`30fps` 限频），平时 `0ms` 零监听；思考块支持 `关闭 / 双语对照 / 沉浸中文` 三档切换。
-5. **高清防模糊视觉特效与空间避让（`prism-suite-fx` & `workflow`）**
-   - 输入框流光边框（Border Beam）、静态额度光环、3x 超采样 ThinkingOrb 粒子球、用户消息气泡着色、低额度交接横幅及切号返回条均剔除奇数宽 `translateX(-50%)` 半像素模糊，并实行动态空间碰撞避让；
-   - 支持 WSL 模式原生「在文件资源管理器中显示」路径修正、对话图片右键增强菜单（支持键盘 `↑/↓` 导航）、回复净拷与任意轮次分支新会话（Session Fork）。
+5. **高清防模糊视觉特效、光学微切面、自定义字体与三档性能模式（`prism-suite-fx` & `workflow`）**
+   - 支持 **`省电（0fps 静态节能） / 均衡 / 满血`** 三档性能模式、`忽略系统「减少动画」` 独立开关，以及**对话正文与代码等宽字体**独立预设/自定义输入；
+   - 提供 `<kbd>` 微立体键帽与文件变更/Artifact 卡片顶边 `1px` 光学高光、分屏拖拽条 `1px` 隐形极细微光线、输入框三态 `0fps` 语义边缘余晖（待确认琥珀金 / 异常珊瑚红 / 完工翡翠绿，聚焦即消退）及底栏紧凑 `5h · 7d` 双池额度胶囊；
+   - 未折叠长代码块顶栏 Sticky 吸顶 + 收起时视口 `scrollTop` 防跳飞补偿，思考块中译文源码路径 `#L` 行号一键定位跳转；保留 WSL「在文件资源管理器中显示」路径修正、图片右键菜单、回复净拷与任意轮次 Session Fork。
 
 ### 三、Prism 七合一工作台（窄栏 & 全局宽屏自适应 MCP App）
 
@@ -188,7 +189,7 @@ flowchart TB
 
 ### 四、受控电脑与浏览器操控桥（Default-Off `prism-cua` · 可视化虚拟指针 · `Esc` 急刹 · Chrome MV3 桥）
 
-针对传统 Windows Computer-Use 工具「常驻拖慢上下文、跟用户争抢物理鼠标与打字焦点、后台浏览器调试端口被封禁、最小化窗口截出纯黑图、误操作难紧急叫停」五大痛点，`v0.8.4` 采用受控架构：
+针对传统 Windows Computer-Use 工具「常驻拖慢上下文、跟用户争抢物理鼠标与打字焦点、后台浏览器调试端口被封禁、最小化窗口截出纯黑图、误操作难紧急叫停」五大痛点，`v0.9.0` 采用受控架构：
 
 1. **双插件 Default-Off + 工作台一键休眠零上下文损耗架构**：
    - `prism-files` 保持 8 个高频工具（且支持按组隐藏）；桌面与浏览器操控工具独立拆分为同级插件 **`prism-cua`**（安装后默认关闭，日常编码 `0` Token 开销）。需要让 AI 协助测试桌面软件或操作已登录网页时，在窗口左栏 **`技能与自定义 → 插件`** 开启一次 `prism-cua`，后续即可随时在工作台「电脑操控」页通过 **`🤖 AI 电脑操控工具按需开关`** 一键唤醒或休眠。
@@ -306,7 +307,7 @@ node install.mjs
 - **Q：工作台里的配置说明或「账号接力」里的 3 步指南能隐藏吗？**
   - 可以。所有说明横幅、3 步指南与恢复提醒右上角均带有 **`× 不再显示 / 收起说明`** 按钮，关闭后跨重启持久保持清爽；若后续想再次查看，随时点击工作台顶栏右上角的 **`? 说明`** 按钮即可展开或一键「恢复全部说明」。
 - **Q：安装完成后重启了 Antigravity，为什么顶栏没有出现 `✦ 棱镜` 按钮？**
-  1. 请确认本机已安装 **Node.js `>= 22`**（后台 CDP 守护进程与原生 `node:sqlite` 运行所需）；
+  1. Windows 一键安装器已支持在未安装系统 Node.js 时自动回退复用 `Antigravity.exe`（`ELECTRON_RUN_AS_NODE=1`）；若使用命令行源码安装，请确认使用 **Node.js `>= 22`**（或通过 `ELECTRON_RUN_AS_NODE=1` 调用客户端二进制）；
   2. Windows 用户若从任务栏固定图标启动，可能指向未带调试端口的旧快捷方式——可在工作台点一次「立即重启 Antigravity 生效」，或重跑一次 `Anti-Claude-Prism-Suite-Setup.exe`（会自动为桌面与开始菜单快捷方式补齐 `--remote-debugging-port=0`）。
 - **Q：热更新后打开工作台提示「后台插件进程仍为旧版本」怎么办？**
   - 前端扩展与页面热更立即生效，而常驻的 MCP Server 子进程在宿主重载插件后才会切换至新进程。前往 **Plugins Manager** 将 `prism-files` 关闭再重新开启，或重启一次 Antigravity 即可。

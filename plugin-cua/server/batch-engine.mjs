@@ -666,7 +666,11 @@ export function createBatchEngine({
         idempotencyKey: cleanIdempotencyKey || null,
         deduplicated: false
       };
-      if (cleanIdempotencyKey) {
+      if (
+        cleanIdempotencyKey &&
+        outcome?.code !== 'CONSENT_DENIED' &&
+        outcome?.code !== 'CONSENT_REQUIRED'
+      ) {
         idempotencyCache.set(cleanIdempotencyKey, {
           ...payload,
           _fingerprint: batchFingerprint
@@ -693,16 +697,19 @@ export function createBatchEngine({
             stepResults
           });
         }
-        if (obsResp?.code === 'CONSENT_DENIED') {
+        if (obsResp?.code === 'CONSENT_DENIED' || obsResp?.code === 'CONSENT_REQUIRED') {
           return {
             ok: false,
             status: 'DISARMED',
-            code: 'CONSENT_DENIED',
-            handoffRequired: true,
-            error: '用户拒绝授予操控权限 (CONSENT_DENIED)',
+            code: obsResp.code,
+            handoffRequired: obsResp.code === 'CONSENT_DENIED',
+            error: obsResp.code === 'CONSENT_REQUIRED'
+              ? '尚未授予操控权限 (CONSENT_REQUIRED)'
+              : '用户拒绝授予操控权限 (CONSENT_DENIED)',
             completedSteps: 0,
             totalSteps: actions.length,
             stepResults,
+            idempotencyKey: cleanIdempotencyKey || null,
             deduplicated: false
           };
         }
@@ -909,18 +916,24 @@ export function createBatchEngine({
         });
       }
 
-      if (actResp?.code === 'CONSENT_DENIED') {
-        return finishAndCache({
+      if (actResp?.code === 'CONSENT_DENIED' || actResp?.code === 'CONSENT_REQUIRED') {
+        const denyPayload = {
           ok: false,
           status: 'DISARMED',
-          code: 'CONSENT_DENIED',
-          handoffRequired: true,
-          error: '操控授权已被拒绝或撤销 (CONSENT_DENIED)',
+          code: actResp.code,
+          handoffRequired: actResp.code === 'CONSENT_DENIED',
+          error: actResp.code === 'CONSENT_REQUIRED'
+            ? '执行动作前需要授予操控权限 (CONSENT_REQUIRED)'
+            : '操控授权已被拒绝或撤销 (CONSENT_DENIED)',
           failedStepIndex: i,
           completedSteps: i,
           totalSteps: actions.length,
-          stepResults
-        });
+          stepResults,
+          idempotencyKey: cleanIdempotencyKey || null,
+          deduplicated: false
+        };
+        // Only skip caching when i === 0 (zero side effects executed); if i > 0, cache partial progress so retrying same key never re-runs step 0..i-1
+        return i === 0 ? denyPayload : finishAndCache(denyPayload);
       }
 
       if (actResp && actResp.ok === false) {

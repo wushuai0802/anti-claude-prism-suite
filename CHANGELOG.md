@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.0 - 2026-11-27
+
+- **免预装系统 Node.js 零门槛运行支持与 Windows 全链路杀软零误报卫生重构（[PrismSuiteInstaller.cs](installer/win/PrismSuiteInstaller.cs) / [ms-lnk.mjs](vendor/anti-claude/core/ms-lnk.mjs) / [install.mjs](install.mjs) / [daemon.mjs](vendor/anti-claude/core/daemon.mjs)）**：
+  - **免装 Node.js 双击即用（`ELECTRON_RUN_AS_NODE=1`）**：Windows 安装器与跨平台安装链路在未检测到系统 `node >= 22` 时，自动回退复用本机 `Antigravity.exe` 内置 Electron Node 运行时（全链路子进程与开机自启脚本自动透传 `ELECTRON_RUN_AS_NODE=1`，无头静默运行不弹 GUI 窗口）；
+  - **纯二进制 `[MS-SHLLINK]` 快捷方式编解码与 COM 原生化**：新增零依赖纯 Node 模块 `ms-lnk.mjs` 按微软公开二进制规范解析与无损修补 `.lnk` 参数（兼容注册表 `User Shell Folders` 重定位至 `D:\` 或 OneDrive 的桌面目录）；C# 安装器彻底移除 `WScript.Shell` 后期绑定反射，改用标准 `[ComImport] IShellLinkW` + `SHGetKnownFolderPath`，同时移除 `upstream-radar.mjs` 与 `relaunch-client.mjs` 中的 `-WindowStyle Hidden` 特征，消除杀软与 EDR 启发式误报；
+  - **运行中 `.exe` 免停机热替换与用户目录 Junction 兼容**：`WriteResourceToFile` 升级为 `MoveFileExW` + `.old` 原子重命名热替换（`prism-win-cua.exe` 驻留期间亦可无缝原地覆盖），并放行 `%USERPROFILE%` 父级合法的整盘迁移 NTFS Junction（继续严格拦截 `.gemini/` 内部重解析点）。
+- **自定义对话/代码字体、三档性能模式、代码块吸顶滚动补偿与四项轻量光学微交互（[prism-suite.js](extensions/prism-suite.js) / [prism-suite-fx.js](extensions/prism-suite-fx.js) / [prism-suite-fx.css](extensions/prism-suite-fx.css) / [custom.js](vendor/anti-claude/user/custom.js)）**：
+  - **三档性能模式与忽略系统减少动画**：`✦ 棱镜` 新增 `省电（0fps 静态节能） / 均衡 / 满血` 三档切换及 `忽略系统「减少动画」` 开关（解决 Windows 关闭系统窗口动画连带冻结思考球与伙伴动效的痛点），新增对话正文与代码等宽字体独立预设芯片与自定义字体族输入（带 CSS 注入安全校验）；
+  - **长代码块顶栏 Sticky 吸顶、收起防跳飞补偿与思考块 `#L` 源码跳转**：未折叠长代码块顶栏随滚动自动吸顶便于随时复制或收起，收起超长代码块时自动按高度差同步修正视口 `scrollTop` 保持阅读视线不跳飞；思考块中译文内的源码路径与 `#L` 行号升级为一键定位胶囊；
+  - **右侧常驻轮次圆点目录轨与会话大纲免点击全量轮次直出**：接入宿主原生会话导航上下文（无 Fiber 环境自动无感回退纯 DOM 模式），解决长会话分页折叠历史步骤导致未点击前仅显示单颗圆点的问题——开屏即渲染完整历史轮次圆点并自动居中跟随当前激活胶囊，悬停按需预取历史提问摘要，点击或 `Alt+↑/↓` 原生支持跨未挂载分页直跳；
+  - **四项 `0fps` 轻量光学微交互（100% MIT 原创实现）**：① `<kbd>` 微立体陶瓷/石墨键帽与变更/Artifact 卡片顶边 `1px` 光学切面高光；② 分屏拖拽条 `[data-sash-handle="true"]` `1px` 隐形极细分割线（悬停微光、保留完整 `8px` 热区）；③ 输入框三态 `0fps` 边缘语义余晖（待确认琥珀金 / 异常珊瑚红 / 完工翡翠绿，聚焦输入框即刻消退）；④ 输入框底栏紧凑 `5h · 7d` 双池额度微胶囊（增量脏检查零输入法闪烁，点击展开限额详情，`Shift+点击` 直达账号接力）。
+- **全仓多模型联合安全与并发审计加固 + 上游 `agy-powertools v2.16.11` 同步（[content-agent.js](extensions/chrome-cua-bridge/content-agent.js) / [PrismWinCua.cs](native/win-cua/PrismWinCua.cs) / [cua-broker.mjs](vendor/anti-claude/core/cua-broker.mjs) / [model-hub.mjs](plugin/server/model-hub.mjs) / [account-vault.mjs](plugin/server/account-vault.mjs)）**：
+  - **CUA 密码/验证码全链路硬拦截**：修复浏览器扩展桥 `isSensitiveField` 恒假表达式漏洞（完整拦截验证码/安全码/OTP/跨源支付 iframe），并在桌面与网页 `press_key` 中对敏感焦点仅放行纯导航键（阻断 `Ctrl+V` / `Shift+Insert` 剪贴板粘贴绕过），补齐桌面 L4 无坐标物理回退焦点密码框预检、`\t` 分段复检、`Region` 句柄释放及 `30s` `wait_for` 支持；
+  - **Broker 作用域并发隔离与异步非阻塞发现**：`consentInFlightByScope` 按目标与权限级别独立分桶防并发提权串用，`idempotencyCache` 绑定 SHA-256 载荷指纹（复用冲突返 `409` 且不缓存未授权拒绝），子进程 `stdin` 挂载防 `EPIPE` 保护，`wsl.exe` 探测改为异步单飞 + `60s` 缓存；
+  - **模型中枢流式 Idle Timeout、偏好四端对齐与凭据兼容**：`model-hub.mjs` 升级为 `60s` 流式分块空闲超时 + `10min` 总上限（根治深度思考模型长链推理误超时）并适配 `o1/o3/o4/gpt-5` `max_completion_tokens`；四端统一 50 键 `ui-prefs.json` 白名单与跨 OS/WSL 切号锁；工作台表单聚焦期间延迟后台冲刷防打断输入；吸收 `agy-powertools v2.16.11` 的 macOS `go-keyring-base64:` 凭据解包、`refreshHash` 指纹提取与原生活跃槽格式保护，同步 7 源 `upstream.json` 基线并新增第 25 组 `mini-dom` 运行时沙箱与杀软卫生门禁测试。
+
 ## 0.8.4 - 2026-11-27
 
 - **修复 `ThinkingOrb` 粒子思考球与 `✦ 棱镜` 视觉增强分区初始化中断问题（[prism-suite-fx.js](extensions/prism-suite-fx.js) / [prism-suite.js](extensions/prism-suite.js)）**：

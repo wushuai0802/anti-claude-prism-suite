@@ -122,10 +122,32 @@ function readJsonSafe(p, fallback = null) {
   }
 }
 
+export function buildNodeExecEnv(baseEnv = process.env) {
+  const env = { ...baseEnv };
+  if (
+    Boolean(process.versions && process.versions.electron) ||
+    process.env.ELECTRON_RUN_AS_NODE === '1' ||
+    baseEnv?.ELECTRON_RUN_AS_NODE === '1'
+  ) {
+    env.ELECTRON_RUN_AS_NODE = '1';
+  }
+  return env;
+}
+
+function shouldRunAsElectronNode(nodePath = process.execPath, env = process.env) {
+  return (
+    Boolean(process.versions && process.versions.electron) ||
+    env?.ELECTRON_RUN_AS_NODE === '1' ||
+    /(?:^|[\\/])(?:antigravity|electron)(?:\.exe)?$/i.test(String(nodePath || '').trim())
+  );
+}
+
 function readProcessCommandLineSync(pid) {
+  const numPid = Number(pid);
+  if (!Number.isInteger(numPid) || numPid <= 0) return '';
   if (process.platform === 'linux') {
     try {
-      const raw = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+      const raw = fs.readFileSync(`/proc/${numPid}/cmdline`, 'utf8');
       if (raw) return raw.replace(/\0+/g, ' ').trim();
     } catch {}
   }
@@ -133,7 +155,7 @@ function readProcessCommandLineSync(pid) {
     try {
       return execFileSync(
         'powershell',
-        ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
+        ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${numPid}").CommandLine`],
         { encoding: 'utf8', timeout: 2000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
       ).trim();
     } catch {
@@ -141,7 +163,7 @@ function readProcessCommandLineSync(pid) {
     }
   }
   try {
-    return execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'command='], {
+    return execFileSync('ps', ['-ww', '-p', String(numPid), '-o', 'command='], {
       encoding: 'utf8',
       timeout: 1500,
       stdio: ['ignore', 'pipe', 'ignore']
@@ -756,7 +778,7 @@ export function validateSourceRoot(root = __dirname) {
       continue;
     }
     try {
-      execFileSync(process.execPath, ['--check', abs], { stdio: 'pipe', windowsHide: true });
+      execFileSync(process.execPath, ['--check', abs], { stdio: 'pipe', windowsHide: true, env: buildNodeExecEnv() });
     } catch (err) {
       problems.push(`${rel}: ${String(err.stderr || err.message).split('\n')[0]}`);
     }
@@ -1299,7 +1321,7 @@ function runLiveVerify() {
   }
   let stdout = '';
   let exitStatus = 0;
-  const env = Object.assign({}, process.env);
+  const env = buildNodeExecEnv(process.env);
   if (fakeEnv !== undefined) env.ANTI_CLAUDE_FAKE_VERIFY_OK = String(fakeEnv);
   try {
     stdout = execFileSync(process.execPath, [CORE_DAEMON_SCRIPT, '--verify-once', '--user-dir', USER_DIR], {
@@ -1335,6 +1357,7 @@ function runLiveTeardownOnce() {
     execFileSync(process.execPath, [CORE_DAEMON_SCRIPT, '--once', '--user-dir', tmpTeardownDir], {
       timeout: 8000,
       windowsHide: true,
+      env: buildNodeExecEnv(),
       stdio: 'ignore'
     });
     return { ok: true };
@@ -1389,9 +1412,13 @@ function spawnDetachedDaemon(nodePath) {
     stdio = ['ignore', logFd, logFd];
   } catch {}
   try {
+    const childEnv = shouldRunAsElectronNode(nodePath)
+      ? { ...buildNodeExecEnv(), ELECTRON_RUN_AS_NODE: '1' }
+      : buildNodeExecEnv();
     const child = spawn(nodePath, [CORE_DAEMON_SCRIPT, '--user-dir', USER_DIR], {
       detached: true,
       windowsHide: true,
+      env: childEnv,
       stdio
     });
     child.unref();
@@ -1410,6 +1437,7 @@ function ensureCoreDaemon() {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   fs.mkdirSync(USER_DIR, { recursive: true });
   const nodePath = stableNodePath();
+  const useElectronAsNode = shouldRunAsElectronNode(nodePath);
 
   if (process.platform === 'darwin') {
     const tmpRoot = fs.realpathSync(os.tmpdir());
@@ -1421,6 +1449,9 @@ function ensureCoreDaemon() {
     const envPath = Array.from(
       new Set(['/opt/homebrew/bin', '/usr/local/bin', path.dirname(nodePath), '/usr/bin', '/bin', '/usr/sbin', '/sbin'])
     ).join(':');
+    const electronEnvXml = useElectronAsNode
+      ? '\n    <key>ELECTRON_RUN_AS_NODE</key>\n    <string>1</string>'
+      : '';
     const plistXml = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -1437,7 +1468,7 @@ function ensureCoreDaemon() {
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>${xmlEscape(envPath)}</string>
+    <string>${xmlEscape(envPath)}</string>${electronEnvXml}
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -1521,7 +1552,7 @@ function ensureCoreDaemon() {
 
   if (process.platform === 'win32') {
     const vbsPath = getWinStartupVbsPath();
-    const vbs = buildWinStartupVbs(nodePath, CORE_DAEMON_SCRIPT, USER_DIR);
+    const vbs = buildWinStartupVbs(nodePath, CORE_DAEMON_SCRIPT, USER_DIR, { useElectronAsNode });
     try {
       writeFileAtomic(vbsPath, vbs);
     } catch {}
@@ -1530,7 +1561,8 @@ function ensureCoreDaemon() {
   }
 
   const unitPath = getLinuxSystemdUnitPath();
-  const unit = `[Unit]\nDescription=Anti-Claude CDP Daemon\nAfter=default.target\n\n[Service]\nExecStart="${nodePath}" "${CORE_DAEMON_SCRIPT}" --user-dir "${USER_DIR}"\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n`;
+  const systemdEnvLine = useElectronAsNode ? 'Environment="ELECTRON_RUN_AS_NODE=1"\n' : '';
+  const unit = `[Unit]\nDescription=Anti-Claude CDP Daemon\nAfter=default.target\n\n[Service]\n${systemdEnvLine}ExecStart="${nodePath}" "${CORE_DAEMON_SCRIPT}" --user-dir "${USER_DIR}"\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n`;
   try {
     writeFileAtomic(unitPath, unit);
     execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore', timeout: 4000 });
@@ -1543,7 +1575,7 @@ function ensureCoreDaemon() {
   }
 }
 
-export function buildWinStartupVbs(nodePath, daemonScript, userDir) {
+export function buildWinStartupVbs(nodePath, daemonScript, userDir, options = {}) {
   /* Encode non-ASCII characters via ChrW() so WScript never garbles Unicode usernames without BOM */
   const vbsExpr = (s) => {
     const parts = [];
@@ -1571,8 +1603,16 @@ export function buildWinStartupVbs(nodePath, daemonScript, userDir) {
     flush();
     return parts.length ? parts.join(' & ') : '""';
   };
-  const cmdExpr = vbsExpr(`"${nodePath}" "${daemonScript}" --user-dir "${userDir}"`);
-  return `Set sh = CreateObject("WScript.Shell")\r\nsh.Run ${cmdExpr}, 0, False\r\n`;
+  const useElectron = options?.useElectronAsNode !== undefined
+    ? Boolean(options.useElectronAsNode)
+    : shouldRunAsElectronNode(nodePath);
+  const workDir = path.win32.dirname(String(daemonScript || ''));
+  if (useElectron) {
+    const cmdArgs = `/d /s /c "set "ELECTRON_RUN_AS_NODE=1" && "${nodePath}" "${daemonScript}" --user-dir "${userDir}""`;
+    return `Set sh = CreateObject("Shell.Application")\r\nsh.ShellExecute "cmd.exe", ${vbsExpr(cmdArgs)}, ${vbsExpr(workDir)}, "open", 0\r\n`;
+  }
+  const directArgs = `"${daemonScript}" --user-dir "${userDir}"`;
+  return `Set sh = CreateObject("Shell.Application")\r\nsh.ShellExecute ${vbsExpr(nodePath)}, ${vbsExpr(directArgs)}, ${vbsExpr(workDir)}, "open", 0\r\n`;
 }
 
 function disableCoreDaemon() {
@@ -1663,9 +1703,13 @@ function enableMacAutoUpdateAgent() {
   fs.mkdirSync(path.dirname(AUTOSYNC_PLIST), { recursive: true });
   fs.mkdirSync(STATE_DIR, { recursive: true });
   const nodePath = stableNodePath();
+  const useElectronAsNode = shouldRunAsElectronNode(nodePath);
   const envPath = Array.from(
     new Set(['/opt/homebrew/bin', '/usr/local/bin', path.dirname(nodePath), '/usr/bin', '/bin', '/usr/sbin', '/sbin'])
   ).join(':');
+  const electronEnvXml = useElectronAsNode
+    ? '\n    <key>ELECTRON_RUN_AS_NODE</key>\n    <string>1</string>'
+    : '';
   const plistXml = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -1681,7 +1725,7 @@ function enableMacAutoUpdateAgent() {
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>${xmlEscape(envPath)}</string>
+    <string>${xmlEscape(envPath)}</string>${electronEnvXml}
   </dict>
   <key>WatchPaths</key>
   <array>
@@ -2204,7 +2248,7 @@ async function cmdSyncUpgrade(flags) {
       saveState(state);
       const args = [path.join(__dirname, 'install.mjs'), 'sync-upgrade', '--after-pull', ...[...flags].filter((f) => f !== '--after-pull')];
       try {
-        execFileSync(process.execPath, args, { stdio: 'inherit', timeout: 180000 });
+        execFileSync(process.execPath, args, { stdio: 'inherit', timeout: 180000, env: buildNodeExecEnv() });
       } catch (err) {
         process.exitCode = typeof err?.status === 'number' ? err.status : 1;
       }

@@ -24,8 +24,8 @@ import { performance } from 'node:perf_hooks';
 import { TIER_DEFINITIONS, VALID_TIERS } from './prism-profile.mjs';
 
 export const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 30_000;
-export const DEFAULT_IDLE_CHUNK_TIMEOUT_MS = 45_000;
-export const DEFAULT_TOTAL_TIMEOUT_MS = 120_000;
+export const DEFAULT_IDLE_CHUNK_TIMEOUT_MS = 60_000;
+export const DEFAULT_TOTAL_TIMEOUT_MS = 600_000;
 export const MAX_SEARCH_RESPONSE_BYTES = 256 * 1024;
 export const MAX_SEARCH_REDIRECTS = 2;
 export const DEFAULT_PUBLIC_SEARCH_ENDPOINT = 'https://html.duckduckgo.com/html/';
@@ -1416,9 +1416,28 @@ export function createModelHub({
       }
     }
 
-    const firstByteTimeoutMs = timeouts.firstByteTimeoutMs ?? defaultTimeouts.firstByteTimeoutMs ?? DEFAULT_FIRST_BYTE_TIMEOUT_MS;
-    const idleChunkTimeoutMs = timeouts.idleChunkTimeoutMs ?? defaultTimeouts.idleChunkTimeoutMs ?? DEFAULT_IDLE_CHUNK_TIMEOUT_MS;
-    const totalTimeoutMs = timeouts.totalTimeoutMs ?? defaultTimeouts.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS;
+    const rawCallerTimeout = timeouts.timeoutMs ?? defaultTimeouts.timeoutMs;
+    const explicitTimeoutMs =
+      rawCallerTimeout !== undefined && rawCallerTimeout !== null && Number.isFinite(Number(rawCallerTimeout)) && Number(rawCallerTimeout) > 0
+        ? Number(rawCallerTimeout)
+        : 0;
+    const idleTimeoutMs = timeouts.idleChunkTimeoutMs !== undefined
+      ? Math.max(0, Number(timeouts.idleChunkTimeoutMs) || 0)
+      : (defaultTimeouts.idleChunkTimeoutMs !== undefined && !explicitTimeoutMs
+        ? Math.max(0, Number(defaultTimeouts.idleChunkTimeoutMs) || 0)
+        : Math.min(explicitTimeoutMs || 60_000, 60_000));
+    const maxTotalMs = timeouts.totalTimeoutMs !== undefined
+      ? Math.max(0, Number(timeouts.totalTimeoutMs) || 0)
+      : (explicitTimeoutMs > 0
+        ? (explicitTimeoutMs < 60_000 ? explicitTimeoutMs : Math.max(explicitTimeoutMs, 60_000))
+        : (defaultTimeouts.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS));
+    const firstByteTimeoutMs = timeouts.firstByteTimeoutMs !== undefined
+      ? Math.max(0, Number(timeouts.firstByteTimeoutMs) || 0)
+      : (explicitTimeoutMs > 0 && explicitTimeoutMs < (defaultTimeouts.firstByteTimeoutMs ?? DEFAULT_FIRST_BYTE_TIMEOUT_MS)
+        ? explicitTimeoutMs
+        : (defaultTimeouts.firstByteTimeoutMs ?? DEFAULT_FIRST_BYTE_TIMEOUT_MS));
+    const idleChunkTimeoutMs = idleTimeoutMs;
+    const totalTimeoutMs = maxTotalMs;
     const effectiveMaxTokens = maxTokens ?? model.maxTokens ?? 4096;
 
     const protocol = provider.protocol;
@@ -1444,7 +1463,13 @@ export function createModelHub({
         messages,
         stream: true
       };
-      if (effectiveMaxTokens) requestBody.max_tokens = effectiveMaxTokens;
+      if (effectiveMaxTokens) {
+        if (/^(?:o[134](?:-|$)|gpt-5(?:-|$))/i.test(String(model.upstreamModel || '').trim())) {
+          requestBody.max_completion_tokens = effectiveMaxTokens;
+        } else {
+          requestBody.max_tokens = effectiveMaxTokens;
+        }
+      }
       if (temperature !== undefined) requestBody.temperature = temperature;
     } else if (protocol === 'openai-responses') {
       endpointUrl = buildProtocolEndpoint(provider.baseUrl, '/responses');
@@ -1611,9 +1636,9 @@ export function createModelHub({
       }
 
       const elapsedBeforeStream = Math.round(performance.now() - startedAt);
-      const remainingFirstByteMs = firstByteTimeoutMs > 0
-        ? Math.max(50, firstByteTimeoutMs - elapsedBeforeStream)
-        : 0;
+      const streamFirstChunkBudgetMs = timeouts.firstByteTimeoutMs !== undefined
+        ? (firstByteTimeoutMs > 0 ? Math.max(50, firstByteTimeoutMs - elapsedBeforeStream) : 0)
+        : idleChunkTimeoutMs;
       const remainingTotalMs = totalTimeoutMs > 0
         ? Math.max(50, totalTimeoutMs - elapsedBeforeStream)
         : 0;
@@ -1623,7 +1648,7 @@ export function createModelHub({
       let usage = null;
 
       for await (const sseEvent of parseSseEvents(response, {
-        firstByteTimeoutMs: remainingFirstByteMs,
+        firstByteTimeoutMs: streamFirstChunkBudgetMs,
         idleChunkTimeoutMs,
         totalTimeoutMs: remainingTotalMs,
         abortController: requestController,
@@ -1908,6 +1933,7 @@ export function createModelHub({
     }
 
     const timeouts = {
+      timeoutMs: options.timeoutMs,
       firstByteTimeoutMs: options.firstByteTimeoutMs,
       idleChunkTimeoutMs: options.idleChunkTimeoutMs,
       totalTimeoutMs: options.totalTimeoutMs,

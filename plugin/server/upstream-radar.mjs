@@ -1604,11 +1604,30 @@ async function installPluginFromTarballSafely({
     if (pluginOnly) args.push('--plugin-only');
     else if (extensionsOnly) args.push('--extensions-only');
     if (pluginDir) args.push('--plugin-dir', pluginDir);
-    const out = await execFn(process.execPath, args, { cwd: extractDir, timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
+    const nodeEnv =
+      Boolean(process.versions && process.versions.electron) || process.env.ELECTRON_RUN_AS_NODE === '1'
+        ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
+        : process.env;
+    const out = await execFn(process.execPath, args, {
+      cwd: extractDir,
+      env: nodeEnv,
+      timeout: 30000,
+      maxBuffer: 4 * 1024 * 1024
+    });
     return { ...out, sha256Verified };
   } finally {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   }
+}
+
+function toWslInteropExePath(rawPath) {
+  const s = String(rawPath || '').trim();
+  if (!s || s.startsWith('/')) return s;
+  const driveMatch = s.match(/^([A-Za-z]):[\\/](.*)$/);
+  if (driveMatch) {
+    return `/mnt/${driveMatch[1].toLowerCase()}/${driveMatch[2].replace(/\\/g, '/')}`;
+  }
+  return s;
 }
 
 async function runWindowsInstallerWithFallback(exePath, args, { execFn, wsl, tmpDir }) {
@@ -1619,21 +1638,15 @@ async function runWindowsInstallerWithFallback(exePath, args, { execFn, wsl, tmp
     env: wsl ? resolveWslInteropEnv(process.env) : process.env,
     maxBuffer: 4 * 1024 * 1024
   };
+  const targetExe = wsl ? toWslInteropExePath(exePath) : exePath;
+  if (wsl) {
+    try {
+      fs.chmodSync(targetExe, 0o755);
+    } catch {}
+  }
   try {
-    return await execFn(exePath, args, execOpts);
+    return await execFn(targetExe, args, execOpts);
   } catch (err) {
-    if (wsl && err && (err.code === 'EACCES' || /EACCES|permission denied/i.test(String(err.message || '')))) {
-      // DrvFS metadata/noexec fallback: invoke Windows Start-Process -Wait via encoded PowerShell
-      const winExePath = exePath.replace(/^\/mnt\/([a-zA-Z])\//, (_, d) => `${d.toUpperCase()}:\\`).replace(/\//g, '\\');
-      const psArgsJson = JSON.stringify(args);
-      const psScript = `$p = Start-Process -FilePath '${winExePath.replace(/'/g, "''")}' -ArgumentList (ConvertFrom-Json '${psArgsJson.replace(/'/g, "''")}') -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode`;
-      const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
-      return await execFn(
-        'powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-InputFormat', 'None', '-EncodedCommand', encoded],
-        execOpts
-      );
-    }
     if (/smartscreen|blocked|virus|defender|operation did not complete successfully/i.test(String(err?.message || err?.stderr || ''))) {
       throw Object.assign(
         new Error('安装器被 Windows 安全策略/SmartScreen 拦截，可前往 Releases 页面手动下载运行安装包'),
@@ -1759,7 +1772,7 @@ export async function applyPrismSelfUpdate({
       const exePath = path.join(tmpDir, 'Anti-Claude-Prism-Suite-Setup.exe');
       let cleanupPending = false;
       try {
-        fs.writeFileSync(exePath, exeBuf);
+        fs.writeFileSync(exePath, exeBuf, { mode: 0o755 });
         // Critical: inside WSL2 pass --no-wsl to avoid recursive WSL -> Windows -> wsl.exe deadlock; update WSL plugin natively below
         const installerArgs = wsl ? ['--silent-install', '--no-wsl'] : ['--silent-install'];
         const runRes = await runWindowsInstallerWithFallback(exePath, installerArgs, { execFn, wsl, tmpDir });

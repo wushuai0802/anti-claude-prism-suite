@@ -579,6 +579,9 @@
     if (wrap.getAttribute('data-ag-code-wrap') !== 'true') {
       wrap.setAttribute('data-ag-code-wrap', 'true');
     }
+    if (header.getAttribute('data-ag-code-hdr') !== '1') {
+      header.setAttribute('data-ag-code-hdr', '1');
+    }
     const { lines, key } = getCodeBlockMetrics(header, codeEl);
     if (lines >= CODE_FOLD_MIN_LINES) {
       if (wrap.getAttribute('data-ag-code-long') !== 'true') {
@@ -644,20 +647,32 @@
     }
   }
 
-  function toggleCodeFold(wrap) {
-    const header = wrap.firstElementChild;
-    const codeEl = wrap.querySelector(':scope > div.p-3 > div.code-block');
+  function toggleCodeFold(wrapper) {
+    const header = wrapper.firstElementChild;
+    const codeEl = wrapper.querySelector(':scope > div.p-3 > div.code-block');
     if (!header || !codeEl) return;
     const key = codeBlockKey(header, codeEl);
-    const nextCollapsed = wrap.getAttribute('data-ag-code-collapsed') !== 'true';
+    const nextCollapsed = wrapper.getAttribute('data-ag-code-collapsed') !== 'true';
+    const vp = nextCollapsed
+      ? (wrapper.closest('[data-testid="autoscroll-viewport"]') || findCodeBlockScrollContainer(wrapper))
+      : null;
+    const vpRect = nextCollapsed && vp ? vp.getBoundingClientRect() : null;
+    const beforeRect = nextCollapsed && vp ? wrapper.getBoundingClientRect() : null;
     rememberCodeFoldState(key, nextCollapsed ? 'collapsed' : 'expanded');
-    syncSingleCodeBlock(wrap, header, codeEl);
-    if (nextCollapsed) {
+    syncSingleCodeBlock(wrapper, header, codeEl);
+    if (nextCollapsed && vp && vpRect && beforeRect && beforeRect.top < vpRect.top - 4) {
       try {
-        const scroller = findCodeBlockScrollContainer(wrap);
-        const minTop = scroller ? scroller.getBoundingClientRect().top : 0;
-        if (wrap.getBoundingClientRect().top < minTop) {
-          wrap.scrollIntoView({ block: 'start', behavior: 'auto' });
+        const afterRect = wrapper.getBoundingClientRect();
+        if (beforeRect.bottom <= vpRect.bottom + 24) {
+          // Collapsed via bottom bar (or bottom visible): anchor content below the block in place
+          const delta = afterRect.bottom - beforeRect.bottom;
+          if (delta < -8) {
+            vp.scrollTop = Math.max(0, vp.scrollTop + delta);
+          }
+        } else {
+          // Collapsed via sticky top bar while bottom was far below viewport: keep collapsed block visible near top of viewport
+          const targetTop = vpRect.top + 12;
+          vp.scrollTop = Math.max(0, vp.scrollTop + (beforeRect.top - targetTop));
         }
       } catch {}
     }
@@ -675,6 +690,9 @@
       wrap.removeAttribute('data-ag-code-wrap');
       wrap.removeAttribute('data-ag-code-long');
       wrap.removeAttribute('data-ag-code-collapsed');
+    });
+    document.querySelectorAll('[data-ag-code-hdr]').forEach((hdr) => {
+      hdr.removeAttribute('data-ag-code-hdr');
     });
     document.querySelectorAll('.ag-code-fold-toggle, .ag-code-fold-bar').forEach((el) => el.remove());
   }
@@ -14399,9 +14417,13 @@
     window.removeEventListener('resize', onWindowResizePopover);
     sidebarWheelBound = false;
     document.removeEventListener('wheel', onSidebarWheel, true);
+    if (sidebarFocusTimer) {
+      clearTimeout(sidebarFocusTimer);
+      sidebarFocusTimer = 0;
+    }
     window.removeEventListener('focus', onWindowSidebarEvent);
     window.removeEventListener('blur', onWindowSidebarEvent);
-    window.removeEventListener('popstate', onWindowSidebarEvent);
+    window.removeEventListener('popstate', scheduleSidebarSync);
     window.removeEventListener('focus', onQuotaVisibilityOrFocus);
     document.removeEventListener('visibilitychange', onQuotaVisibilityOrFocus);
     if (autoQuotaRefreshTimer) {

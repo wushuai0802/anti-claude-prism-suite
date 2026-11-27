@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const AGENT_VERSION = '0.8.4';
+  const AGENT_VERSION = '0.9.0';
   if (window.__prismCuaContentAgent && window.__prismCuaContentAgent.version === AGENT_VERSION) {
     return;
   }
@@ -34,8 +34,18 @@
     '[contenteditable=""]'
   ].join(', ');
 
-  const SENSITIVE_AUTOCOMPLETE_RE = /\b(?:(?:current|new)-password|one-time-code|cc-[a-z0-9-]+)\b/i;
-  const SENSITIVE_NAME_RE = /(?:^|[_.-])(?:pass(?:word|wd|code)|pwd|pin|cvv|cvc|csc|card[_-]?num(?:ber)?|totp|otp)(?:$|[_.-])/i;
+  const SENSITIVE_AUTOCOMPLETE_RE = /\b(?:current-password|new-password|one-time-code|cc-number|cc-csc|cc-exp|cc-[a-z0-9-]+)\b/i;
+  const SENSITIVE_NAME_RE = /(?:^|[\s_.-])(?:pass(?:word|wd|code)|pwd|pin|cvv|cvc|csc|card[_-]?num(?:ber)?|totp|otp)(?:$|[\s_.-])/i;
+  const SENSITIVE_IDENT_RE = /(?:密码|口令|验证码|安全码|动态码|支付密码|卡号|cvv|cvc|passcode|(?<![a-z])otp(?![a-z])|pin[-_ ]?code)/i;
+  const PURE_SENSITIVE_NAV_KEYS = new Set([
+    'Tab',
+    'Escape',
+    'ArrowUp',
+    'ArrowDown',
+    'ArrowLeft',
+    'ArrowRight',
+    'Shift'
+  ]);
   const SECRET_VALUE_RE = /\b(?:sk-(?:proj-|ant-|live-|test-)?[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|AIza[0-9A-Za-z_-]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,})\b/g;
 
   const CAPTCHA_IFRAME_PATTERNS = [
@@ -89,14 +99,25 @@
     return rect.bottom > 0 && rect.right > 0 && rect.top < vh && rect.left < vw;
   }
 
+  function getDeepActiveElement() {
+    let cur = document.activeElement;
+    let depth = 0;
+    while (cur && cur.shadowRoot && cur.shadowRoot.activeElement && depth < 6) {
+      cur = cur.shadowRoot.activeElement;
+      depth++;
+    }
+    return cur || null;
+  }
+
   function isSensitiveField(el) {
     if (!el || !(el instanceof Element)) return false;
     const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'iframe') return true;
     const type = String(el.getAttribute('type') || (el.type ?? '')).toLowerCase();
     if (type === 'password') return true;
     const ac = String(el.getAttribute('autocomplete') || '').trim();
     if (ac && SENSITIVE_AUTOCOMPLETE_RE.test(ac)) return true;
-    if (tag === 'input' || tag === 'textarea') {
+    if (tag === 'input' || tag === 'textarea' || el.isContentEditable || el.getAttribute('role') === 'textbox') {
       const ident = [
         el.getAttribute('name') || '',
         el.getAttribute('id') || '',
@@ -104,9 +125,20 @@
         el.getAttribute('placeholder') || ''
       ].join(' ');
       if (SENSITIVE_NAME_RE.test(ident)) return true;
-      if (/(?:密码|口令|验证码|安全码|卡号|CVV)/i.test(ident) && /密码|cvv|卡号/i.test(ident)) return true;
+      if (SENSITIVE_IDENT_RE.test(ident) || /[a-z]Otp(?![a-z])/.test(ident)) return true;
     }
     return false;
+  }
+
+  function makeError(code, error, extra = {}) {
+    const msg = String(error || '浏览器操控操作失败');
+    return {
+      ok: false,
+      code: String(code || 'BROWSER_AGENT_ERROR'),
+      error: msg,
+      ...(extra && extra.handoffRequired ? { blocked: true, humanRequired: true, reason: msg } : {}),
+      ...extra
+    };
   }
 
   function detectCaptchaGate() {
@@ -544,6 +576,13 @@
       space: ' ',
       backspace: 'Backspace',
       delete: 'Delete',
+      insert: 'Insert',
+      ins: 'Insert',
+      shift: 'Shift',
+      arrowup: 'ArrowUp',
+      arrowdown: 'ArrowDown',
+      arrowleft: 'ArrowLeft',
+      arrowright: 'ArrowRight',
       up: 'ArrowUp',
       down: 'ArrowDown',
       left: 'ArrowLeft',
@@ -558,6 +597,8 @@
       Enter: 'Enter',
       Escape: 'Escape',
       Tab: 'Tab',
+      Shift: 'ShiftLeft',
+      Insert: 'Insert',
       ' ': 'Space',
       Backspace: 'Backspace',
       Delete: 'Delete',
@@ -574,8 +615,10 @@
       Enter: 13,
       Escape: 27,
       Tab: 9,
+      Shift: 16,
       ' ': 32,
       Backspace: 8,
+      Insert: 45,
       Delete: 46,
       ArrowLeft: 37,
       ArrowUp: 38,
@@ -587,17 +630,17 @@
     return { key: normKey, code, keyCode, ...mods };
   }
 
-  function dispatchKeyToElement(target, rawKey) {
+  function dispatchKeyToElement(target, rawKey, modOverrides = null) {
     const spec = parseKeyCombo(rawKey);
     const evInit = {
       key: spec.key,
       code: spec.code,
       keyCode: spec.keyCode,
       which: spec.keyCode,
-      ctrlKey: spec.ctrlKey,
-      shiftKey: spec.shiftKey,
-      altKey: spec.altKey,
-      metaKey: spec.metaKey,
+      ctrlKey: modOverrides && typeof modOverrides.ctrlKey === 'boolean' ? modOverrides.ctrlKey : spec.ctrlKey,
+      shiftKey: modOverrides && typeof modOverrides.shiftKey === 'boolean' ? modOverrides.shiftKey : spec.shiftKey,
+      altKey: modOverrides && typeof modOverrides.altKey === 'boolean' ? modOverrides.altKey : spec.altKey,
+      metaKey: modOverrides && typeof modOverrides.metaKey === 'boolean' ? modOverrides.metaKey : spec.metaKey,
       bubbles: true,
       cancelable: true,
       composed: true
@@ -741,6 +784,10 @@
       if (typeof el.focus === 'function') {
         try { el.focus({ preventScroll: true }); } catch {}
       }
+      const postFocusActive = getDeepActiveElement();
+      if (isSensitiveField(el) || (postFocusActive && isSensitiveField(postFocusActive))) {
+        return makeError('PASSWORD_FIELD_BLOCKED', '聚焦后命中密码或敏感凭据输入框，已拦截自动输入', { handoffRequired: true });
+      }
 
       if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
         const nextVal = shouldClear ? textToType : `${el.value || ''}${textToType}`;
@@ -807,20 +854,36 @@
         if (!resolved.ok) return resolved;
         target = resolved.el;
         ref = resolved.ref;
-        if (typeof target.focus === 'function') {
-          try { target.focus({ preventScroll: true }); } catch {}
+      }
+      const rawKey = step.key || step.value || 'Enter';
+      const spec = parseKeyCombo(rawKey);
+      const modList = Array.isArray(step.modifiers)
+        ? step.modifiers.map((m) => String(m || '').toLowerCase())
+        : [];
+      const ctrlKey = Boolean(spec.ctrlKey || step.ctrlKey || modList.includes('ctrl') || modList.includes('control'));
+      const metaKey = Boolean(spec.metaKey || step.metaKey || modList.includes('meta') || modList.includes('cmd') || modList.includes('command') || modList.includes('win'));
+      const altKey = Boolean(spec.altKey || step.altKey || modList.includes('alt') || modList.includes('option'));
+      const shiftKey = Boolean(spec.shiftKey || step.shiftKey || modList.includes('shift'));
+
+      const checkSensBeforeOrAfter = () => {
+        const deepAct = getDeepActiveElement();
+        if (isSensitiveField(target) || (deepAct && deepAct !== target && isSensitiveField(deepAct))) {
+          const isShiftInsert = shiftKey && (spec.key === 'Insert' || spec.code === 'Insert');
+          const isPureNav = !ctrlKey && !metaKey && !altKey && !isShiftInsert && PURE_SENSITIVE_NAV_KEYS.has(spec.key);
+          if (!isPureNav) return true;
         }
+        return false;
+      };
+      if (checkSensBeforeOrAfter()) {
+        return makeError('SENSITIVE_FIELD_BLOCKED', '已拦截向敏感凭据字段发送按键或粘贴指令', { handoffRequired: true });
       }
-      if (isSensitiveField(target) && String(step.key || '').length === 1) {
-        return {
-          ok: false,
-          blocked: true,
-          humanRequired: true,
-          code: 'PASSWORD_FIELD_BLOCKED',
-          error: '当前焦点位于密码敏感输入框，已拦截字符按键注入'
-        };
+      if (rawRef && typeof target.focus === 'function') {
+        try { target.focus({ preventScroll: true }); } catch {}
       }
-      const keyUsed = dispatchKeyToElement(target, step.key || step.value || 'Enter');
+      if (checkSensBeforeOrAfter()) {
+        return makeError('SENSITIVE_FIELD_BLOCKED', '聚焦后命中敏感凭据字段，已拦截发送按键或粘贴指令', { handoffRequired: true });
+      }
+      const keyUsed = dispatchKeyToElement(target, rawKey, { ctrlKey, shiftKey, altKey, metaKey });
       await sleepMs(45);
       return {
         ok: true,
@@ -962,7 +1025,7 @@
     }
 
     if (action === 'wait_for' || action === 'wait') {
-      const timeoutMs = Math.max(50, Math.min(10000, Number(step.timeoutMs ?? step.ms ?? step.durationMs) || 2000));
+      const timeoutMs = Math.max(50, Math.min(30000, Number(step.timeoutMs ?? step.ms ?? step.durationMs) || 2000));
       const wantText = typeof step.text === 'string' && step.text.trim() ? step.text.trim().toLowerCase() : '';
       const wantSelector = typeof step.selector === 'string' && step.selector.trim() ? step.selector.trim() : '';
       const wantRef = normalizeRefKey(rawRef);

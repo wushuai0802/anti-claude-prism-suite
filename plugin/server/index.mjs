@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Prism Files MCP App Server (Clean-Room Original, MIT, Zero External Dependencies)
- * Part of Anti-Claude Prism Suite v0.8.4
+ * Part of Anti-Claude Prism Suite v0.9.0
  *
  * Implements MCP stdio JSON-RPC 2.0 + SEP-1865 MCP Apps UI resources:
  *   - Model-visible tools (strictly 8):
@@ -46,7 +46,7 @@ export const APP_URI = 'ui://prism-files/app.html';
 export const INLINE_URI = 'ui://prism-files/inline.html';
 export const APP_MIME_TYPE = 'text/html;profile=mcp-app';
 export const CUA_EXTENSION_ID = 'lbmibnghmlnidfiihkegicaejaacmkca';
-const SERVER_INFO = { name: 'prism-files', version: '0.8.4' };
+const SERVER_INFO = { name: 'prism-files', version: '0.9.0' };
 const MAX_TEXT_PREVIEW_BYTES = 256 * 1024;
 const MAX_IMAGE_PREVIEW_BYTES = 4 * 1024 * 1024;
 const MAX_SAVE_BYTES = 512 * 1024;
@@ -60,6 +60,25 @@ const TRANSCRIPT_MAX_RESULTS = 50;
 const TRANSCRIPT_CACHE_MAX_ENTRIES = 100;
 
 const transcriptParseCache = new Map();
+
+const activeExitCleanupCallbacks = new Set();
+let exitCleanupHookRegistered = false;
+
+function registerProcessExitCleanup(fn) {
+  activeExitCleanupCallbacks.add(fn);
+  if (!exitCleanupHookRegistered) {
+    exitCleanupHookRegistered = true;
+    process.once('exit', () => {
+      for (const cb of activeExitCleanupCallbacks) {
+        try { cb(); } catch {}
+      }
+      activeExitCleanupCallbacks.clear();
+    });
+  }
+  return () => {
+    activeExitCleanupCallbacks.delete(fn);
+  };
+}
 
 const IMAGE_MIME_BY_EXT = {
   '.png': 'image/png',
@@ -1532,6 +1551,9 @@ export function createPrismFilesServer({
       }
     }
   });
+  const unregisterExitCleanup = registerProcessExitCleanup(() => {
+    try { handoffMemory?.close?.(); } catch {}
+  });
   const modelHub = injectedModelHub || createModelHub({
     profileManager: prismProfile,
     ...(modelFetch ? { fetchFn: modelFetch } : {}),
@@ -1653,14 +1675,22 @@ export function createPrismFilesServer({
       mcpExposure: nextExposure
     };
     if (stateFile) {
-      fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-      const tmp = `${stateFile}.tmp-${process.pid}-${Date.now()}`;
       try {
-        fs.writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8');
-        fs.renameSync(tmp, stateFile);
-      } catch {
-        try { fs.rmSync(tmp, { force: true }); } catch {}
-      }
+        const existingSt = fs.lstatSync(stateFile, { throwIfNoEntry: false });
+        if (existingSt && (existingSt.isSymbolicLink() || existingSt.isDirectory())) {
+          return next;
+        }
+        fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+        const tmp = `${stateFile}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+        try {
+          fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+          try { fs.chmodSync(tmp, 0o600); } catch {}
+          fs.renameSync(tmp, stateFile);
+          try { fs.chmodSync(stateFile, 0o600); } catch {}
+        } catch {
+          try { fs.rmSync(tmp, { force: true }); } catch {}
+        }
+      } catch {}
     }
     return next;
   }
@@ -2632,6 +2662,7 @@ export function createPrismFilesServer({
   }
 
   function postJsonLocalHttp(targetUrl, token, bodyObj, timeoutMs = 2400) {
+    const MAX_LOCAL_HTTP_BYTES = 2 * 1024 * 1024;
     const payloadStr = JSON.stringify(bodyObj);
     const headers = {
       'Content-Type': 'application/json',
@@ -2646,6 +2677,9 @@ export function createPrismFilesServer({
       return Promise.resolve(cuaFetch(targetUrl, { method: 'POST', headers, body: payloadStr }))
         .then(async (r) => {
           const txt = typeof r?.text === 'function' ? await r.text() : JSON.stringify(r || {});
+          if (Buffer.byteLength(txt, 'utf8') > MAX_LOCAL_HTTP_BYTES) {
+            throw Object.assign(new Error('Local HTTP response body exceeds 2MB limit'), { code: 'RESPONSE_TOO_LARGE' });
+          }
           return { status: Number(r?.status) || 200, data: JSON.parse(txt) };
         });
     }
@@ -2671,14 +2705,35 @@ export function createPrismFilesServer({
           timeout: timeoutMs
         },
         (res) => {
+          const declaredLen = Number(res.headers?.['content-length']);
+          if (Number.isFinite(declaredLen) && declaredLen > MAX_LOCAL_HTTP_BYTES) {
+            clearTimeout(timer);
+            try { res.destroy(); } catch {}
+            done(Object.assign(new Error(`Local HTTP response body exceeds 2MB limit (${declaredLen} bytes)`), { code: 'RESPONSE_TOO_LARGE' }));
+            return;
+          }
           const chunks = [];
           let totalBytes = 0;
           res.on('data', (chunk) => {
-            totalBytes += chunk.length;
-            if (totalBytes <= 2 * 1024 * 1024) chunks.push(chunk);
+            if (settled) return;
+            const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            totalBytes += buf.length;
+            if (totalBytes > MAX_LOCAL_HTTP_BYTES) {
+              clearTimeout(timer);
+              try { res.destroy(); } catch {}
+              done(Object.assign(new Error('Local HTTP response body exceeds 2MB limit'), { code: 'RESPONSE_TOO_LARGE' }));
+              return;
+            }
+            chunks.push(buf);
+          });
+          res.on('error', (err) => {
+            clearTimeout(timer);
+            done(err);
           });
           res.on('end', () => {
-            const rawText = Buffer.concat(chunks).toString('utf8');
+            if (settled) return;
+            clearTimeout(timer);
+            const rawText = Buffer.concat(chunks, totalBytes).toString('utf8');
             try {
               const parsed = rawText ? JSON.parse(rawText) : {};
               done(null, { status: res.statusCode || 200, data: parsed });
@@ -4554,7 +4609,8 @@ export function createPrismFilesServer({
     modelHub,
     clientRelauncher,
     close: () => {
-      try { handoffMemory.close?.(); } catch {}
+      unregisterExitCleanup();
+      try { handoffMemory?.close?.(); } catch {}
     }
   };
 }

@@ -1,5 +1,5 @@
 /**
- * Anti-Claude Prism Suite v0.8.4 — core/cua-broker.mjs
+ * Anti-Claude Prism Suite v0.9.0 — core/cua-broker.mjs
  * Zero-dependency Controlled Desktop & Browser CUA Session Broker + Native Messaging HTTP Relay.
  *
  * Security invariants:
@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile, execFileSync, spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -26,7 +26,7 @@ const SUITE_ROOT_CANDIDATE = path.resolve(__dirname, '..', '..', '..');
 
 export const CUA_EXTENSION_ID = 'lbmibnghmlnidfiihkegicaejaacmkca';
 export const CUA_NM_HOST_NAME = 'com.prism.cua.bridge';
-export const CUA_VERSION = '0.8.4';
+export const CUA_VERSION = '0.9.0';
 export const MAX_CUA_BODY_BYTES = 2 * 1024 * 1024;
 
 export const CUA_STATES = Object.freeze({
@@ -88,65 +88,136 @@ export function discoverWslAdapterIpv4(networkInterfaces = os.networkInterfaces(
   return fallbackGatewayIp;
 }
 
-function fallbackDiscoverWslGeminiDirs() {
-  const envRaw = String(process.env.ANTI_CLAUDE_WSL_GEMINI_DIR || '').trim();
-  if (envRaw) {
-    return envRaw
-      .split(path.delimiter)
-      .map((s) => s.trim())
-      .filter((s) => {
-        if (!s) return false;
-        try {
-          return Boolean(fs.statSync(s, { throwIfNoEntry: false })?.isDirectory());
-        } catch {
-          return false;
-        }
-      });
-  }
-  if (process.platform !== 'win32') return [];
-  const out = [];
-  const seen = new Set();
-  try {
-    const buf = execFileSync('wsl.exe', ['-l', '-q', '--running'], {
-      timeout: 2500,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'ignore']
-    });
-    const txt = buf.includes(0) ? buf.toString('utf16le') : buf.toString('utf8');
-    const distros = txt
-      .replace(/^\uFEFF/, '')
-      .split(/\r?\n/)
-      .map((s) => s.replace(/\0/g, '').trim())
-      .filter((s) => s && SAFE_WSL_DISTRO_RE.test(s) && !/^docker-desktop/i.test(s));
+const WSL_DISCOVERY_TTL_MS = 60_000;
+let cachedWslDirs = [];
+let cachedWslDirsAt = 0;
+let wslDiscoveryInFlight = null;
 
-    for (const distro of distros) {
-      for (const uncBase of [`\\\\wsl.localhost\\${distro}`, `\\\\wsl$\\${distro}`]) {
-        try {
-          if (!fs.statSync(uncBase, { throwIfNoEntry: false })?.isDirectory()) continue;
-          const homeRoot = path.join(uncBase, 'home');
-          try {
-            for (const u of fs.readdirSync(homeRoot, { withFileTypes: true })) {
-              if (!u.isDirectory() || u.name.startsWith('.')) continue;
-              const gDir = path.join(homeRoot, u.name, '.gemini');
-              const key = gDir.toLowerCase();
-              if (!seen.has(key) && fs.statSync(gDir, { throwIfNoEntry: false })?.isDirectory()) {
-                seen.add(key);
-                out.push(gDir);
-              }
-            }
-          } catch {}
-          const rootGemini = path.join(uncBase, 'root', '.gemini');
-          const rKey = rootGemini.toLowerCase();
-          if (!seen.has(rKey) && fs.statSync(rootGemini, { throwIfNoEntry: false })?.isDirectory()) {
-            seen.add(rKey);
-            out.push(rootGemini);
-          }
-          break;
-        } catch {}
+function readEnvWslGeminiDirsSync() {
+  const envRaw = String(process.env.ANTI_CLAUDE_WSL_GEMINI_DIR || '').trim();
+  if (!envRaw) return null;
+  return envRaw
+    .split(path.delimiter)
+    .map((s) => s.trim())
+    .filter((s) => {
+      if (!s) return false;
+      try {
+        return Boolean(fs.statSync(s, { throwIfNoEntry: false })?.isDirectory());
+      } catch {
+        return false;
       }
+    });
+}
+
+function execWslRunningDistrosAsync() {
+  return new Promise((resolve) => {
+    execFile(
+      'wsl.exe',
+      ['-l', '-q', '--running'],
+      { encoding: 'buffer', timeout: 2500, windowsHide: true },
+      (err, stdout) => {
+        if (err || !stdout) {
+          resolve([]);
+          return;
+        }
+        const rawTxt = Buffer.isBuffer(stdout)
+          ? (stdout.includes(0) ? stdout.toString('utf16le') : stdout.toString('utf8'))
+          : String(stdout);
+        const distros = rawTxt
+          .replace(/\0/g, '')
+          .replace(/^\uFEFF/, '')
+          .split(/\r?\n/)
+          .map((s) => s.trim())
+          .filter((s) => s && SAFE_WSL_DISTRO_RE.test(s) && !/^docker-desktop/i.test(s));
+        resolve(distros);
+      }
+    );
+  });
+}
+
+async function isDirectoryAsync(dirPath) {
+  try {
+    const st = await fs.promises.stat(dirPath);
+    return st.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+export function refreshWslGeminiDirsAsync({ force = false } = {}) {
+  const envDirs = readEnvWslGeminiDirsSync();
+  if (envDirs !== null) {
+    return Promise.resolve(envDirs);
+  }
+  if (process.platform !== 'win32') {
+    cachedWslDirs = [];
+    cachedWslDirsAt = Date.now();
+    return Promise.resolve([]);
+  }
+  const now = Date.now();
+  if (!force && cachedWslDirsAt > 0 && now - cachedWslDirsAt < WSL_DISCOVERY_TTL_MS) {
+    return Promise.resolve([...cachedWslDirs]);
+  }
+  if (wslDiscoveryInFlight) {
+    return wslDiscoveryInFlight;
+  }
+
+  const runPromise = (async () => {
+    const out = [];
+    const seen = new Set();
+    try {
+      const distros = await execWslRunningDistrosAsync();
+      for (const distro of distros) {
+        for (const uncBase of [`\\\\wsl.localhost\\${distro}`, `\\\\wsl$\\${distro}`]) {
+          try {
+            if (!(await isDirectoryAsync(uncBase))) continue;
+            const homeRoot = path.join(uncBase, 'home');
+            try {
+              const entries = await fs.promises.readdir(homeRoot, { withFileTypes: true });
+              for (const u of entries) {
+                if (!u.isDirectory() || u.name.startsWith('.')) continue;
+                const gDir = path.join(homeRoot, u.name, '.gemini');
+                const key = gDir.toLowerCase();
+                if (!seen.has(key) && (await isDirectoryAsync(gDir))) {
+                  seen.add(key);
+                  out.push(gDir);
+                }
+              }
+            } catch {}
+            const rootGemini = path.join(uncBase, 'root', '.gemini');
+            const rKey = rootGemini.toLowerCase();
+            if (!seen.has(rKey) && (await isDirectoryAsync(rootGemini))) {
+              seen.add(rKey);
+              out.push(rootGemini);
+            }
+            break;
+          } catch {}
+        }
+      }
+      cachedWslDirs = out;
+      cachedWslDirsAt = Date.now();
+    } catch {
+      cachedWslDirsAt = Date.now();
     }
-  } catch {}
-  return out;
+    return [...cachedWslDirs];
+  })().finally(() => {
+    if (wslDiscoveryInFlight === runPromise) {
+      wslDiscoveryInFlight = null;
+    }
+  });
+
+  wslDiscoveryInFlight = runPromise;
+  return runPromise;
+}
+
+function fallbackDiscoverWslGeminiDirs() {
+  const envDirs = readEnvWslGeminiDirsSync();
+  if (envDirs !== null) return envDirs;
+  if (process.platform !== 'win32') return [];
+  if (!wslDiscoveryInFlight && (cachedWslDirsAt === 0 || Date.now() - cachedWslDirsAt >= WSL_DISCOVERY_TTL_MS)) {
+    void refreshWslGeminiDirsAsync();
+  }
+  return [...cachedWslDirs];
 }
 
 export function resolveDefaultCuaExePath({ homeDir = os.homedir(), cuaExePath = '' } = {}) {
@@ -395,6 +466,13 @@ function readJsonRequestBody(req, maxBytes = MAX_CUA_BODY_BYTES) {
       settled = true;
       reject(err);
     });
+
+    req.on('close', () => {
+      if (!settled && !req.complete) {
+        settled = true;
+        reject(Object.assign(new Error('Request aborted before completion'), { code: 'REQUEST_ABORTED' }));
+      }
+    });
   });
 }
 
@@ -484,7 +562,7 @@ export function createCuaBroker(options = {}) {
   let armedTabs = [];
   let lastNmSeenAt = 0;
   let activeRelaySessionId = '';
-  let consentInFlight = null;
+  const consentInFlightByScope = new Map();
 
   const servers = [];
   const boundEndpoints = [];
@@ -582,6 +660,7 @@ export function createCuaBroker(options = {}) {
           stdio: ['pipe', 'pipe', 'ignore'],
           windowsHide: true
         });
+        child.stdin.on('error', () => {});
         overlayChild = child;
         overlayStdoutBuf = '';
 
@@ -762,6 +841,7 @@ export function createCuaBroker(options = {}) {
             stdio: ['pipe', 'pipe', 'pipe'],
             windowsHide: true
           });
+          child.stdin.on('error', () => {});
         } catch (err) {
           finish({
             ok: false,
@@ -1000,8 +1080,9 @@ export function createCuaBroker(options = {}) {
   }
 
   async function handleRequestConsent(payload = {}) {
-    if (consentInFlight) {
-      return consentInFlight;
+    const scopeKey = `${Boolean(payload?.needAct)}|${String(payload?.target || '')}|${String(payload?.hwnd ?? '')}|${String(payload?.tabId ?? '')}`;
+    if (consentInFlightByScope.has(scopeKey)) {
+      return consentInFlightByScope.get(scopeKey);
     }
     const runConsent = async () => {
       if (lastWindows.length === 0) {
@@ -1099,10 +1180,13 @@ export function createCuaBroker(options = {}) {
       };
     };
 
-    consentInFlight = runConsent().finally(() => {
-      consentInFlight = null;
+    const inFlight = runConsent().finally(() => {
+      if (consentInFlightByScope.get(scopeKey) === inFlight) {
+        consentInFlightByScope.delete(scopeKey);
+      }
     });
-    return consentInFlight;
+    consentInFlightByScope.set(scopeKey, inFlight);
+    return inFlight;
   }
 
   async function handleRevoke() {
@@ -1112,6 +1196,9 @@ export function createCuaBroker(options = {}) {
     handoffReason = '';
     scope = null;
     expiresAt = null;
+    for (const [k, v] of idempotencyCache.entries()) {
+      if (v && v.action === 'request_consent') idempotencyCache.delete(k);
+    }
     stopOverlayProcess();
     enqueueNmCommand({
       id: `evt-${Date.now()}`,
@@ -1309,6 +1396,10 @@ export function createCuaBroker(options = {}) {
       allowPhysicalOverride: true,
       fallback: mouseMode
     });
+    const rawDesktopOp = String(stepObj?.op || stepObj?.action || '').trim().toLowerCase();
+    const desktopWorkerTimeoutMs = (rawDesktopOp === 'wait_for' || rawDesktopOp === 'wait')
+      ? Math.min(35000, Math.max(6500, (Number(stepObj?.timeoutMs ?? stepObj?.ms ?? payload?.timeoutMs) || 5000) + 3000))
+      : 6500;
     sendOverlayUpdate('EXECUTING');
     try {
       const res = await runWorker({
@@ -1316,7 +1407,7 @@ export function createCuaBroker(options = {}) {
         cmd: 'act',
         args: ['--cmd', 'act'],
         stdinObj: { hwnd: check.hwnd, mouseMode: effectiveMouseMode, step: stepObj },
-        timeoutMs: 6500,
+        timeoutMs: desktopWorkerTimeoutMs,
         trackAbort: true
       });
       if (res?.code === 'USER_ESC_ABORTED') {
@@ -1439,10 +1530,18 @@ export function createCuaBroker(options = {}) {
       const effectiveMouseMode = normalizeCuaMouseMode(payload?.step?.mouseMode ?? payload?.mouseMode, {
         fallback: mouseMode
       });
+      const rawBrowserOp = String(payload?.op || payload?.action || payload?.step?.op || payload?.step?.action || '').trim().toLowerCase();
+      const rawWaitTimeout = Number(
+        payload?.timeoutMs ?? payload?.ms ?? payload?.durationMs ??
+        payload?.step?.timeoutMs ?? payload?.step?.ms ?? payload?.step?.durationMs
+      );
+      const browserTimeoutMs = (rawBrowserOp === 'wait_for' || rawBrowserOp === 'wait')
+        ? Math.min(35000, Math.max(5000, (rawWaitTimeout || 5000) + 3000))
+        : 5000;
       const reply = await dispatchBrowserCommand(
         'browser_act',
         { ...payload, tabId: check.tabId, mouseMode: effectiveMouseMode },
-        5000
+        browserTimeoutMs
       );
       if (reply?.code === 'USER_ESC_ABORTED') {
         disarmInternal({ releaseModifiers: true });
@@ -1542,8 +1641,48 @@ export function createCuaBroker(options = {}) {
       return { ok: false, code: 'MISSING_ACTION', error: 'Missing required field: action' };
     }
 
+    const canonicalizeJson = (val) => {
+      if (val === null || typeof val !== 'object') return JSON.stringify(val);
+      if (Array.isArray(val)) return `[${val.map((x) => canonicalizeJson(x)).join(',')}]`;
+      const keys = Object.keys(val).sort();
+      return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalizeJson(val[k])}`).join(',')}}`;
+    };
+    const hashablePayload = (body?.payload && typeof body.payload === 'object' && !Array.isArray(body.payload))
+      ? payload
+      : (() => {
+          if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return {};
+          const { nonce: _n, idempotencyKey: _ik, ...rest } = payload;
+          return rest;
+        })();
+    const payloadHash = idempotencyKey
+      ? crypto.createHash('sha256').update(`${action}:${canonicalizeJson(hashablePayload || {})}`).digest('hex')
+      : '';
+
     if (idempotencyKey && idempotencyCache.has(idempotencyKey)) {
-      return idempotencyCache.get(idempotencyKey).response;
+      const cachedEntry = idempotencyCache.get(idempotencyKey);
+      if (cachedEntry.payloadHash && cachedEntry.payloadHash !== payloadHash) {
+        return {
+          ok: false,
+          status: 409,
+          code: 'IDEMPOTENCY_KEY_CONFLICT',
+          error: '相同 Idempotency-Key 不得复用在不同请求参数上'
+        };
+      }
+      return cachedEntry.response;
+    }
+
+    const idempotencyInFlight = dispatchCuaAction._inFlight || (dispatchCuaAction._inFlight = new Map());
+    if (idempotencyKey && idempotencyInFlight.has(idempotencyKey)) {
+      const pending = idempotencyInFlight.get(idempotencyKey);
+      if (pending.payloadHash !== payloadHash) {
+        return {
+          ok: false,
+          status: 409,
+          code: 'IDEMPOTENCY_KEY_CONFLICT',
+          error: '相同 Idempotency-Key 并发请求参数不一致'
+        };
+      }
+      return pending.promise;
     }
 
     if (nonce) {
@@ -1553,57 +1692,87 @@ export function createCuaBroker(options = {}) {
       seenNonces.set(nonce, now + 5 * 60 * 1000);
     }
 
-    let result;
-    switch (action) {
-      case 'status':
-        result = await handleStatus(payload);
-        break;
-      case 'request_consent':
-        result = await handleRequestConsent(payload);
-        break;
-      case 'revoke':
-        result = await handleRevoke();
-        break;
-      case 'pause_handoff':
-        result = await handlePauseHandoff(payload);
-        break;
-      case 'resume_handoff':
-        result = await handleResumeHandoff();
-        break;
-      case 'list_windows':
-        result = await handleListWindows();
-        break;
-      case 'desktop_observe':
-        result = await handleDesktopObserve(payload);
-        break;
-      case 'desktop_act':
-        result = await handleDesktopAct(payload);
-        break;
-      case 'browser_observe':
-        result = await handleBrowserObserve(payload);
-        break;
-      case 'browser_act':
-        result = await handleBrowserAct(payload);
-        break;
-      case 'register_nm_host':
-        result = await handleRegisterNmHost();
-        break;
-      case 'set_mouse_mode':
-        result = await handleSetMouseMode(payload);
-        break;
-      default:
-        result = { ok: false, code: 'UNKNOWN_ACTION', error: `Unsupported CUA action: ${action}` };
-        break;
-    }
+    const executeActionOnce = async () => {
+      let result;
+      switch (action) {
+        case 'status':
+          result = await handleStatus(payload);
+          break;
+        case 'request_consent':
+          result = await handleRequestConsent(payload);
+          break;
+        case 'revoke':
+          result = await handleRevoke();
+          break;
+        case 'pause_handoff':
+          result = await handlePauseHandoff(payload);
+          break;
+        case 'resume_handoff':
+          result = await handleResumeHandoff();
+          break;
+        case 'list_windows':
+          result = await handleListWindows();
+          break;
+        case 'desktop_observe':
+          result = await handleDesktopObserve(payload);
+          break;
+        case 'desktop_act':
+          result = await handleDesktopAct(payload);
+          break;
+        case 'browser_observe':
+          result = await handleBrowserObserve(payload);
+          break;
+        case 'browser_act':
+          result = await handleBrowserAct(payload);
+          break;
+        case 'register_nm_host':
+          result = await handleRegisterNmHost();
+          break;
+        case 'set_mouse_mode':
+          result = await handleSetMouseMode(payload);
+          break;
+        default:
+          result = { ok: false, code: 'UNKNOWN_ACTION', error: `Unsupported CUA action: ${action}` };
+          break;
+      }
 
-    if (idempotencyKey && action !== 'status' && action !== 'list_windows') {
-      idempotencyCache.set(idempotencyKey, {
-        expiresAt: Date.now() + 60 * 1000,
-        response: result
-      });
-    }
+      const nonCacheableCodes = new Set([
+        'CONSENT_REQUIRED',
+        'CONSENT_DENIED',
+        'UNAUTHORIZED',
+        'INVALID_ACTION',
+        'UNKNOWN_ACTION',
+        'MISSING_ACTION',
+        'READONLY_CONSENT',
+        'HANDOFF_PAUSED'
+      ]);
+      if (
+        idempotencyKey &&
+        action !== 'status' &&
+        action !== 'list_windows' &&
+        !nonCacheableCodes.has(String(result?.code || '')) &&
+        !(action === 'request_consent' && result?.granted === false)
+      ) {
+        idempotencyCache.set(idempotencyKey, {
+          expiresAt: Date.now() + 60 * 1000,
+          action,
+          payloadHash,
+          response: result
+        });
+      }
+      return result;
+    };
 
-    return result;
+    if (!idempotencyKey) {
+      return executeActionOnce();
+    }
+    const inFlightPromise = executeActionOnce().finally(() => {
+      if (idempotencyInFlight.get(idempotencyKey)?.promise === inFlightPromise) {
+        idempotencyInFlight.delete(idempotencyKey);
+      }
+    });
+    idempotencyInFlight.set(idempotencyKey, { payloadHash, promise: inFlightPromise });
+    return inFlightPromise;
   }
 
   async function handleNmPush(body, relaySessionHeader = '') {
@@ -1759,7 +1928,8 @@ export function createCuaBroker(options = {}) {
       const body = await readJsonRequestBody(req, MAX_CUA_BODY_BYTES);
       if (pathname === '/v1/cua') {
         const result = await dispatchCuaAction(body, req.headers);
-        sendJsonResponse(res, 200, result);
+        const statusCode = result?.code === 'IDEMPOTENCY_KEY_CONFLICT' ? 409 : 200;
+        sendJsonResponse(res, statusCode, result);
         return;
       }
 
@@ -1772,6 +1942,9 @@ export function createCuaBroker(options = {}) {
 
       handleNmPoll(req, res, relaySession);
     } catch (err) {
+      if (err?.code === 'REQUEST_ABORTED') {
+        return;
+      }
       if (err?.code === 'PAYLOAD_TOO_LARGE') {
         sendJsonResponse(res, 413, { ok: false, code: 'PAYLOAD_TOO_LARGE', error: err.message });
         return;
@@ -1870,6 +2043,11 @@ export function createCuaBroker(options = {}) {
     started = true;
     stopped = false;
     syncBrokerDiscoveryFiles();
+    if (discoverWslGeminiDirs === fallbackDiscoverWslGeminiDirs && process.platform === 'win32') {
+      void refreshWslGeminiDirsAsync({ force: true }).then(() => {
+        if (started && !stopped) syncBrokerDiscoveryFiles();
+      });
+    }
 
     expiryTimer = setInterval(() => {
       checkAndExpireConsent();
@@ -1877,7 +2055,13 @@ export function createCuaBroker(options = {}) {
     expiryTimer.unref?.();
 
     wslSyncTimer = setInterval(() => {
-      syncBrokerDiscoveryFiles();
+      if (discoverWslGeminiDirs === fallbackDiscoverWslGeminiDirs && process.platform === 'win32') {
+        void refreshWslGeminiDirsAsync().then(() => {
+          syncBrokerDiscoveryFiles();
+        });
+      } else {
+        syncBrokerDiscoveryFiles();
+      }
     }, 30000);
     wslSyncTimer.unref?.();
 

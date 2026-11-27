@@ -433,6 +433,40 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
   margin-top: 2px;
 }
 
+.ag-ps-fx-chip-grid.ag-ps-fx-chip-grid-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.ag-ps-font-subpanel {
+  gap: 4px;
+}
+
+.ag-ps-font-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 2px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--sidebar-border, rgba(128, 128, 128, 0.2));
+  background: var(--background, #FFFFFF);
+  color: var(--foreground, #141413);
+  font-size: 11px !important;
+  line-height: 1.38 !important;
+  outline: none;
+  transition: border-color 130ms ease, box-shadow 130ms ease;
+}
+
+.ag-ps-font-input::placeholder {
+  color: var(--muted-foreground, #8E8D88);
+  opacity: 0.78;
+}
+
+.ag-ps-font-input:focus-visible,
+.ag-ps-font-input:focus {
+  border-color: var(--primary, #2F75C3);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary, #2F75C3) 18%, transparent);
+}
+
 .ag-ps-fx-chip {
   display: inline-flex;
   align-items: center;
@@ -787,29 +821,260 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
   outline-offset: 2px;
 }
 
-/* ---- 10. Reduced Motion Guard ---- */
-@media (prefers-reduced-motion: reduce) {
-  #ag-ps-return-bar,
-  #ag-ps-quota-nudge {
-    animation: none !important;
-    transition: none !important;
-  }
+/* ---- 10. Performance Modes & Reduced Motion Guard (Font rules live in prism-suite.css) ---- */
+html[data-ag-ps-perf="power-save"] .ag-ps-quota-ring .ag-ps-qring-arc {
+  filter: none !important;
+  transition: none !important;
+}
+
+html[data-ag-ps-perf="power-save"] #ag-ps-return-bar,
+html[data-ag-ps-perf="power-save"] #ag-ps-quota-nudge {
+  animation: none !important;
+  transition: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12) !important;
+}
+
+html[data-ag-ps-perf="power-save"] :is(
   .ag-ps-beam-canvas,
   .ag-ps-quota-ring,
-  .ag-ps-qring-arc,
   .ag-ps-orb-btn,
   .ag-ps-orb-pill,
   #ag-ps-outline-rail,
   .ag-ps-rail-dot,
-  #ag-ps-rail-tip,
-  .ag-ps-fx-preview-btn,
-  .ag-ps-fx-chip,
-  .ag-ps-fx-swatch-btn,
-  .ag-ps-return-btn-primary,
-  .ag-ps-return-btn-ghost,
-  .ag-ps-nudge-btn-switch,
-  .ag-ps-nudge-btn-copy,
-  .ag-ps-nudge-btn-close {
+  #ag-ps-rail-tip
+) {
+  transition: none !important;
+  box-shadow: none !important;
+}
+
+html[data-ag-ps-perf="vivid"]:not([data-ag-prism-hidden="1"]):not([data-ag-ps-reduced-motion="1"]) #ag-ps-orb-dock:is([data-stage="thinking"], [data-stage="tools"], [data-stage="streaming"]) .ag-ps-orb-canvas {
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--primary, #2F75C3) 42%, transparent));
+}
+
+/* ---- 11. Optical Micro-Facets, 1px Hairline Split Sash, 0fps Semantic Afterglow & Quota Chip ---- */
+
+/* 11.1 Tactile Ceramic / Brushed-Graphite Keycaps (<kbd>) */
+html[data-ag-ps-facets="1"]:not([data-ag-theme-mode="dark"]) body:not(.dark) :where([data-testid="autoscroll-viewport"] kbd, #ag-ps-popover kbd) {
+  display: inline-block;
+  padding: 1px 5.5px;
+  margin: 0 1px;
+  border-radius: 5px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 0.84em;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--foreground, #191918);
+  background: linear-gradient(180deg, #FFFFFF 0%, #F2F1EE 100%);
+  border: 1px solid rgba(20, 20, 19, 0.16);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.92) inset, 0 1.5px 0 rgba(20, 20, 19, 0.11);
+  vertical-align: baseline;
+}
+
+html[data-ag-ps-facets="1"]:is([data-ag-theme-mode="dark"], .dark) :where([data-testid="autoscroll-viewport"] kbd, #ag-ps-popover kbd),
+html[data-ag-ps-facets="1"] body.dark :where([data-testid="autoscroll-viewport"] kbd, #ag-ps-popover kbd) {
+  display: inline-block;
+  padding: 1px 5.5px;
+  margin: 0 1px;
+  border-radius: 5px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 0.84em;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--foreground, #ECECEA);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.095) 0%, rgba(255, 255, 255, 0.04) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.10) inset, 0 1.5px 0 rgba(0, 0, 0, 0.46);
+  vertical-align: baseline;
+}
+
+/* 11.2 Specular Top-Edge Micro-Facet on File-Diff & Artifact Cards + Recessed Terminal Well */
+html[data-ag-ps-facets="1"]:not([data-ag-theme-mode="dark"]) body:not(.dark) :where([data-testid="changed-files-card-header"], [data-testid="artifact-card"]) {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.72) inset, 0 1px 2.5px rgba(20, 20, 19, 0.035);
+}
+
+html[data-ag-ps-facets="1"]:is([data-ag-theme-mode="dark"], .dark) :where([data-testid="changed-files-card-header"], [data-testid="artifact-card"]),
+html[data-ag-ps-facets="1"] body.dark :where([data-testid="changed-files-card-header"], [data-testid="artifact-card"]) {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.075) inset, 0 2px 8px rgba(0, 0, 0, 0.22);
+}
+
+html[data-ag-ps-facets="1"]:not([data-ag-theme-mode="dark"]) body:not(.dark) :where(.xterm-viewport, [data-testid="terminal-container"]) {
+  box-shadow: 0 1px 3px rgba(20, 20, 19, 0.055) inset;
+}
+
+html[data-ag-ps-facets="1"]:is([data-ag-theme-mode="dark"], .dark) :where(.xterm-viewport, [data-testid="terminal-container"]),
+html[data-ag-ps-facets="1"] body.dark :where(.xterm-viewport, [data-testid="terminal-container"]) {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.30) inset;
+}
+
+/* 11.3 1px Invisible Hairline Split Sash (strictly vertical column-resize sashes, crisp integer px, preserves 8px hit-target) */
+html[data-ag-ps-facets="1"] :where([data-sash-handle="true"]:not([aria-orientation="horizontal"]):not(.cursor-row-resize):not(.cursor-ns-resize), [data-testid="sidebar-sash"]) {
+  position: relative;
+  background: transparent !important;
+}
+
+html[data-ag-ps-facets="1"] :where([data-sash-handle="true"]:not([aria-orientation="horizontal"]):not(.cursor-row-resize):not(.cursor-ns-resize), [data-testid="sidebar-sash"])::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-0.5px);
+  background: color-mix(in srgb, var(--sidebar-border, rgba(128, 128, 128, 0.22)) 72%, transparent);
+  opacity: 0.52;
+  pointer-events: none;
+  transition: opacity 150ms cubic-bezier(0.22, 1, 0.36, 1),
+              width 140ms ease,
+              transform 140ms ease,
+              background-color 150ms ease;
+}
+
+html[data-ag-ps-facets="1"] :where([data-sash-handle="true"]:not([aria-orientation="horizontal"]):not(.cursor-row-resize):not(.cursor-ns-resize):hover, [data-sash-handle="true"]:not([aria-orientation="horizontal"]):not(.cursor-row-resize):not(.cursor-ns-resize):active, [data-testid="sidebar-sash"]:hover, [data-testid="sidebar-sash"]:active)::after {
+  width: 2px;
+  transform: translateX(-1px);
+  background: var(--primary, #2F75C3);
+  opacity: 0.88;
+}
+
+/* 11.4 Tri-State 0fps Semantic Edge Afterglow on Composer (decision=amber, error=coral, done=emerald) */
+:where([id="antigravity.agentSidePanelInputBox"]) {
+  transition: box-shadow 300ms cubic-bezier(0.22, 1, 0.36, 1), border-color 240ms ease;
+}
+
+:where([id="antigravity.agentSidePanelInputBox"][data-ag-ps-afterglow="decision"]) {
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.36), 0 4px 18px -3px rgba(245, 158, 11, 0.18) !important;
+}
+
+:where([id="antigravity.agentSidePanelInputBox"][data-ag-ps-afterglow="error"]) {
+  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.38), 0 4px 18px -3px rgba(239, 68, 68, 0.18) !important;
+}
+
+:where([id="antigravity.agentSidePanelInputBox"][data-ag-ps-afterglow="done"]) {
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.32), 0 4px 16px -3px rgba(16, 185, 129, 0.14) !important;
+}
+
+/* 11.5 Composer Footer Compact 5h · 7d Quota Micro-Capsule (4x ID specificity outranks host theme overrides) */
+#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  margin-left: 3px;
+  padding: 0 7px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  flex-shrink: 0;
+  user-select: none;
+  outline: none;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip[data-visible="1"] {
+  display: inline-flex;
+}
+
+html:not([data-ag-theme-mode="dark"]):not(.dark) body:not(.dark) #ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip,
+html:not([data-ag-theme-mode="dark"]):not(.dark) body:not(.dark) #ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip .ag-ps-quota-chip-text {
+  color: #6B6A66 !important;
+}
+
+html:not([data-ag-theme-mode="dark"]):not(.dark) body:not(.dark) #ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip:hover,
+html:not([data-ag-theme-mode="dark"]):not(.dark) body:not(.dark) #ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip:hover .ag-ps-quota-chip-text {
+  background-color: #EFEFED;
+  color: #191918 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip,
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip .ag-ps-quota-chip-text {
+  color: #9A9994 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip:hover,
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip:hover .ag-ps-quota-chip-text {
+  background-color: rgba(255, 255, 255, 0.085);
+  color: #ECECEA !important;
+}
+
+#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip:focus-visible {
+  outline: 1.5px solid var(--primary, #2F75C3);
+  outline-offset: 1px;
+}
+
+#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip .ag-ps-quota-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background-color: #10B981 !important;
+}
+
+#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip[data-tier="warn"] .ag-ps-quota-chip-dot {
+  background-color: #F59E0B !important;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.18);
+}
+
+#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip[data-tier="danger"] .ag-ps-quota-chip-dot {
+  background-color: #EF4444 !important;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.22);
+}
+
+#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip[data-tier="danger"] {
+  border-color: rgba(239, 68, 68, 0.28);
+  background-color: rgba(239, 68, 68, 0.06);
+}
+
+@media (max-width: 620px) {
+  #ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip#ag-ps-quota-chip {
+    display: none !important;
+  }
+}
+
+html[data-ag-ps-perf="power-save"] [id="antigravity.agentSidePanelInputBox"][data-ag-ps-afterglow] {
+  box-shadow: none !important;
+}
+
+html[data-ag-ps-perf="power-save"] :is([id="antigravity.agentSidePanelInputBox"], #ag-ps-quota-chip),
+html[data-ag-ps-perf="power-save"] :where([data-sash-handle="true"], [data-testid="sidebar-sash"])::after,
+html[data-ag-ps-reduced-motion="1"] :is([id="antigravity.agentSidePanelInputBox"], #ag-ps-quota-chip),
+html[data-ag-ps-reduced-motion="1"] :where([data-sash-handle="true"], [data-testid="sidebar-sash"])::after {
+  transition: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:not([data-ag-ps-force-motion="1"]) #ag-ps-return-bar,
+  html:not([data-ag-ps-force-motion="1"]) #ag-ps-quota-nudge {
+    animation: none !important;
+    transition: none !important;
+  }
+  html:not([data-ag-ps-force-motion="1"]) :is(
+    .ag-ps-beam-canvas,
+    .ag-ps-quota-ring,
+    .ag-ps-qring-arc,
+    .ag-ps-orb-btn,
+    .ag-ps-orb-pill,
+    #ag-ps-outline-rail,
+    .ag-ps-rail-dot,
+    #ag-ps-rail-tip,
+    .ag-ps-fx-preview-btn,
+    .ag-ps-fx-chip,
+    .ag-ps-fx-swatch-btn,
+    .ag-ps-font-input,
+    .ag-ps-return-btn-primary,
+    .ag-ps-return-btn-ghost,
+    .ag-ps-nudge-btn-switch,
+    .ag-ps-nudge-btn-copy,
+    .ag-ps-nudge-btn-close
+  ) {
     transition: none !important;
   }
 }

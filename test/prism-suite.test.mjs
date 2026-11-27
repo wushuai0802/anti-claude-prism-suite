@@ -1528,11 +1528,11 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.8.4');
-    assert.equal(pluginJson.version, '0.8.4');
+    assert.equal(pkgJson.version, '0.9.0');
+    assert.equal(pluginJson.version, '0.9.0');
     assert.ok(Array.isArray(pluginJson.suggested_prompts) && pluginJson.suggested_prompts.length <= 3);
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
-    assert.match(jsSrc, /SUITE_VERSION = '0\.8\.4'/);
+    assert.match(jsSrc, /SUITE_VERSION = '0\.9\.0'/);
     assert.match(jsSrc, /COOKIE_PREFS_KEY = 'ag_prism_prefs_v1'/);
     assert.match(jsSrc, /getActiveInputBox/);
     assert.match(jsSrc, /getInputBoxEl: getActiveInputBox/);
@@ -1560,7 +1560,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(wfSrc, /composerFileDrop/);
     assert.match(jsSrc, /ag_claude_ux_quota_cache_v1/);
     assert.match(jsSrc, /readAntiClaudeQuotaCache/);
-    assert.match(inlineHtml, /version: '0\.8\.4'/);
+    assert.match(inlineHtml, /version: '0\.9\.0'/);
     assert.match(jsSrc, /__agPrismBridge/);
     assert.match(jsSrc, /bridge-ping/);
     assert.match(jsSrc, /bridge-pong/);
@@ -1592,7 +1592,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(csSrc, /EnsureDebugPortOnUserShortcuts/);
     assert.match(csSrc, /InstallKernel/);
     assert.match(csSrc, /prism-suite-00-prefs\.js/);
-    assert.match(csSrc, /v0\.8\.4/);
+    assert.match(csSrc, /v0\.9\.0/);
     const installPluginSlice = csSrc.slice(csSrc.indexOf('public static int InstallPlugin('), csSrc.indexOf('private static bool IsReparsePoint('));
     assert.doesNotMatch(installPluginSlice, /Directory\.Delete\(targetDir,\s*true\)/, 'InstallPlugin must update in-place without deleting prism-files root');
   } finally {
@@ -2802,7 +2802,7 @@ test('v0.8.0 prism-cua end-to-end broker/MCP roundtrip, batch_actions, safety/CA
     // 1. Strict 3-tool model visibility & default-disabled plugin manifest
     const cuaPluginJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'plugin-cua', 'plugin.json'), 'utf8'));
     assert.equal(cuaPluginJson.name, 'prism-cua');
-    assert.equal(cuaPluginJson.version, '0.8.4');
+    assert.equal(cuaPluginJson.version, '0.9.0');
     assert.equal(cuaPluginJson.disabled, true, 'prism-cua must ship disabled by default');
     assert.deepEqual(CUA_TOOLS.map((t) => t.name), ['cua_status', 'cua_observe', 'cua_act']);
 
@@ -3042,7 +3042,7 @@ test('v0.8.1 visual virtual cursor overlay, 4-tier non-intrusive mouse routing (
     assert.match(winCuaCs, /NativeMethods\.SetCursorPos\(origCursor\.X,\s*origCursor\.Y\)/);
 
     // 2. Browser Shadow DOM virtual cursor & Workbench toggle UI invariants
-    assert.match(contentAgentJs, /AGENT_VERSION = '0\.8\.4'/);
+    assert.match(contentAgentJs, /AGENT_VERSION = '0\.9\.0'/);
     assert.match(contentAgentJs, /function pulseVirtualCursor\(/);
     assert.match(contentAgentJs, /__prism_cua_vcursor_host/);
     assert.match(contentAgentJs, /delivery:\s*'dom_virtual'/);
@@ -3617,13 +3617,13 @@ test('Clean-Room TOP 6 hardening: IMDS guard (preserving Tailscale *.ts.net), re
       return { ok: false, status: 404, headers: { get: () => null } };
     };
 
-    const updInfo = await checkPrismSelfUpdate({ currentVersion: '0.8.4', fetchImpl: makeUpdaterFetch(`${validHash}  Anti-Claude-Prism-Suite-Source.tar.gz\n`), etagCacheFile: '' });
+    const updInfo = await checkPrismSelfUpdate({ currentVersion: '0.9.0', fetchImpl: makeUpdaterFetch(`${validHash}  Anti-Claude-Prism-Suite-Source.tar.gz\n`), etagCacheFile: '' });
     assert.ok(updInfo.sourceTarAsset?.url.endsWith('Anti-Claude-Prism-Suite-Source.tar.gz'));
     assert.ok(updInfo.sourceSha256Asset?.url.endsWith('.tar.gz.sha256'));
 
     await assert.rejects(
       () => applyPrismSelfUpdate({
-        currentVersion: '0.8.4',
+        currentVersion: '0.9.0',
         platform: 'darwin',
         isWsl: false,
         lockDir: path.join(tmp, 'lock1'),
@@ -3635,7 +3635,7 @@ test('Clean-Room TOP 6 hardening: IMDS guard (preserving Tailscale *.ts.net), re
     // Partial asset guard: sourceTarAsset present without companion .sha256 must NOT silently downgrade
     await assert.rejects(
       () => applyPrismSelfUpdate({
-        currentVersion: '0.8.4',
+        currentVersion: '0.9.0',
         platform: 'darwin',
         isWsl: false,
         lockDir: path.join(tmp, 'lock2'),
@@ -3701,4 +3701,692 @@ test('ThinkingOrb fx module clean init (no bare onCleanup crash) and left-sideba
   assert.match(customJsSrc, /mt\.closest\('\[data-testid="conversation-list-sidebar"\]'\)/);
   assert.match(customCssSrc, /\[data-testid="conversation-list-sidebar"\]:not\(\[data-ag-sb-unified\] \*\)[\s\S]{0,120}contain:\s*layout style/);
   assert.match(customCssSrc, /\[data-testid="overlay-scrollbar-thumb"\][\s\S]{0,80}will-change:\s*transform/);
+});
+
+test('v0.9.0 mini-dom runtime execution, [MS-SHLLINK] binary codec, AV-hygiene gate, CUA sensitive/idempotency hardening, Model Hub idle timeout, and go-keyring-base64 vault', async () => {
+  const vm = await import('node:vm');
+  const repoRoot = REPO;
+
+  // 1. Lightweight mini-dom VM execution of prism-suite.js + prism-suite-fx.js + prism-suite-workflow.js
+  {
+    const docListeners = new Map();
+    const winListeners = new Map();
+    const addMapListener = (map, type, fn, opts) => {
+      if (!map.has(type)) map.set(type, new Set());
+      const entry = { fn, opts };
+      map.get(type).add(entry);
+      if (opts && opts.signal && typeof opts.signal.addEventListener === 'function') {
+        opts.signal.addEventListener('abort', () => map.get(type)?.delete(entry), { once: true });
+      }
+    };
+    const remMapListener = (map, type, fn) => {
+      const set = map.get(type);
+      if (!set) return;
+      for (const item of Array.from(set)) {
+        if (item.fn === fn) set.delete(item);
+      }
+    };
+
+    let attrWriteCount = 0;
+    const allElements = [];
+
+    class MiniStyle {
+      constructor() { this._props = new Map(); }
+      setProperty(k, v) { this._props.set(String(k), String(v)); }
+      getPropertyValue(k) { return this._props.get(String(k)) || ''; }
+      removeProperty(k) { this._props.delete(String(k)); }
+    }
+
+    class MiniClassList {
+      constructor() { this._set = new Set(); }
+      add(...names) { for (const n of names) if (n) this._set.add(n); }
+      remove(...names) { for (const n of names) this._set.delete(n); }
+      contains(n) { return this._set.has(n); }
+      toggle(n, force) {
+        const next = force !== undefined ? Boolean(force) : !this._set.has(n);
+        if (next) this._set.add(n); else this._set.delete(n);
+        return next;
+      }
+    }
+
+    const matchesSimpleSel = (el, sel) => {
+      const parts = String(sel || '').split(',').map((s) => s.trim()).filter(Boolean);
+      return parts.some((part) => {
+        if (part.startsWith('#')) {
+          const idOnly = part.slice(1).split('[')[0];
+          return el.id === idOnly;
+        }
+        if (part.startsWith('.')) {
+          const cls = part.slice(1).split('[')[0];
+          return el.classList.contains(cls) || String(el.className || '').split(/\s+/).includes(cls);
+        }
+        const mAttr = part.match(/^\[([a-zA-Z0-9_-]+)(?:="([^"]*)")?/);
+        if (mAttr) {
+          if (!el.hasAttribute(mAttr[1])) return false;
+          return mAttr[2] === undefined ? true : el.getAttribute(mAttr[1]) === mAttr[2];
+        }
+        const mTagAttr = part.match(/^([a-zA-Z0-9]+)\[([a-zA-Z0-9_-]+)="([^"]*)"\]$/);
+        if (mTagAttr) {
+          return el.tagName.toLowerCase() === mTagAttr[1].toLowerCase() && el.getAttribute(mTagAttr[2]) === mTagAttr[3];
+        }
+        return el.tagName.toLowerCase() === part.toLowerCase();
+      });
+    };
+
+    class MiniElement {
+      constructor(tag) {
+        this.tagName = String(tag || 'div').toUpperCase();
+        this.id = '';
+        this.className = '';
+        this.textContent = '';
+        this.innerHTML = '';
+        this.type = '';
+        this.value = '';
+        this.style = new MiniStyle();
+        this.classList = new MiniClassList();
+        this.dataset = {};
+        this.attrs = new Map();
+        this.children = [];
+        this.parentElement = null;
+        this.listeners = new Map();
+        this._rect = { left: 260, top: 680, right: 980, bottom: 760, width: 720, height: 80 };
+        this.width = 0;
+        this.height = 0;
+        allElements.push(this);
+      }
+      get isConnected() {
+        let cur = this;
+        while (cur) {
+          if (cur === htmlEl) return true;
+          cur = cur.parentElement;
+        }
+        return false;
+      }
+      get firstElementChild() { return this.children[0] || null; }
+      get nextElementSibling() {
+        if (!this.parentElement) return null;
+        const idx = this.parentElement.children.indexOf(this);
+        return idx >= 0 ? (this.parentElement.children[idx + 1] || null) : null;
+      }
+      setAttribute(k, v) {
+        attrWriteCount++;
+        const sv = String(v);
+        this.attrs.set(k, sv);
+        if (k === 'id') this.id = sv;
+        if (k === 'class') this.className = sv;
+      }
+      getAttribute(k) {
+        if (k === 'id' && this.id) return this.id;
+        if (k === 'class' && this.className) return this.className;
+        return this.attrs.has(k) ? this.attrs.get(k) : null;
+      }
+      hasAttribute(k) {
+        if (k === 'id' && this.id) return true;
+        return this.attrs.has(k);
+      }
+      removeAttribute(k) {
+        this.attrs.delete(k);
+        if (k === 'id') this.id = '';
+      }
+      appendChild(ch) {
+        if (ch && ch._isFragment) {
+          for (const sub of Array.from(ch.children)) this.appendChild(sub);
+          return ch;
+        }
+        if (ch.parentElement) ch.remove();
+        ch.parentElement = this;
+        this.children.push(ch);
+        return ch;
+      }
+      insertBefore(ch, ref) {
+        if (ch.parentElement) ch.remove();
+        ch.parentElement = this;
+        const idx = ref ? this.children.indexOf(ref) : -1;
+        if (idx >= 0) this.children.splice(idx, 0, ch);
+        else this.children.push(ch);
+        return ch;
+      }
+      insertAdjacentElement(pos, el) {
+        if (pos === 'afterend' && this.parentElement) {
+          const idx = this.parentElement.children.indexOf(this);
+          if (el.parentElement) el.remove();
+          el.parentElement = this.parentElement;
+          this.parentElement.children.splice(idx + 1, 0, el);
+          return el;
+        }
+        if (pos === 'beforeend') return this.appendChild(el);
+        return el;
+      }
+      remove() {
+        if (!this.parentElement) return;
+        const idx = this.parentElement.children.indexOf(this);
+        if (idx >= 0) this.parentElement.children.splice(idx, 1);
+        this.parentElement = null;
+      }
+      contains(other) {
+        let cur = other;
+        while (cur) {
+          if (cur === this) return true;
+          cur = cur.parentElement;
+        }
+        return false;
+      }
+      matches(sel) { return matchesSimpleSel(this, sel); }
+      closest(sel) {
+        let cur = this;
+        while (cur) {
+          if (matchesSimpleSel(cur, sel)) return cur;
+          cur = cur.parentElement;
+        }
+        return null;
+      }
+      querySelectorAll(sel) {
+        const res = [];
+        const walk = (node) => {
+          for (const ch of node.children) {
+            if (matchesSimpleSel(ch, sel)) res.push(ch);
+            walk(ch);
+          }
+        };
+        walk(this);
+        return res;
+      }
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+      getBoundingClientRect() { return { ...this._rect }; }
+      addEventListener(type, fn, opts) { addMapListener(this.listeners, type, fn, opts); }
+      removeEventListener(type, fn) { remMapListener(this.listeners, type, fn); }
+      dispatchEvent(ev) {
+        ev.target = ev.target || this;
+        const set = this.listeners.get(ev.type);
+        if (set) for (const item of Array.from(set)) item.fn(ev);
+        return true;
+      }
+      getContext() {
+        return {
+          setTransform() {}, clearRect() {}, beginPath() {}, moveTo() {}, lineTo() {},
+          arcTo() {}, arc() {}, closePath() {}, stroke() {}, fill() {},
+          createRadialGradient() { return { addColorStop() {} }; }
+        };
+      }
+      cloneNode() { return new MiniElement(this.tagName); }
+      focus() {}
+      click() { this.dispatchEvent({ type: 'click', stopPropagation() {}, preventDefault() {} }); }
+    }
+
+    const htmlEl = new MiniElement('html');
+    const headEl = new MiniElement('head');
+    const bodyEl = new MiniElement('body');
+    htmlEl.appendChild(headEl);
+    htmlEl.appendChild(bodyEl);
+
+    const viewportEl = new MiniElement('div');
+    viewportEl.setAttribute('data-testid', 'autoscroll-viewport');
+    viewportEl._rect = { left: 240, top: 48, right: 1020, bottom: 670, width: 780, height: 622 };
+    viewportEl.scrollHeight = 1600;
+    viewportEl.scrollTop = 978;
+    viewportEl.clientHeight = 622;
+    viewportEl.offsetWidth = 794;
+    viewportEl.clientWidth = 780;
+    // Simulate paginated long conversation: only 1 tail user bubble is mounted in DOM, while host Fiber holds all 5 turns!
+    const tailUserStep = new MiniElement('div');
+    tailUserStep.setAttribute('data-testid', 'user-input-step');
+    tailUserStep.textContent = '这是第 5 轮最新提问';
+    viewportEl.appendChild(tailUserStep);
+    let jumpedTurnIdx = -1;
+    const mockHostTurns = [
+      { startStepIndex: 0 },
+      { startStepIndex: 12 },
+      { startStepIndex: 28 },
+      { startStepIndex: 45 },
+      { startStepIndex: 63 }
+    ];
+    viewportEl.__reactFiber$mock = {
+      return: {
+        memoizedProps: {
+          value: {
+            turns: mockHostTurns,
+            total: 5,
+            activeIndex: 4,
+            jumpTo: (idx) => { jumpedTurnIdx = idx; }
+          }
+        },
+        return: {
+          memoizedProps: {
+            conversationId: 'conv-demo-01',
+            turns: mockHostTurns,
+            fetchTurns: async ({ stepIndices }) => ({
+              turns: stepIndices.map((st) => ({
+                startStepIndex: st,
+                firstStep: { step: { value: { items: [{ chunk: { value: `历史轮次步骤#${st}` } }] } } }
+              }))
+            })
+          },
+          return: null
+        }
+      }
+    };
+    bodyEl.appendChild(viewportEl);
+
+    const composerEl = new MiniElement('div');
+    composerEl.setAttribute('id', 'antigravity.agentSidePanelInputBox');
+    const footerBar = new MiniElement('div');
+    footerBar.setAttribute('class', 'flex min-w-0 flex-1 items-center agy-composer-footer');
+    const modelWrap = new MiniElement('div');
+    const modelBtn = new MiniElement('button');
+    modelBtn.setAttribute('data-testid', 'model-selector-trigger');
+    modelWrap.appendChild(modelBtn);
+    const ctxRing = new MiniElement('button');
+    ctxRing.setAttribute('id', 'ag-claude-ctx-ring');
+    footerBar.appendChild(modelWrap);
+    footerBar.appendChild(ctxRing);
+    composerEl.appendChild(footerBar);
+    bodyEl.appendChild(composerEl);
+
+    const storageMap = new Map();
+    storageMap.set('ag_claude_ux_quota_cache_v1', JSON.stringify({
+      ts: Date.now(),
+      accountEmail: 'demo@example.com',
+      tierName: 'Google AI Ultra',
+      groups: [
+        {
+          displayName: 'Gemini',
+          buckets: [
+            { window: '5h', remaining: { case: 'remainingFraction', value: 0.88 }, resetTime: new Date(Date.now() + 7200_000).toISOString() },
+            { window: 'weekly', remaining: { case: 'remainingFraction', value: 0.74 }, resetTime: new Date(Date.now() + 172800_000).toISOString() }
+          ]
+        }
+      ]
+    }));
+
+    const activeTimers = new Set();
+    const wrapSetTimeout = (fn, ms) => {
+      const id = setTimeout(() => { activeTimers.delete(id); fn(); }, Math.min(Number(ms) || 0, 5000));
+      id.unref?.();
+      activeTimers.add(id);
+      return id;
+    };
+    const wrapClearTimeout = (id) => { activeTimers.delete(id); clearTimeout(id); };
+    const activeIntervals = new Set();
+    const wrapSetInterval = (fn, ms) => {
+      const id = setInterval(fn, Math.max(50, Number(ms) || 1000));
+      id.unref?.();
+      activeIntervals.add(id);
+      return id;
+    };
+    const wrapClearInterval = (id) => { activeIntervals.delete(id); clearInterval(id); };
+
+    const documentMock = {
+      documentElement: htmlEl,
+      head: headEl,
+      body: bodyEl,
+      title: 'Antigravity',
+      hidden: false,
+      cookie: '',
+      activeElement: null,
+      hasFocus: () => true,
+      createElement: (t) => new MiniElement(t),
+      createElementNS: (_ns, t) => new MiniElement(t),
+      createDocumentFragment: () => {
+        const f = new MiniElement('#fragment');
+        f._isFragment = true;
+        return f;
+      },
+      getElementById: (id) => allElements.find((e) => e.isConnected && e.id === id) || null,
+      querySelector: (sel) => htmlEl.querySelector(sel),
+      querySelectorAll: (sel) => htmlEl.querySelectorAll(sel),
+      addEventListener: (type, fn, opts) => addMapListener(docListeners, type, fn, opts),
+      removeEventListener: (type, fn) => remMapListener(docListeners, type, fn),
+      dispatchEvent: (ev) => {
+        const set = docListeners.get(ev.type);
+        if (set) for (const item of Array.from(set)) item.fn(ev);
+        return true;
+      }
+    };
+
+    const windowMock = {
+      document: documentMock,
+      location: { protocol: 'https:', origin: 'https://antigravity.local', pathname: '/c/conv-demo-01', href: 'https://antigravity.local/c/conv-demo-01' },
+      navigator: { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', clipboard: { writeText: async () => {} } },
+      innerWidth: 1440,
+      innerHeight: 900,
+      devicePixelRatio: 2,
+      localStorage: {
+        getItem: (k) => (storageMap.has(k) ? storageMap.get(k) : null),
+        setItem: (k, v) => storageMap.set(String(k), String(v)),
+        removeItem: (k) => storageMap.delete(k)
+      },
+      sessionStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+      matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+      getComputedStyle: () => ({
+        getPropertyValue: (p) => (p === '--primary' ? '#2F75C3' : ''),
+        borderTopLeftRadius: '14px',
+        display: 'block',
+        visibility: 'visible',
+        opacity: '1'
+      }),
+      requestAnimationFrame: (cb) => wrapSetTimeout(() => cb(performance.now()), 16),
+      cancelAnimationFrame: (id) => wrapClearTimeout(id),
+      setTimeout: wrapSetTimeout,
+      clearTimeout: wrapClearTimeout,
+      setInterval: wrapSetInterval,
+      clearInterval: wrapClearInterval,
+      ResizeObserver: class { observe() {} disconnect() {} },
+      MutationObserver: class { observe() {} disconnect() {} },
+      AbortController,
+      CustomEvent: class { constructor(type, init = {}) { this.type = type; this.detail = init.detail; } },
+      Event: class { constructor(type) { this.type = type; } },
+      performance,
+      console,
+      Symbol,
+      URL,
+      Uint8Array,
+      Float64Array,
+      Int16Array,
+      addEventListener: (type, fn, opts) => addMapListener(winListeners, type, fn, opts),
+      removeEventListener: (type, fn) => remMapListener(winListeners, type, fn),
+      dispatchEvent: (ev) => {
+        const set = winListeners.get(ev.type);
+        if (set) for (const item of Array.from(set)) item.fn(ev);
+        return true;
+      }
+    };
+    windowMock.window = windowMock;
+    windowMock.globalThis = windowMock;
+
+    const ctx = vm.createContext(windowMock);
+    for (const rel of ['extensions/prism-suite.js', 'extensions/prism-suite-fx.js', 'extensions/prism-suite-workflow.js']) {
+      const code = fs.readFileSync(path.join(repoRoot, rel), 'utf8');
+      vm.runInContext(code, ctx, { filename: rel });
+    }
+
+    const bus = windowMock.__agPrismBus;
+    assert.ok(bus && bus.version >= 4, 'Prism v4 event bus must initialize in mini-dom');
+    assert.equal(typeof bus.showToast, 'function', 'bus.showToast must be exposed');
+
+    // Verify new v0.9.0 prefs, CSS injection rejection, ThinkingOrb mount, optical facets, and compact quota pill
+    assert.equal(htmlEl.getAttribute('data-ag-ps-facets'), '1', 'opticalFacets enabled by default');
+    const qChip = documentMock.getElementById('ag-ps-quota-chip');
+    assert.ok(qChip, 'Compact 5h/7d quota chip must mount beside #ag-claude-ctx-ring');
+    assert.equal(ctxRing.nextElementSibling, qChip, 'Quota chip must anchor directly after #ag-claude-ctx-ring without Ping-Pong');
+    assert.match(qChip.children[1].textContent, /5h 88% · 7d 74%/);
+
+    // Dirty-checking verification: repeated tick with unchanged quota performs 0 writes on #ag-ps-quota-chip
+    const writesBeforeTick = attrWriteCount;
+    bus.setPref('performanceMode', 'power-save');
+    assert.equal(htmlEl.getAttribute('data-ag-ps-perf'), 'power-save');
+    assert.ok(attrWriteCount > writesBeforeTick);
+
+    assert.equal(bus.setPref('chatFontFamily', '"LXGW WenKai"'), true);
+    assert.equal(htmlEl.style.getPropertyValue('--ag-ps-chat-font'), '"LXGW WenKai"');
+    assert.equal(bus.setPref('codeFontFamily', 'evil; } body { display: none'), false, 'CSS injection font must be rejected');
+
+    assert.equal(bus.setPref('thinkingOrb', true), true);
+    assert.ok(documentMock.getElementById('ag-ps-orb-dock'), 'ThinkingOrb dock must mount cleanly at runtime');
+
+    // Outline rail must render all 5 host turns immediately on initial load without requiring any click!
+    const railEl = documentMock.getElementById('ag-ps-outline-rail');
+    assert.ok(railEl, 'Outline rail must mount immediately on conversation route');
+    assert.equal(railEl.getAttribute('data-show'), '1');
+    assert.equal(railEl.children.length, 5, 'Outline rail must immediately render all 5 turns from host Fiber even when only 1 bubble is in DOM');
+    assert.equal(railEl.children[4].getAttribute('aria-current'), 'true', 'Active bottom turn pill must be highlighted initially');
+    assert.equal(bus.getConversationNav().getPreview(4), '这是第 5 轮最新提问');
+    // Clicking unmounted historical dot 1 invokes host jumpTo(1) and immediately switches active pill
+    railEl.dispatchEvent({ type: 'click', target: railEl.children[1], stopPropagation() {}, preventDefault() {} });
+    assert.equal(jumpedTurnIdx, 1, 'Clicking unmounted dot must invoke hostNav.jumpTo(1)');
+    assert.equal(railEl.children[1].getAttribute('aria-current'), 'true');
+
+    // Double dispose() must leave zero orphaned DOM nodes, zero root attributes, and zero active intervals
+    windowMock.__agPrismSuiteDispose();
+    windowMock.__agPrismSuiteDispose();
+    assert.equal(documentMock.getElementById('ag-ps-orb-dock'), null);
+    assert.equal(documentMock.getElementById('ag-ps-quota-chip'), null);
+    assert.equal(documentMock.getElementById('ag-ps-outline-rail'), null);
+    assert.equal(documentMock.getElementById('ag-ps-rail-tip'), null);
+    assert.equal(htmlEl.hasAttribute('data-ag-ps-perf'), false);
+    assert.equal(htmlEl.hasAttribute('data-ag-ps-facets'), false);
+    assert.equal(htmlEl.style.getPropertyValue('--ag-ps-chat-font'), '');
+    assert.equal(activeIntervals.size, 0, 'All intervals must be cleared after dispose()');
+    for (const t of Array.from(activeTimers)) clearTimeout(t);
+  }
+
+  // 2. [MS-SHLLINK] binary .lnk codec round-trip + ELECTRON_RUN_AS_NODE + AV-hygiene gate
+  {
+    const {
+      LNK_HEADER_SIZE,
+      LNK_CLSID_BYTES,
+      LNK_FLAGS,
+      parseWindowsLnkBuffer,
+      updateWindowsLnkArguments
+    } = await import(pathToFileURL(path.join(repoRoot, 'vendor', 'anti-claude', 'core', 'ms-lnk.mjs')).href);
+
+    // Build a genuine [MS-SHLLINK] binary buffer with LinkInfo + Unicode StringData
+    const header = Buffer.alloc(LNK_HEADER_SIZE, 0);
+    header.writeUInt32LE(LNK_HEADER_SIZE, 0);
+    LNK_CLSID_BYTES.copy(header, 4);
+    const flags = LNK_FLAGS.HasLinkInfo | LNK_FLAGS.HasWorkingDir | LNK_FLAGS.HasArguments | LNK_FLAGS.IsUnicode;
+    header.writeUInt32LE(flags, 20);
+
+    const exePath = 'C:\\Users\\Dev\\AppData\\Local\\Programs\\Antigravity\\Antigravity.exe';
+    const ansiPath = Buffer.from(`${exePath}\0`, 'latin1');
+    const uniPath = Buffer.from(`${exePath}\0`, 'utf16le');
+    const volInfo = Buffer.alloc(16, 0);
+    volInfo.writeUInt32LE(16, 0);
+    volInfo.writeUInt32LE(3, 4); // DRIVE_FIXED
+    const linkInfoHdrSize = 0x24;
+    const volOffset = linkInfoHdrSize;
+    const ansiBaseOffset = volOffset + volInfo.length;
+    const ansiSuffixOffset = ansiBaseOffset + ansiPath.length;
+    const ansiSuffix = Buffer.from([0]);
+    const uniBaseOffset = ansiSuffixOffset + ansiSuffix.length;
+    const uniSuffixOffset = uniBaseOffset + uniPath.length;
+    const uniSuffix = Buffer.from([0, 0]);
+    const linkInfoTotal = uniSuffixOffset + uniSuffix.length;
+
+    const linkInfo = Buffer.alloc(linkInfoTotal, 0);
+    linkInfo.writeUInt32LE(linkInfoTotal, 0);
+    linkInfo.writeUInt32LE(linkInfoHdrSize, 4);
+    linkInfo.writeUInt32LE(0x01, 8); // VolumeIDAndLocalBasePath
+    linkInfo.writeUInt32LE(volOffset, 12);
+    linkInfo.writeUInt32LE(ansiBaseOffset, 16);
+    linkInfo.writeUInt32LE(ansiSuffixOffset, 24);
+    linkInfo.writeUInt32LE(uniBaseOffset, 28);
+    linkInfo.writeUInt32LE(uniSuffixOffset, 32);
+    volInfo.copy(linkInfo, volOffset);
+    ansiPath.copy(linkInfo, ansiBaseOffset);
+    uniPath.copy(linkInfo, uniBaseOffset);
+
+    const encUniCounted = (s) => {
+      const b = Buffer.from(s, 'utf16le');
+      const h = Buffer.alloc(2);
+      h.writeUInt16LE(b.length >>> 1, 0);
+      return Buffer.concat([h, b]);
+    };
+    const origLnk = Buffer.concat([
+      header,
+      linkInfo,
+      encUniCounted('C:\\Users\\Dev\\AppData\\Local\\Programs\\Antigravity'),
+      encUniCounted('--existing-flag')
+    ]);
+
+    const parsed1 = parseWindowsLnkBuffer(origLnk);
+    assert.equal(parsed1.ok, true);
+    assert.equal(parsed1.targetPath, exePath);
+    assert.equal(parsed1.arguments, '--existing-flag');
+
+    const patchedLnk = updateWindowsLnkArguments(origLnk, '--existing-flag --remote-debugging-port=0');
+    const parsed2 = parseWindowsLnkBuffer(patchedLnk);
+    assert.equal(parsed2.ok, true);
+    assert.equal(parsed2.targetPath, exePath);
+    assert.equal(parsed2.arguments, '--existing-flag --remote-debugging-port=0');
+
+    // ELECTRON_RUN_AS_NODE propagation
+    const { buildNodeExecEnv } = await import(pathToFileURL(path.join(repoRoot, 'install.mjs')).href);
+    const envOut = buildNodeExecEnv({ PATH: '/usr/bin', ELECTRON_RUN_AS_NODE: '1' });
+    assert.equal(envOut.ELECTRON_RUN_AS_NODE, '1');
+
+    // AV-hygiene static gates: zero WScript.Shell and zero -WindowStyle Hidden
+    for (const rel of ['installer/win/PrismSuiteInstaller.cs', 'vendor/anti-claude/core/daemon.mjs', 'vendor/anti-claude/install.mjs']) {
+      const src = fs.readFileSync(path.join(repoRoot, rel), 'utf8');
+      assert.doesNotMatch(src, /WScript\.Shell/i, `${rel} must not contain WScript.Shell`);
+    }
+    for (const rel of ['plugin/server/upstream-radar.mjs', 'plugin/server/relaunch-client.mjs']) {
+      const src = fs.readFileSync(path.join(repoRoot, rel), 'utf8');
+      assert.doesNotMatch(src, /-WindowStyle\s+Hidden/i, `${rel} must not use -WindowStyle Hidden`);
+    }
+  }
+
+  // 3. CUA content-agent sensitive OTP/paste guard, Broker 409 idempotency, {schema:1,prefs}, go-keyring-base64 & Model Hub idle timeout
+  {
+    const contentAgentSrc = fs.readFileSync(path.join(repoRoot, 'extensions', 'chrome-cua-bridge', 'content-agent.js'), 'utf8');
+    let registeredListener = null;
+    class MockAgentEl {}
+    const otpInput = Object.assign(new MockAgentEl(), {
+      tagName: 'INPUT',
+      type: 'text',
+      name: 'sms_code',
+      id: 'otp',
+      placeholder: '请输入短信验证码',
+      isConnected: true,
+      closest: () => null,
+      getAttribute(k) { return this[k] || ''; },
+      getBoundingClientRect: () => ({ left: 10, top: 10, width: 120, height: 32 }),
+      focus() {},
+      dispatchEvent() { return true; }
+    });
+    const agentSandbox = vm.createContext({
+      Element: MockAgentEl,
+      HTMLElement: MockAgentEl,
+      HTMLSelectElement: class extends MockAgentEl {},
+      window: {
+        innerWidth: 1280,
+        innerHeight: 800,
+        location: { href: 'https://portal.example.com/login', origin: 'https://portal.example.com' },
+        getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }),
+        scrollBy() {}
+      },
+      document: {
+        title: 'Portal Login',
+        activeElement: otpInput,
+        body: otpInput,
+        documentElement: otpInput,
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        elementFromPoint: () => otpInput
+      },
+      chrome: {
+        runtime: {
+          onMessage: { addListener: (fn) => { registeredListener = fn; } }
+        }
+      },
+      CSS: { escape: (s) => s },
+      MouseEvent: class { constructor(t, o) { this.type = t; Object.assign(this, o); } },
+      KeyboardEvent: class { constructor(t, o) { this.type = t; Object.assign(this, o); } },
+      Event: class { constructor(t, o) { this.type = t; Object.assign(this, o); } },
+      HTMLInputElement: { prototype: {} },
+      HTMLTextAreaElement: { prototype: {} },
+      setTimeout,
+      clearTimeout
+    });
+    agentSandbox.window.document = agentSandbox.document;
+    vm.runInContext(contentAgentSrc, agentSandbox);
+    const cuaAgent = agentSandbox.window.__prismCuaContentAgent;
+    assert.ok(cuaAgent && cuaAgent.version === '0.9.0');
+
+    const pasteAttempt = await cuaAgent.act({ op: 'press_key', key: 'Ctrl+V' });
+    assert.equal(pasteAttempt.ok, false);
+    assert.equal(pasteAttempt.code, 'SENSITIVE_FIELD_BLOCKED', 'Ctrl+V into OTP/sensitive field must be blocked');
+
+    const shiftInsAttempt = await cuaAgent.act({ op: 'press_key', key: 'Shift+Insert' });
+    assert.equal(shiftInsAttempt.ok, false);
+    assert.equal(shiftInsAttempt.code, 'SENSITIVE_FIELD_BLOCKED', 'Shift+Insert into sensitive field must be blocked');
+
+    const tabNavAttempt = await cuaAgent.act({ op: 'press_key', key: 'Tab' });
+    assert.equal(tabNavAttempt.ok, true, 'Pure Tab navigation away from sensitive field remains allowed');
+
+    // sanitizePrismUiPrefs unwraps { schema: 1, prefs } and validates new v0.9.0 keys
+    const { sanitizePrismUiPrefs } = await import(
+      pathToFileURL(path.join(repoRoot, 'plugin', 'server', 'account-manager.mjs')).href
+    );
+    const unwrapped = sanitizePrismUiPrefs({
+      schema: 1,
+      updatedAt: '2026-11-27T12:00:00Z',
+      prefs: {
+        performanceMode: 'vivid',
+        ignoreReducedMotion: true,
+        opticalFacets: true,
+        semanticAfterglow: true,
+        compactQuotaPill: true,
+        chatFontFamily: '"LXGW WenKai"',
+        codeFontFamily: 'bad; url(http://evil)'
+      }
+    });
+    assert.equal(unwrapped.performanceMode, 'vivid');
+    assert.equal(unwrapped.ignoreReducedMotion, true);
+    assert.equal(unwrapped.opticalFacets, true);
+    assert.equal(unwrapped.chatFontFamily, '"LXGW WenKai"');
+    assert.equal(unwrapped.codeFontFamily, undefined);
+
+    // account-vault go-keyring-base64 unwrapping & refreshHash extraction
+    const {
+      GO_KEYRING_B64_PREFIX,
+      extractCredentialEmail,
+      extractCredentialRefreshHash
+    } = await import(pathToFileURL(path.join(repoRoot, 'plugin', 'server', 'account-vault.mjs')).href);
+    const goPayload = `${GO_KEYRING_B64_PREFIX}${Buffer.from(
+      JSON.stringify({ id_token_email: 'MacUser@Example.com', token: { refresh_token: '1//0gSecretRefreshTokenValue' } }),
+      'utf8'
+    ).toString('base64')}`;
+    assert.equal(extractCredentialEmail(Buffer.from(goPayload, 'utf8')), 'macuser@example.com');
+    const rHash = extractCredentialRefreshHash(Buffer.from(goPayload, 'utf8'));
+    assert.match(rHash, /^[a-f0-9]{12}$/);
+
+    // model-hub max_completion_tokens for o3 / gpt-5 & streaming idle timeout reset
+    const tmpHubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-v090-hub-'));
+    try {
+      const pm = createPrismProfileManager({
+        profilePath: path.join(tmpHubDir, 'profile.json'),
+        env: { TEST_HUB_KEY: 'sk-test-dummy-token-value-123456' }
+      });
+      pm.upsertProvider({
+        id: 'p1',
+        protocol: 'openai-chat',
+        baseUrl: 'http://127.0.0.1:18888/v1',
+        apiKeyEnv: 'TEST_HUB_KEY'
+      });
+      pm.upsertModel({
+        id: 'o3-pro',
+        providerId: 'p1',
+        upstreamModel: 'o3-mini',
+        tier: 'T1',
+        vendor: 'openai'
+      });
+      let capturedBody = null;
+      const enc = new TextEncoder();
+      const hub = createModelHub({
+        profileManager: pm,
+        fetchFn: async (_url, init) => {
+          capturedBody = JSON.parse(init.body);
+          const stream = new ReadableStream({
+            start(controller) {
+              controller.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"PASS"}}]}\n\n'));
+              controller.enqueue(enc.encode('data: [DONE]\n\n'));
+              controller.close();
+            }
+          });
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'text/event-stream' : null) },
+            body: stream
+          };
+        }
+      });
+      const resHub = await hub.askModel({ model: 'o3-pro', prompt: 'Audit check', maxTokens: 4096 });
+      assert.equal(resHub.text, 'PASS');
+      assert.equal(capturedBody.max_completion_tokens, 4096);
+      assert.equal(capturedBody.max_tokens, undefined);
+    } finally {
+      fs.rmSync(tmpHubDir, { recursive: true, force: true });
+    }
+  }
 });

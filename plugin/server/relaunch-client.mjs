@@ -195,7 +195,10 @@ export function buildWinDetachedDispatchScript(workerEncoded) {
     '  }',
     '} catch {}',
     'if (-not $method) {',
-    '  Start-Process -FilePath $psExe -ArgumentList $psArgs -WindowStyle Hidden',
+    '  $psi = New-Object System.Diagnostics.ProcessStartInfo($psExe, $psArgs)',
+    '  $psi.UseShellExecute = $false',
+    '  $psi.CreateNoWindow = $true',
+    '  [void][System.Diagnostics.Process]::Start($psi)',
     "  $method = 'start-process'",
     '}',
     'Write-Output (ConvertTo-Json -Compress @{ ok = $true; method = $method })'
@@ -364,17 +367,20 @@ export function createClientRelauncher(options = {}) {
 
     const delaySec = (Math.max(250, Math.min(5000, Number(delayMs) || 650)) / 1000).toFixed(2);
     const unixDebugFlag = normalizeDebugPortFlag(targetInfo.debugPort);
+    const finalArgs = targetInfo.preserveDebugPort ? [unixDebugFlag] : [];
     if (platform === 'darwin') {
-      const argsArg = targetInfo.preserveDebugPort ? ` --args ${unixDebugFlag}` : '';
+      const macOpenArgs = targetInfo.preserveDebugPort
+        ? ['-n', '-a', targetInfo.targetPath, '--args', ...finalArgs]
+        : ['-n', '-a', targetInfo.targetPath];
       const script = [
         `sleep ${delaySec}`,
         'osascript -e \'tell application "Antigravity" to quit\' >/dev/null 2>&1 || true',
         'for i in 1 2 3 4 5 6 7 8 9 10 11 12; do pgrep -x Antigravity >/dev/null 2>&1 || break; sleep 0.3; done',
         'pkill -x Antigravity >/dev/null 2>&1 || true',
         'sleep 0.5',
-        `open -n -a ${JSON.stringify(targetInfo.targetPath)}${argsArg}`
+        'open "$@"'
       ].join('; ');
-      spawnDetached('/bin/sh', ['-c', script], { cwd: homeDir });
+      spawnDetached('/bin/sh', ['-c', script, '--', ...macOpenArgs], { cwd: homeDir });
       return {
         ok: true,
         dryRun: false,
@@ -387,14 +393,12 @@ export function createClientRelauncher(options = {}) {
     }
 
     if (platform === 'linux') {
-      const argsPart = targetInfo.preserveDebugPort ? ` ${unixDebugFlag}` : '';
       const script = [
         `sleep ${delaySec}`,
         'pkill -TERM -x antigravity >/dev/null 2>&1 || true',
-        'sleep 1.2',
-        `nohup ${JSON.stringify(targetInfo.targetPath)}${argsPart} >/dev/null 2>&1 &`
+        'sleep 0.8; exec "$@" >/dev/null 2>&1 &'
       ].join('; ');
-      spawnDetached('/bin/sh', ['-c', script], { cwd: homeDir });
+      spawnDetached('/bin/sh', ['-c', script, '--', targetInfo.targetPath, ...finalArgs], { cwd: homeDir });
       return {
         ok: true,
         dryRun: false,

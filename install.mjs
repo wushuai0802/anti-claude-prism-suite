@@ -19,6 +19,18 @@ const __dirname = path.dirname(__filename);
 const IGNORED_NAMES = new Set(['.DS_Store', 'Thumbs.db']);
 export const KERNEL_USER_LAYER_FILES = ['config.json', 'custom.css', 'custom.js', 'i18n.override.json'];
 
+export function buildNodeExecEnv(baseEnv = process.env) {
+  const env = { ...baseEnv };
+  if (
+    Boolean(process.versions && process.versions.electron) ||
+    process.env.ELECTRON_RUN_AS_NODE === '1' ||
+    baseEnv?.ELECTRON_RUN_AS_NODE === '1'
+  ) {
+    env.ELECTRON_RUN_AS_NODE = '1';
+  }
+  return env;
+}
+
 function readArgValue(argv, flag) {
   const idx = argv.indexOf(flag);
   if (idx !== -1 && idx + 1 < argv.length && argv[idx + 1]) {
@@ -369,7 +381,7 @@ export function installKernel({
       // Use stdio: 'ignore' so detached grandchild daemon on Windows never inherits open stdout/stderr pipes
       execFileSync(process.execPath, args, {
         cwd: runtimeDir,
-        env: { ...process.env, ANTI_CLAUDE_NO_NETWORK: '1' },
+        env: buildNodeExecEnv({ ...process.env, ANTI_CLAUDE_NO_NETWORK: '1' }),
         timeout: 35000,
         windowsHide: true,
         stdio: 'ignore'

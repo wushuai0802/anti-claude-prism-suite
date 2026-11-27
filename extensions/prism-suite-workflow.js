@@ -939,15 +939,15 @@
       const hashUuid = (window.location.hash || '').match(uuidRe);
       if (hashUuid) return hashUuid[0];
 
-      const attrNode = document.querySelector('[data-conversation-id], [data-cascade-id], [data-session-id]');
-      if (attrNode) {
-        const v = (
-          attrNode.getAttribute('data-conversation-id') ||
-          attrNode.getAttribute('data-cascade-id') ||
-          attrNode.getAttribute('data-session-id') ||
+      const selectedSidebarRow = document.querySelector('[data-testid="conversation-row-sidebar"][data-selected="true"]');
+      if (selectedSidebarRow) {
+        const selVal = (
+          selectedSidebarRow.getAttribute('data-conversation-id') ||
+          selectedSidebarRow.getAttribute('data-cascade-id') ||
+          selectedSidebarRow.getAttribute('data-session-id') ||
           ''
         ).trim();
-        if (/^[A-Za-z0-9._:-]{4,128}$/.test(v)) return v;
+        if (/^[A-Za-z0-9._:-]{4,128}$/.test(selVal)) return selVal;
       }
 
       const activeLink = document.querySelector('a[aria-current="page"][href]');
@@ -956,6 +956,19 @@
         const lm = href.match(/\/(?:conversations?|chats?|cascades?|sessions?|c)\/([A-Za-z0-9._:-]{4,128})/i)
           || href.match(uuidRe);
         if (lm) return lm[1] || lm[0];
+      }
+
+      const attrNode = document.querySelector(
+        '[data-testid="conversation-view"][data-cascade-id], [data-conversation-id]:not([data-testid="conversation-row-sidebar"]), [data-cascade-id]:not([data-testid="conversation-row-sidebar"]), [data-session-id]:not([data-testid="conversation-row-sidebar"])'
+      );
+      if (attrNode) {
+        const v = (
+          attrNode.getAttribute('data-conversation-id') ||
+          attrNode.getAttribute('data-cascade-id') ||
+          attrNode.getAttribute('data-session-id') ||
+          ''
+        ).trim();
+        if (/^[A-Za-z0-9._:-]{4,128}$/.test(v)) return v;
       }
 
       return '';
@@ -1904,7 +1917,10 @@
       }
       const refText = formatFileRefTokens(paths);
       if (insertTextIntoTargetEditor(hit.editor, refText)) {
-        try { bus.toast?.(`已插入 ${paths.length} 个本地文件/目录引用`); } catch {}
+        try {
+          if (typeof bus.showToast === 'function') bus.showToast(`已插入 ${paths.length} 个本地文件/目录引用`);
+          else if (typeof bus.toast === 'function') bus.toast(`已插入 ${paths.length} 个本地文件/目录引用`);
+        } catch {}
       }
     }, { capture: false, signal });
 
@@ -1922,7 +1938,10 @@
       e.preventDefault();
       const refText = formatFileRefTokens(paths);
       if (insertTextIntoTargetEditor(hit.editor, refText)) {
-        try { bus.toast?.(`已粘贴 ${paths.length} 个本地文件/目录引用`); } catch {}
+        try {
+          if (typeof bus.showToast === 'function') bus.showToast(`已粘贴 ${paths.length} 个本地文件/目录引用`);
+          else if (typeof bus.toast === 'function') bus.toast(`已粘贴 ${paths.length} 个本地文件/目录引用`);
+        } catch {}
       }
     }, { capture: false, signal });
 
@@ -2509,11 +2528,13 @@
     }
 
     let turnActionsAc = new AbortController();
+    let boundTurnHosts = new WeakSet();
 
     function cleanupAllTurnActions() {
       closeActiveInlineEditor();
       try { turnActionsAc.abort(); } catch {}
       turnActionsAc = new AbortController();
+      boundTurnHosts = new WeakSet();
       document.querySelectorAll('.ag-ps-turn-actions').forEach((el) => el.remove());
       document.querySelectorAll('[data-ag-ps-edit-bound]').forEach((el) => {
         el.removeAttribute('data-ag-ps-edit-bound');
@@ -2567,14 +2588,39 @@
         return;
       }
 
+      // Pass 1: Pure DOM geometry & computed-style reads (zero DOM mutations -> zero layout thrashing)
       const turns = getUserTurnElements();
       const busy = typeof bus.isBusy === 'function' && bus.isBusy();
+      const vpRectCache = new WeakMap();
+      const measuredTurns = [];
 
       for (let i = 0; i < turns.length; i++) {
         const contentEl = turns[i];
         const bubble = findTurnBubble(contentEl);
         if (!bubble || !bubble.isConnected) continue;
         const host = resolveTurnActionHost(bubble, contentEl) || bubble;
+        const vp = host.closest('[data-testid="autoscroll-viewport"]');
+        let flipBelow = null;
+        if (vp) {
+          let vr = vpRectCache.get(vp);
+          if (!vr) {
+            vr = vp.getBoundingClientRect();
+            vpRectCache.set(vp, vr);
+          }
+          const hr = host.getBoundingClientRect();
+          flipBelow = hr.top - vr.top < 14;
+        }
+        measuredTurns.push({
+          bubble,
+          host,
+          isStreamingTurn: Boolean(busy && i === turns.length - 1),
+          flipBelow
+        });
+      }
+
+      // Pass 2: Pure DOM writes & single-instance listener binding per host
+      for (let i = 0; i < measuredTurns.length; i++) {
+        const { bubble, host, isStreamingTurn, flipBelow } = measuredTurns[i];
 
         // Ensure no legacy in-flow action bar stays inside the colored bubble itself
         if (host !== bubble) {
@@ -2583,9 +2629,7 @@
           bubble.classList.remove('ag-ps-turn-host');
         }
 
-        const isStreamingTurn = busy && i === turns.length - 1;
         let bar = host.querySelector(':scope > .ag-ps-turn-actions');
-
         if (!bar) {
           host.setAttribute('data-ag-ps-edit-bound', '1');
           host.classList.add('ag-ps-turn-host');
@@ -2593,11 +2637,24 @@
           bar = document.createElement('div');
           bar.className = 'ag-ps-turn-actions';
           bar.setAttribute('data-ag-i18n-ignore', '1');
-          host.addEventListener('pointerenter', () => syncTurnActionEdgeFlip(bar, host), { passive: true, signal: turnActionsAc.signal });
-          host.addEventListener('focusin', () => syncTurnActionEdgeFlip(bar, host), { passive: true, signal: turnActionsAc.signal });
           host.appendChild(bar);
         }
-        syncTurnActionEdgeFlip(bar, host);
+
+        if (!boundTurnHosts.has(host)) {
+          boundTurnHosts.add(host);
+          const onHostEnterOrFocus = () => {
+            const liveBar = host.querySelector(':scope > .ag-ps-turn-actions');
+            if (liveBar) syncTurnActionEdgeFlip(liveBar, host);
+          };
+          host.addEventListener('pointerenter', onHostEnterOrFocus, { passive: true, signal: turnActionsAc.signal });
+          host.addEventListener('focusin', onHostEnterOrFocus, { passive: true, signal: turnActionsAc.signal });
+        }
+
+        if (flipBelow === true) {
+          if (bar.getAttribute('data-below') !== '1') bar.setAttribute('data-below', '1');
+        } else if (flipBelow === false) {
+          if (bar.hasAttribute('data-below')) bar.removeAttribute('data-below');
+        }
 
         // Sync Edit button idempotently
         let editBtn = bar.querySelector('[data-ps-act="edit"]');
@@ -2701,7 +2758,7 @@
         itemEl.hasAttribute('data-ag-pd-reveal-file') ||
         itemEl.hasAttribute('data-ag-pm-reveal-agents') ||
         itemEl.hasAttribute('data-action') ||
-        itemEl.closest('#ag-ps-img-ctx-menu, #ag-ps-popover')
+        itemEl.closest('#ag-ps-img-menu, #ag-ps-img-ctx-menu, #ag-ps-popover')
       ) {
         return false;
       }

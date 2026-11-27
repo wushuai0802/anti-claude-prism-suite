@@ -30,6 +30,13 @@
   }
 
   const FX_DEFAULTS = {
+    performanceMode: 'balanced',  // 'power-save' | 'balanced' | 'vivid'
+    ignoreReducedMotion: false,
+    chatFontFamily: '',
+    codeFontFamily: '',
+    opticalFacets: true,
+    semanticAfterglow: true,
+    compactQuotaPill: true,
     borderBeam: false,
     borderBeamMode: 'always',     // 'always' | 'busy'
     borderBeamPalette: 'theme',   // 'theme' | 'gemini' | 'aurora' | 'prism' | 'neon' | 'quota'
@@ -50,6 +57,29 @@
     autoDismissOnboarding: true,
     quotaHandoffAlert: true
   };
+
+  const CHAT_FONT_PRESETS = [
+    { label: '默认', value: '' },
+    { label: '霞鹜文楷', value: '"LXGW WenKai", "霞鹜文楷"' },
+    { label: '现代黑体', value: '"Inter", "HarmonyOS Sans SC", "Microsoft YaHei UI"' },
+    { label: '屏显雅宋', value: '"Source Han Serif SC", "Songti SC", serif' }
+  ];
+
+  const CODE_FONT_PRESETS = [
+    { label: '默认', value: '' },
+    { label: 'JetBrains', value: '"JetBrains Mono"' },
+    { label: 'Cascadia', value: '"Cascadia Code"' },
+    { label: 'Maple', value: '"Maple Mono NF", "Maple Mono"' }
+  ];
+
+  function sanitizeFontFamilyPref(v) {
+    if (typeof v !== 'string') return undefined;
+    const s = v.replace(/[\r\n\0]+/g, ' ').trim();
+    if (s.length > 160) return undefined;
+    if (/[\x00-\x1f\x7f;{}<>\\]|\/\*|url\s*\(|expression\s*\(|@import/i.test(s)) return undefined;
+    if ((s.match(/"/g) || []).length % 2 !== 0 || (s.match(/'/g) || []).length % 2 !== 0) return undefined;
+    return s;
+  }
 
   const BEAM_PALETTE_LABELS = [
     { id: 'theme', label: '主题', dot: 'var(--primary, #2F75C3)' },
@@ -256,17 +286,24 @@
     const motionQuery = typeof window.matchMedia === 'function'
       ? window.matchMedia('(prefers-reduced-motion: reduce)')
       : null;
-    let reducedMotion = Boolean(motionQuery && motionQuery.matches);
     let windowFocused = typeof document.hasFocus === 'function' ? document.hasFocus() : true;
 
+    function isEffectivelyReducedMotion(prefs = getPrefs()) {
+      return (
+        (Boolean(motionQuery && motionQuery.matches) && !prefs.ignoreReducedMotion) ||
+        prefs.performanceMode === 'power-save'
+      );
+    }
+
     if (motionQuery && typeof motionQuery.addEventListener === 'function') {
-      motionQuery.addEventListener('change', (e) => {
+      motionQuery.addEventListener('change', () => {
         if (disposed) return;
-        reducedMotion = Boolean(e.matches);
-        if (reducedMotion) {
+        const p = getPrefs();
+        applyPerfAndCustomFonts(p);
+        if (isEffectivelyReducedMotion(p)) {
           stopScheduler();
           clearBeamCanvas();
-          if (orbCanvas && getPrefs().thinkingOrb) renderThinkingOrbFrame(0, performance.now(), true);
+          if (orbCanvas && p.thinkingOrb) renderThinkingOrbFrame(0, performance.now(), true);
         } else {
           ensureScheduler();
         }
@@ -657,7 +694,8 @@
       if (!beamCanvas || !beamCtx || geo.perim <= 0) return false;
 
       setAttr(beamCanvas, 'data-active', '1');
-      beamPhase = (beamPhase + dt * (isAmbientIdle ? 0.16 : 0.27)) % 1;
+      const vividScale = prefs.performanceMode === 'vivid' ? 1.18 : 1;
+      beamPhase = (beamPhase + dt * (isAmbientIdle ? 0.16 : 0.27) * vividScale) % 1;
 
       const ctx = beamCtx;
       const scaleX = beamCanvas.width / Math.max(1, geo.cssW);
@@ -695,8 +733,13 @@
         ensureBeamCanvas();
       }
       syncQuotaRingSuppression(nowMs);
-      if (reducedMotion) {
-        safeToast('系统已开启减少动态效果，流光动画已跳过');
+      const curPrefs = getPrefs();
+      if (isEffectivelyReducedMotion(curPrefs)) {
+        safeToast(
+          curPrefs.performanceMode === 'power-save'
+            ? '当前为省电模式，流光动画已跳过'
+            : '系统已开启减少动态效果，流光动画已跳过'
+        );
       } else {
         ensureScheduler();
         safeToast('流光边框预览 3 秒 ✨');
@@ -947,23 +990,37 @@
     }
     armDprWatcher();
 
+    let lastOrbStageCheckAt = 0;
+    let lastOrbStageBusy = null;
+    let cachedOrbStage = 'idle';
+
     function detectOrbStage(busy, nowMs) {
       if (!busy) {
-        return nowMs < orbDoneUntil ? 'done' : 'idle';
+        lastOrbStageBusy = false;
+        cachedOrbStage = nowMs < orbDoneUntil ? 'done' : 'idle';
+        return cachedOrbStage;
       }
+      if (lastOrbStageBusy === true && nowMs - lastOrbStageCheckAt < 250) {
+        return cachedOrbStage;
+      }
+      lastOrbStageBusy = true;
+      lastOrbStageCheckAt = nowMs;
       const vp = safeGetViewportEl();
       const scope = vp || document;
       if (scope.querySelector('.animate-shimmer-text, [data-testid*="tool"][data-status="running"]')) {
-        return 'tools';
+        cachedOrbStage = 'tools';
+        return cachedOrbStage;
       }
       const triggers = scope.querySelectorAll('[data-testid="thinking-collapsible-trigger"]');
       if (triggers.length) {
         const lastTxt = (triggers[triggers.length - 1].textContent || '').trim();
         if (lastTxt && !/\d+\s*s\b|\d+\s*秒|已思考|Thought\s+for/i.test(lastTxt)) {
-          return 'thinking';
+          cachedOrbStage = 'thinking';
+          return cachedOrbStage;
         }
       }
-      return 'streaming';
+      cachedOrbStage = 'streaming';
+      return cachedOrbStage;
     }
 
     function getStageTargetColor(stage) {
@@ -1041,7 +1098,7 @@
       }, { signal: orbSignal, passive: true });
 
       orbBtn.addEventListener('pointermove', (e) => {
-        if (disposed || reducedMotion) return;
+        if (disposed || isEffectivelyReducedMotion()) return;
         const rect = orbBtn.getBoundingClientRect();
         const nx = ((e.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
         const ny = ((e.clientY - rect.top) / Math.max(1, rect.height)) * 2 - 1;
@@ -1057,7 +1114,7 @@
         orbTargetTiltY = 0;
         if (orbDock) setAttr(orbDock, 'data-hover', '');
         notifyOrbGeometryChange();
-        if (!reducedMotion) ensureScheduler();
+        if (!isEffectivelyReducedMotion()) ensureScheduler();
       }, { signal: orbSignal, passive: true });
 
       orbBtn.addEventListener('click', (e) => {
@@ -1133,7 +1190,8 @@
         if (orbPill) orbPill.textContent = ORB_STAGE_LABELS[orbStage] || ORB_STAGE_LABELS.idle;
         updateOrbButtonTip();
         notifyOrbGeometryChange();
-        if (reducedMotion && orbCanvas && getPrefs().thinkingOrb) {
+        const p = getPrefs();
+        if (isEffectivelyReducedMotion(p) && orbCanvas && p.thinkingOrb) {
           renderThinkingOrbFrame(0, nowMs, true);
         }
       } else if (orbBtn) {
@@ -1193,8 +1251,9 @@
             : 0.55 * orbMorphEnergy;
 
       if (!isStaticSnapshot) {
-        orbTime += dt * (0.8 + orbMorphEnergy * 1.4);
-        orbRotY += dt * spinSpeed;
+        const orbVivid = getPrefs().performanceMode === 'vivid' ? 1.16 : 1;
+        orbTime += dt * (0.8 + orbMorphEnergy * 1.4) * orbVivid;
+        orbRotY += dt * spinSpeed * orbVivid;
         orbRotX = 0.25 + Math.sin(orbTime * 0.45) * 0.16 * orbMorphEnergy;
       }
 
@@ -1342,8 +1401,9 @@
     }
 
     function shouldRunScheduler(nowMs) {
-      if (disposed || reducedMotion || document.hidden) return false;
+      if (disposed || document.hidden) return false;
       const prefs = getPrefs();
+      if (isEffectivelyReducedMotion(prefs)) return false;
       const beamActive = isBeamTargetActive(prefs, nowMs);
       const beamNeed = Boolean(beamCanvas && beamCanvas.isConnected) && (beamActive || beamAlpha > 0.004);
       const orbNeed = orbNeedsRaf(prefs, nowMs);
@@ -1360,7 +1420,8 @@
 
     function onSharedRaf(ts) {
       sharedRafId = 0;
-      if (disposed || reducedMotion || document.hidden) {
+      const prefs = getPrefs();
+      if (disposed || document.hidden || isEffectivelyReducedMotion(prefs)) {
         lastRafTs = 0;
         return;
       }
@@ -1368,7 +1429,6 @@
       lastRafTs = ts;
 
       const nowMs = Date.now();
-      const prefs = getPrefs();
 
       let keepRunning = false;
 
@@ -1410,10 +1470,28 @@
       return safeGetThemeAccent();
     }
 
+    function applyPerfAndCustomFonts(prefs = getPrefs()) {
+      const html = document.documentElement;
+      if (!html) return;
+      const perfMode = prefs.performanceMode || 'balanced';
+      const chatFont = sanitizeFontFamilyPref(prefs.chatFontFamily || '') || '';
+      const codeFont = sanitizeFontFamilyPref(prefs.codeFontFamily || '') || '';
+      setAttr(html, 'data-ag-ps-perf', perfMode);
+      setAttr(html, 'data-ag-ps-force-motion', prefs.ignoreReducedMotion && perfMode !== 'power-save' ? '1' : '');
+      setAttr(html, 'data-ag-ps-reduced-motion', isEffectivelyReducedMotion(prefs) ? '1' : '');
+      setAttr(html, 'data-ag-ps-facets', prefs.opticalFacets !== false ? '1' : '');
+      setAttr(html, 'data-ag-ps-custom-chat-font', chatFont ? '1' : '');
+      setStyleVar(html, '--ag-ps-chat-font', chatFont);
+      setAttr(html, 'data-ag-ps-custom-code-font', codeFont ? '1' : '');
+      setStyleVar(html, '--ag-ps-code-font', codeFont);
+    }
+
     function applyBubbleTintAndCompact(strengthOverride) {
       const prefs = getPrefs();
       const html = document.documentElement;
       if (!html) return;
+
+      applyPerfAndCustomFonts(prefs);
 
       // Compact layout
       setAttr(html, 'data-ag-ps-compact', prefs.compactLayout ? '1' : '');
@@ -1747,6 +1825,22 @@
         clearOverviewRestoreTimers();
         return;
       }
+      const closeCtrl = target.closest(
+        '[aria-label*="Close" i], [aria-label*="Dismiss" i], [aria-label*="Minimize" i], [aria-label*="关闭"], [data-testid*="close"]'
+      );
+      if (closeCtrl) {
+        if (isOverviewOpenNow()) {
+          lastManualOverviewToggleAt = Date.now();
+          clearOverviewRestoreTimers();
+          setTimeout(() => {
+            if (!disposed && isConversationRoute() && !isOverviewOpenNow()) {
+              setWantedOverviewOpen(false);
+              if (railEl) positionOutlineRail();
+            }
+          }, 160);
+        }
+        return;
+      }
       // If Overview is currently open and user clicks a side-panel / split-tab button outside Overview,
       // preserve Overview across any split-pane collapse/remount or outside-dismiss
       if (isOverviewOpenNow() && !target.closest('[data-testid="overview-panel"]')) {
@@ -1956,18 +2050,45 @@
       return bestIdx;
     }
 
+    let railHoveredDot = null;
+    let railHoveredIdx = -1;
+
+    function safeGetConversationNav() {
+      try {
+        if (typeof bus.getConversationNav === 'function') {
+          return bus.getConversationNav();
+        }
+      } catch {}
+      const turns = getUserTurns();
+      return {
+        mode: 'dom',
+        convId: String(window.location.pathname || ''),
+        total: turns.length,
+        activeIndex: turns.length ? detectCurrentTurnIndex(turns) : -1,
+        domTurns: turns,
+        getPreview: (i) => (turns[i] ? getTurnPreviewText(turns[i]) : ''),
+        getDomEl: (i) => turns[i] || null,
+        ensurePreviews: () => Promise.resolve(false),
+        jumpTo: () => false
+      };
+    }
+
     function hideRailTip() {
+      railHoveredDot = null;
+      railHoveredIdx = -1;
       if (railTipEl) setAttr(railTipEl, 'data-show', '');
     }
 
     function showRailTip(dotBtn, idx, text) {
       if (!railTipEl || !dotBtn) return;
+      railHoveredDot = dotBtn;
+      railHoveredIdx = idx;
       railTipEl.textContent = '';
       const badge = document.createElement('span');
       badge.className = 'ag-ps-rail-tip-idx';
       badge.textContent = `#${idx + 1}`;
       railTipEl.appendChild(badge);
-      railTipEl.appendChild(document.createTextNode(text.slice(0, 48)));
+      railTipEl.appendChild(document.createTextNode((text || '当前对话轮次').slice(0, 48)));
 
       const rect = dotBtn.getBoundingClientRect();
       const tipRight = Math.max(16, window.innerWidth - rect.left + 10);
@@ -1978,15 +2099,29 @@
       setAttr(railTipEl, 'data-show', '1');
     }
 
-    function updateRailActiveDot() {
-      if (!railEl || !railTurnNodes.length) return;
-      const idx = detectCurrentTurnIndex(railTurnNodes);
-      if (idx === railActiveIdx) return;
-      railActiveIdx = idx;
+    function updateRailActiveDot(navOverride = null) {
+      if (!railEl) return;
       const dots = railEl.children;
+      if (!dots.length) return;
+      const nav = navOverride || safeGetConversationNav();
+      const idx = nav.total > 0
+        ? Math.max(0, Math.min(dots.length - 1, nav.activeIndex >= 0 ? nav.activeIndex : dots.length - 1))
+        : (railTurnNodes.length ? detectCurrentTurnIndex(railTurnNodes) : 0);
+      if (idx < 0 || idx === railActiveIdx) return;
+      railActiveIdx = idx;
+      let activeDotEl = null;
       for (let i = 0; i < dots.length; i++) {
-        if (i === idx) dots[i].setAttribute('aria-current', 'true');
-        else dots[i].removeAttribute('aria-current');
+        if (i === idx) {
+          dots[i].setAttribute('aria-current', 'true');
+          activeDotEl = dots[i];
+        } else {
+          dots[i].removeAttribute('aria-current');
+        }
+      }
+      // Keep active pill centered inside scrollable rail on multi-turn (>16) conversations
+      if (activeDotEl && dots.length > 16 && railEl.clientHeight > 0 && !railHoveredDot) {
+        const targetScroll = activeDotEl.offsetTop - railEl.clientHeight * 0.5 + activeDotEl.offsetHeight * 0.5;
+        railEl.scrollTop = Math.max(0, Math.round(targetScroll));
       }
     }
 
@@ -2155,11 +2290,25 @@
           const dot = e.target && e.target.closest && e.target.closest('.ag-ps-rail-dot');
           if (!dot) return;
           const idx = Number(dot.getAttribute('data-rail-idx'));
+          const nav = safeGetConversationNav();
+          if (nav && nav.total > 0 && idx >= 0 && idx < nav.total) {
+            if (nav.jumpTo(idx)) {
+              railActiveIdx = -1;
+              updateRailActiveDot({ total: nav.total, activeIndex: idx });
+              setTimeout(() => {
+                if (!disposed && railEl) {
+                  railActiveIdx = -1;
+                  updateRailActiveDot();
+                }
+              }, 240);
+              return;
+            }
+          }
           const target = railTurnNodes[idx];
           if (!target || !target.isConnected) {
             const vp = safeGetViewportEl();
             if (vp && typeof vp.scrollTo === 'function') {
-              vp.scrollTo({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' });
+              vp.scrollTo({ top: 0, behavior: isEffectivelyReducedMotion() ? 'auto' : 'smooth' });
             }
             return;
           }
@@ -2168,11 +2317,14 @@
             target.closest('[data-testid="user-message-bubble"]') ||
             target.closest('[data-testid="user-message"]') ||
             target;
-          bubble.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'center' });
-          bubble.classList.remove('ag-ps-turn-pulse');
-          void bubble.offsetWidth;
-          bubble.classList.add('ag-ps-turn-pulse');
-          setTimeout(() => bubble.classList.remove('ag-ps-turn-pulse'), 1500);
+          const red = isEffectivelyReducedMotion();
+          bubble.scrollIntoView({ behavior: red ? 'auto' : 'smooth', block: 'center' });
+          if (!red) {
+            bubble.classList.remove('ag-ps-turn-pulse');
+            void bubble.offsetWidth;
+            bubble.classList.add('ag-ps-turn-pulse');
+            setTimeout(() => bubble.classList.remove('ag-ps-turn-pulse'), 1500);
+          }
           const preview = getTurnPreviewText(target).slice(0, 34);
           safeToast(`第 ${idx + 1} / ${railTurnNodes.length} 轮 · ${preview}`);
           railActiveIdx = -1;
@@ -2183,9 +2335,18 @@
           const dot = e.target && e.target.closest && e.target.closest('.ag-ps-rail-dot');
           if (!dot) return;
           const idx = Number(dot.getAttribute('data-rail-idx'));
-          const target = railTurnNodes[idx];
-          const txt = target ? getTurnPreviewText(target) : '当前对话轮次';
-          showRailTip(dot, idx, txt);
+          const nav = safeGetConversationNav();
+          let txt = nav && nav.total > idx ? nav.getPreview(idx) : '';
+          if (!txt && railTurnNodes[idx]) txt = getTurnPreviewText(railTurnNodes[idx]);
+          showRailTip(dot, idx, txt || '加载提问摘要…');
+          if (!txt && nav && typeof nav.ensurePreviews === 'function') {
+            nav.ensurePreviews(idx, 16, () => {
+              if (!disposed && railHoveredDot === dot && railHoveredIdx === idx) {
+                const refreshed = safeGetConversationNav().getPreview(idx);
+                if (refreshed) showRailTip(dot, idx, refreshed);
+              }
+            });
+          }
         }, { signal });
 
         railEl.addEventListener('pointerleave', hideRailTip, { signal });
@@ -2208,13 +2369,15 @@
       }
 
       const vp = safeGetViewportEl();
-      const turns = getUserTurns();
+      const nav = safeGetConversationNav();
+      const turns = nav.domTurns || getUserTurns();
+      const totalTurns = nav.total > 0 ? nav.total : turns.length;
       const hasVirtualActiveChat =
-        turns.length === 0 &&
+        totalTurns === 0 &&
         isConversationRoute() &&
         Boolean(vp && vp.querySelector('[data-testid="planner-response-text"], [data-testid="worked-for-collapsible"]'));
 
-      if (turns.length < 1 && !hasVirtualActiveChat) {
+      if (totalTurns < 1 && !hasVirtualActiveChat) {
         if (railEl) setAttr(railEl, 'data-show', '');
         hideRailTip();
         detachRailScroll();
@@ -2226,15 +2389,20 @@
       ensureOutlineRailEls();
       if (!railEl) return;
 
-      const dotCount = Math.max(1, turns.length);
-      const firstHead = turns.length ? getTurnPreviewText(turns[0]).slice(0, 18) : 'virtual';
-      const lastHead = turns.length ? getTurnPreviewText(turns[turns.length - 1]).slice(0, 18) : 'virtual';
-      const sig = `${dotCount}|${firstHead}|${lastHead}`;
+      const dotCount = Math.max(1, totalTurns);
+      const lastStepTag = nav.turns && nav.turns.length
+        ? `${nav.turns[0]?.startStepIndex}:${nav.turns[nav.turns.length - 1]?.startStepIndex}`
+        : `${turns.length ? getTurnPreviewText(turns[0]).slice(0, 14) : 'v'}:${turns.length ? getTurnPreviewText(turns[turns.length - 1]).slice(0, 14) : 'v'}`;
+      const sig = `${nav.convId || ''}|${dotCount}|${lastStepTag}`;
       railTurnNodes = turns;
 
       if (sig !== railTurnSig) {
         railTurnSig = sig;
-        railActiveIdx = -1;
+        const initActive = totalTurns > 0
+          ? Math.max(0, Math.min(dotCount - 1, nav.activeIndex >= 0 ? nav.activeIndex : dotCount - 1))
+          : 0;
+        railActiveIdx = initActive;
+        let initActiveEl = null;
         const frag = document.createDocumentFragment();
         for (let i = 0; i < dotCount; i++) {
           const btn = document.createElement('button');
@@ -2242,17 +2410,27 @@
           btn.className = 'ag-ps-rail-dot';
           btn.setAttribute('data-rail-idx', String(i));
           btn.setAttribute('aria-label', `跳转到第 ${i + 1} 轮`);
-          if (!turns.length && i === 0) btn.setAttribute('aria-current', 'true');
+          if (i === initActive) {
+            btn.setAttribute('aria-current', 'true');
+            initActiveEl = btn;
+          }
           frag.appendChild(btn);
         }
         railEl.textContent = '';
         railEl.appendChild(frag);
+        setAttr(railEl, 'data-scrollable', dotCount > 16 ? '1' : '');
+        setAttr(railEl, 'data-show', '1');
+        if (initActiveEl && dotCount > 16 && railEl.clientHeight > 0 && !railHoveredDot) {
+          const targetScroll = initActiveEl.offsetTop - railEl.clientHeight * 0.5 + initActiveEl.offsetHeight * 0.5;
+          railEl.scrollTop = Math.max(0, Math.round(targetScroll));
+        }
+      } else {
+        setAttr(railEl, 'data-scrollable', dotCount > 16 ? '1' : '');
+        setAttr(railEl, 'data-show', '1');
       }
 
-      setAttr(railEl, 'data-scrollable', dotCount > 16 ? '1' : '');
-      setAttr(railEl, 'data-show', '1');
       positionOutlineRail();
-      updateRailActiveDot();
+      updateRailActiveDot(nav);
       attachRailScroll(vp);
     }
 
@@ -2413,7 +2591,7 @@
       returnBarPath = '';
       returnBarMode = '';
 
-      if (immediate || disposed || reducedMotion || document.hidden) {
+      if (immediate || disposed || isEffectivelyReducedMotion() || document.hidden) {
         clearLeavingReturnBar();
         if (returnBarEl) {
           returnBarEl.remove();
@@ -2487,7 +2665,7 @@
         if (window.location.pathname !== savedPath) {
           try { window.location.assign(savedPath); } catch {}
         }
-      }, 180);
+      }, 450);
     }
 
     function startReturnCountdown(savedPath) {
@@ -2931,7 +3109,7 @@
       }
       quotaNudgeSig = '';
 
-      if (immediate || disposed || reducedMotion || document.hidden) {
+      if (immediate || disposed || isEffectivelyReducedMotion() || document.hidden) {
         clearLeavingQuotaNudge();
         if (quotaNudgeEl) {
           quotaNudgeEl.remove();
@@ -3060,6 +3238,271 @@
     }
 
     /* ========================================================================
+     * 10.5 Semantic 0fps Edge Afterglow & Compact Composer Quota Micro-Capsule
+     * ======================================================================== */
+    let afterglowHost = null;
+    let afterglowDoneUntil = 0;
+    let afterglowClearTimer = 0;
+    let afterglowDismissedTurnSig = '';
+    let quotaChipEl = null;
+    let quotaChipDotEl = null;
+    let quotaChipTextEl = null;
+    let quotaChipAc = null;
+    let lastQuotaChipSig = '';
+    let lastQuotaChipTip = '';
+
+    function formatRelativeResetShort(isoStr, nowMs) {
+      if (!isoStr || typeof isoStr !== 'string') return '';
+      const targetMs = Date.parse(isoStr);
+      if (!Number.isFinite(targetMs)) return '';
+      const diffMs = targetMs - nowMs;
+      if (diffMs <= 60_000) return '即将重置';
+      const totalMins = Math.round(diffMs / 60_000);
+      if (totalMins < 60) return `${totalMins}m 后重置`;
+      const totalHours = Math.floor(totalMins / 60);
+      const remMins = totalMins % 60;
+      if (totalHours < 24) return remMins > 0 ? `${totalHours}h${remMins}m 后重置` : `${totalHours}h 后重置`;
+      const days = Math.floor(totalHours / 24);
+      const remHours = totalHours % 24;
+      return remHours > 0 ? `${days}d${remHours}h 后重置` : `${days}d 后重置`;
+    }
+
+    function clearAfterglowHost() {
+      if (afterglowClearTimer) {
+        clearTimeout(afterglowClearTimer);
+        afterglowClearTimer = 0;
+      }
+      if (afterglowHost) {
+        try { afterglowHost.removeAttribute('data-ag-ps-afterglow'); } catch {}
+        afterglowHost = null;
+      }
+    }
+
+    function detectViewportAttentionState() {
+      const vp = safeGetViewportEl();
+      if (!vp) return { state: '', sig: '' };
+      // Check visible pending confirmation / interactive question cards near bottom of viewport
+      const decisionEl = vp.querySelector(
+        '[data-testid*="approval" i], [data-testid*="permission" i], [data-testid="proceed-button"], [data-testid*="question" i] button:not([disabled])'
+      );
+      if (decisionEl && decisionEl.isConnected) {
+        const r = decisionEl.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+          const sig = `decision:${(decisionEl.textContent || '').trim().slice(0, 32)}`;
+          return { state: 'decision', sig };
+        }
+      }
+      const errNodes = vp.querySelectorAll('[data-testid*="error-banner" i], [data-testid*="agent-error" i]');
+      if (errNodes.length) {
+        const lastErr = errNodes[errNodes.length - 1];
+        const r = lastErr.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+          const sig = `error:${(lastErr.textContent || '').trim().slice(0, 32)}`;
+          return { state: 'error', sig };
+        }
+      }
+      return { state: '', sig: '' };
+    }
+
+    function syncSemanticAfterglow(nowMs) {
+      const prefs = getPrefs();
+      if (prefs.semanticAfterglow === false) {
+        afterglowDoneUntil = 0;
+        clearAfterglowHost();
+        return;
+      }
+      const host = safeGetComposerEl() || safeGetOrbHostEl();
+      if (!host || !host.isConnected) {
+        clearAfterglowHost();
+        return;
+      }
+      if (afterglowHost && afterglowHost !== host) {
+        try { afterglowHost.removeAttribute('data-ag-ps-afterglow'); } catch {}
+      }
+      afterglowHost = host;
+
+      // If user is actively focused inside the composer or typing, clear immediately (0 distraction)
+      const activeEl = document.activeElement;
+      if (safeIsTyping() || (activeEl && host.contains(activeEl))) {
+        afterglowDoneUntil = 0;
+        if (afterglowClearTimer) {
+          clearTimeout(afterglowClearTimer);
+          afterglowClearTimer = 0;
+        }
+        setAttr(host, 'data-ag-ps-afterglow', '');
+        return;
+      }
+
+      if (lastBusy) {
+        afterglowDismissedTurnSig = '';
+        setAttr(host, 'data-ag-ps-afterglow', '');
+        return;
+      }
+
+      const attn = detectViewportAttentionState();
+      let wantState = '';
+      if (attn.state && attn.sig !== afterglowDismissedTurnSig) {
+        wantState = attn.state;
+      } else if (nowMs < afterglowDoneUntil) {
+        wantState = 'done';
+      }
+
+      setAttr(host, 'data-ag-ps-afterglow', wantState);
+    }
+
+    document.addEventListener('pointerdown', (e) => {
+      if (disposed || !afterglowHost) return;
+      const t = e && e.target;
+      if (t && typeof t.closest === 'function' && afterglowHost.contains(t)) {
+        const attn = detectViewportAttentionState();
+        if (attn.sig) afterglowDismissedTurnSig = attn.sig;
+        afterglowDoneUntil = 0;
+        clearAfterglowHost();
+      }
+    }, { signal, passive: true });
+
+    document.addEventListener('focusin', (e) => {
+      if (disposed || !afterglowHost) return;
+      const t = e && e.target;
+      if (t && afterglowHost.contains(t)) {
+        const attn = detectViewportAttentionState();
+        if (attn.sig) afterglowDismissedTurnSig = attn.sig;
+        afterglowDoneUntil = 0;
+        clearAfterglowHost();
+      }
+    }, { signal, passive: true });
+
+    function removeCompactQuotaChip() {
+      if (quotaChipAc) {
+        quotaChipAc.abort();
+        quotaChipAc = null;
+      }
+      if (quotaChipEl) {
+        quotaChipEl.remove();
+        quotaChipEl = null;
+        quotaChipDotEl = null;
+        quotaChipTextEl = null;
+      }
+      lastQuotaChipSig = '';
+      lastQuotaChipTip = '';
+    }
+
+    function ensureCompactQuotaChip(anchorEl) {
+      if (!anchorEl || !anchorEl.parentElement) return null;
+      if (quotaChipEl && quotaChipEl.isConnected && anchorEl.nextElementSibling === quotaChipEl) {
+        return quotaChipEl;
+      }
+      if (!quotaChipEl) {
+        quotaChipAc = new AbortController();
+        const chipSig = quotaChipAc.signal;
+        quotaChipEl = document.createElement('button');
+        quotaChipEl.id = 'ag-ps-quota-chip';
+        quotaChipEl.type = 'button';
+        quotaChipEl.className = 'ag-ps-quota-chip';
+        quotaChipEl.setAttribute('data-no-drag', '');
+        quotaChipEl.setAttribute('data-ag-i18n-ignore', '1');
+        quotaChipEl.setAttribute('aria-label', '5h 与周额度概览');
+
+        quotaChipDotEl = document.createElement('span');
+        quotaChipDotEl.className = 'ag-ps-quota-chip-dot';
+        quotaChipTextEl = document.createElement('span');
+        quotaChipTextEl.className = 'ag-ps-quota-chip-text';
+
+        quotaChipEl.appendChild(quotaChipDotEl);
+        quotaChipEl.appendChild(quotaChipTextEl);
+
+        quotaChipEl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const ctxRing = document.getElementById('ag-claude-ctx-ring');
+          if (!e.shiftKey && ctxRing) {
+            ctxRing.click();
+          } else if (typeof bus.openWorkbench === 'function') {
+            bus.openWorkbench('accounts');
+          }
+        }, { signal: chipSig });
+      }
+      if (anchorEl.nextElementSibling !== quotaChipEl) {
+        anchorEl.insertAdjacentElement('afterend', quotaChipEl);
+      }
+      return quotaChipEl;
+    }
+
+    function syncCompactQuotaChip(nowMs) {
+      const prefs = getPrefs();
+      if (prefs.compactQuotaPill === false) {
+        removeCompactQuotaChip();
+        return;
+      }
+      const inputBox = safeGetOrbHostEl() || safeGetComposerEl();
+      if (!inputBox || !inputBox.isConnected) {
+        removeCompactQuotaChip();
+        return;
+      }
+      // Anchor right after #ag-claude-ctx-ring (zero order conflict with custom.js)
+      let anchor = inputBox.querySelector('#ag-claude-ctx-ring');
+      if (!anchor) {
+        const modelBtn = inputBox.querySelector('button[data-testid="model-selector-trigger"]');
+        if (modelBtn) {
+          const bar = modelBtn.closest('div.flex.min-w-0.flex-1.items-center') || modelBtn.parentElement;
+          if (bar) {
+            let cur = modelBtn;
+            while (cur && cur.parentElement && cur.parentElement !== bar) cur = cur.parentElement;
+            if (cur && cur.parentElement === bar) anchor = cur;
+          }
+        }
+      }
+      if (!anchor) {
+        removeCompactQuotaChip();
+        return;
+      }
+
+      const q = safeGetQuotaState();
+      const p5 = typeof q.pct5h === 'number' && Number.isFinite(q.pct5h) ? Math.round(q.pct5h) : null;
+      const p7 = typeof q.pct7d === 'number' && Number.isFinite(q.pct7d) ? Math.round(q.pct7d) : null;
+      if (p5 === null && p7 === null) {
+        lastQuotaChipSig = '';
+        if (quotaChipEl) setAttr(quotaChipEl, 'data-visible', '0');
+        return;
+      }
+
+      const chip = ensureCompactQuotaChip(anchor);
+      if (!chip) return;
+
+      const minVal = p5 !== null && p7 !== null ? Math.min(p5, p7) : (p5 !== null ? p5 : p7);
+      const tier = (p7 !== null && p7 <= 5) || minVal <= 10
+        ? 'danger'
+        : minVal <= 25
+          ? 'warn'
+          : 'ok';
+
+      const labelParts = [];
+      if (p5 !== null) labelParts.push(`5h ${p5}%`);
+      if (p7 !== null) labelParts.push(`7d ${p7}%`);
+      const labelText = labelParts.join(' · ');
+      const nextSig = `${labelText}|${tier}`;
+
+      if (nextSig !== lastQuotaChipSig || chip.getAttribute('data-visible') !== '1') {
+        lastQuotaChipSig = nextSig;
+        if (quotaChipTextEl) quotaChipTextEl.textContent = labelText;
+        setAttr(chip, 'data-tier', tier);
+        setAttr(chip, 'data-visible', '1');
+      }
+
+      // Build rich tooltip at coarse minute granularity so typing/IME never sees needless attribute churn
+      const r5Rel = formatRelativeResetShort(q.reset5hAt, nowMs);
+      const r7Rel = formatRelativeResetShort(q.reset7dAt, nowMs);
+      const tipSegs = [];
+      if (p5 !== null) tipSegs.push(`5h 剩余 ${p5}%${r5Rel ? ` (${r5Rel})` : ''}`);
+      if (p7 !== null) tipSegs.push(`周额度剩余 ${p7}%${r7Rel ? ` (${r7Rel})` : ''}`);
+      tipSegs.push('点击查看限额详情 · Shift+点击打开账号接力');
+      const nextTip = tipSegs.join(' ｜ ');
+      if (nextTip !== lastQuotaChipTip) {
+        lastQuotaChipTip = nextTip;
+        setAttr(chip, 'data-ag-ps-tip', nextTip);
+      }
+    }
+
+    /* ========================================================================
      * 11. Unified State Sync & Event Wiring
      * ======================================================================== */
     function syncComposerOverlays() {
@@ -3114,6 +3557,12 @@
 
       if (prevBusy && !busy) {
         orbDoneUntil = nowMs + ORB_CONVERGE_MS;
+        afterglowDoneUntil = nowMs + 9500;
+        if (afterglowClearTimer) clearTimeout(afterglowClearTimer);
+        afterglowClearTimer = setTimeout(() => {
+          afterglowClearTimer = 0;
+          if (!disposed) syncSemanticAfterglow(Date.now());
+        }, 9600);
       }
 
       checkUnreadTransition(busy);
@@ -3136,6 +3585,7 @@
 
         if (reason === 'route') {
           autoExpandCount = 0;
+          lastOrbStageCheckAt = 0;
           lastObservedLayoutSig = curLayoutSig;
           scheduleEnsureOverviewOpen('route', 210);
         } else if (curLayoutSig && lastObservedLayoutSig && curLayoutSig !== lastObservedLayoutSig) {
@@ -3154,17 +3604,31 @@
       const deferDomScan = reason === 'tick' && safeIsTyping() && !busy;
       if (!deferDomScan) {
         syncComposerOverlays();
+        syncSemanticAfterglow(nowMs);
+        syncCompactQuotaChip(nowMs);
         syncSidebarSessions();
         syncOutlineRail();
         syncQuotaHandoffNudge();
-      } else {
-        syncQuotaRingSuppression(nowMs);
+      } else if (afterglowHost) {
+        syncSemanticAfterglow(nowMs);
       }
 
       if (orbDock) updateOrbStageLabel(nowMs);
       syncQuotaRingSuppression(nowMs);
 
-      if (shouldRunScheduler(nowMs)) {
+      const curPrefs = getPrefs();
+      if (isEffectivelyReducedMotion(curPrefs)) {
+        stopScheduler();
+        clearBeamCanvas();
+        if (orbCanvas && curPrefs.thinkingOrb) {
+          const staticSig = `${orbStage}|${safeIsDark() ? 1 : 0}|${safeGetThemeAccent()}|${orbCanvas.width}`;
+          if (orbCanvas._lastStaticSig !== staticSig) {
+            orbCanvas._lastStaticSig = staticSig;
+            renderThinkingOrbFrame(0, nowMs, true);
+          }
+        }
+      } else if (shouldRunScheduler(nowMs)) {
+        if (orbCanvas) orbCanvas._lastStaticSig = '';
         ensureScheduler();
       }
     }
@@ -3298,6 +3762,25 @@
       syncAll(type);
     });
 
+    function commitCustomFontInput(inputEl) {
+      if (!inputEl) return false;
+      const key = inputEl.getAttribute('data-fx-font-input');
+      if (key !== 'chatFontFamily' && key !== 'codeFontFamily') return false;
+      const cleaned = sanitizeFontFamilyPref(inputEl.value || '');
+      if (cleaned === undefined) {
+        safeToast('字体名称含非法语法字符，已忽略');
+        const cur = getPrefs();
+        inputEl.value = cur[key] || '';
+        return true;
+      }
+      const label = key === 'codeFontFamily' ? '代码' : '正文';
+      const changed = bus.setPref(key, cleaned);
+      if (changed) {
+        safeToast(cleaned ? `已应用自定义${label}字体` : `已恢复默认${label}字体`);
+      }
+      return true;
+    }
+
     /* ========================================================================
      * 12. Popover Panel Section Registration (id: 'fx', order: 10)
      * ======================================================================== */
@@ -3309,6 +3792,19 @@
         const p = Object.assign({}, FX_DEFAULTS, rawPrefs || {});
         const previewing = isBeamPreviewActive(Date.now());
         const strength = clampInt(p.bubbleTintStrength, 10, 100, 22);
+        const perfMode = p.performanceMode || 'balanced';
+        const curChatFont = sanitizeFontFamilyPref(p.chatFontFamily || '') || '';
+        const curCodeFont = sanitizeFontFamilyPref(p.codeFontFamily || '') || '';
+
+        const chatFontChips = CHAT_FONT_PRESETS.map((item) => {
+          const sel = curChatFont === item.value ? '1' : '0';
+          return `<button type="button" class="ag-ps-fx-chip" data-fx-chat-font-preset="${escapeHtml(item.value)}" data-selected="${sel}">${escapeHtml(item.label)}</button>`;
+        }).join('');
+
+        const codeFontChips = CODE_FONT_PRESETS.map((item) => {
+          const sel = curCodeFont === item.value ? '1' : '0';
+          return `<button type="button" class="ag-ps-fx-chip" data-fx-code-font-preset="${escapeHtml(item.value)}" data-selected="${sel}">${escapeHtml(item.label)}</button>`;
+        }).join('');
 
         const beamChips = BEAM_PALETTE_LABELS.map((item) => {
           const sel = (p.borderBeamPalette || 'theme') === item.id ? '1' : '0';
@@ -3322,6 +3818,60 @@
 
         return `
           <div class="ag-ps-toggle-list">
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="省电：0fps 静态画面并暂停常驻动效；均衡：标准流畅节奏；满血：增强光晕与活力动效">
+                <span>性能模式</span>
+                <span class="ag-ps-toggle-sub">${perfMode === 'power-save' ? '省电 · 0fps 静态节能' : perfMode === 'vivid' ? '满血 · 灵动光晕增强' : '均衡 · 标准流畅闲置休眠'}</span>
+              </div>
+              <div class="ag-ps-seg-group">
+                <button type="button" class="ag-ps-seg-btn" data-fx-perf-mode="power-save" data-selected="${perfMode === 'power-save' ? '1' : '0'}">省电</button>
+                <button type="button" class="ag-ps-seg-btn" data-fx-perf-mode="balanced" data-selected="${perfMode === 'balanced' ? '1' : '0'}">均衡</button>
+                <button type="button" class="ag-ps-seg-btn" data-fx-perf-mode="vivid" data-selected="${perfMode === 'vivid' ? '1' : '0'}">满血</button>
+              </div>
+            </div>
+
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="Windows 或系统开启「减少动态效果」时，依然允许 ThinkingOrb、流光边框与像素伙伴播放丝滑动效（省电模式下仍以省电优先）">
+                <span>忽略系统「减少动画」</span>
+                <span class="ag-ps-toggle-sub">系统关动画时仍保留思考球与伙伴动效</span>
+              </div>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="ignoreReducedMotion" data-on="${p.ignoreReducedMotion ? '1' : '0'}" aria-label="忽略系统「减少动画」"></button>
+            </div>
+
+            <div class="ag-ps-subpanel ag-ps-font-subpanel">
+              <div class="ag-ps-toggle-sub" style="font-weight:600;color:var(--foreground,#141413)">自定义对话与代码字体</div>
+              <div class="ag-ps-toggle-sub">正文字体</div>
+              <div class="ag-ps-fx-chip-grid ag-ps-fx-chip-grid-4">${chatFontChips}</div>
+              <input type="text" class="ag-ps-font-input" data-fx-font-input="chatFontFamily" maxlength="160" value="${escapeHtml(curChatFont)}" placeholder="自定义正文字体族，回车生效" aria-label="自定义对话正文字体族" />
+              <div class="ag-ps-toggle-sub" style="margin-top:3px">代码字体</div>
+              <div class="ag-ps-fx-chip-grid ag-ps-fx-chip-grid-4">${codeFontChips}</div>
+              <input type="text" class="ag-ps-font-input" data-fx-font-input="codeFontFamily" maxlength="160" value="${escapeHtml(curCodeFont)}" placeholder="自定义等宽字体族，回车生效" aria-label="自定义代码等宽字体族" />
+            </div>
+
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="为快捷键 kbd 赋予立体键帽质感、变更与文档卡片增加顶边光学切面高光，并将分屏拖拽线精炼为 1px 悬停微光极细线">
+                <span>光学微切面与极细分割线</span>
+                <span class="ag-ps-toggle-sub">立体键帽 · 卡片高光 · 1px 分屏微光</span>
+              </div>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="opticalFacets" data-on="${p.opticalFacets !== false ? '1' : '0'}" aria-label="光学微切面与极细分割线"></button>
+            </div>
+
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="0fps 静态边缘语义余晖：待确认亮琥珀金、异常亮珊瑚红、回复完成亮翡翠微光，聚焦或点击输入框立即消退">
+                <span>输入框语义边缘余晖</span>
+                <span class="ag-ps-toggle-sub">0fps 三态微光 · 聚焦输入框即消退</span>
+              </div>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="semanticAfterglow" data-on="${p.semanticAfterglow !== false ? '1' : '0'}" aria-label="输入框语义边缘余晖"></button>
+            </div>
+
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="在输入框底栏上下文圆环旁展示紧凑 5h · 7d 剩余额度胶囊，点击展开限额面板，Shift+点击打开账号接力">
+                <span>底栏紧凑双池额度胶囊</span>
+                <span class="ag-ps-toggle-sub">5h · 7d 实时余量 · 零输入法闪烁</span>
+              </div>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="compactQuotaPill" data-on="${p.compactQuotaPill !== false ? '1' : '0'}" aria-label="底栏紧凑双池额度胶囊"></button>
+            </div>
+
             <div class="ag-ps-toggle-row">
               <div class="ag-ps-toggle-label" data-ag-ps-tip="在输入框边缘流动彗星光带；支持常驻流光（失焦自动 0fps 休眠）或仅生成时激活">
                 <span>输入框流光边框</span>
@@ -3499,6 +4049,30 @@
         const target = e && e.target;
         if (!target || typeof target.closest !== 'function') return false;
 
+        const perfModeBtn = target.closest('[data-fx-perf-mode]');
+        if (perfModeBtn) {
+          const val = perfModeBtn.getAttribute('data-fx-perf-mode');
+          if (val === 'power-save' || val === 'balanced' || val === 'vivid') {
+            bus.setPref('performanceMode', val);
+            return true;
+          }
+          return false;
+        }
+
+        const chatFontPresetBtn = target.closest('[data-fx-chat-font-preset]');
+        if (chatFontPresetBtn) {
+          const val = chatFontPresetBtn.getAttribute('data-fx-chat-font-preset') ?? '';
+          bus.setPref('chatFontFamily', val);
+          return true;
+        }
+
+        const codeFontPresetBtn = target.closest('[data-fx-code-font-preset]');
+        if (codeFontPresetBtn) {
+          const val = codeFontPresetBtn.getAttribute('data-fx-code-font-preset') ?? '';
+          bus.setPref('codeFontFamily', val);
+          return true;
+        }
+
         const previewBtn = target.closest('[data-fx-beam-preview]');
         if (previewBtn) {
           triggerBeamPreview();
@@ -3595,13 +4169,27 @@
       },
 
       onChange(e) {
-        if (disposed) return false;
+        if (disposed || (e && e.isComposing)) return false;
         const target = e && e.target;
+        const fontInput = target && target.closest && target.closest('[data-fx-font-input]');
+        if (fontInput) {
+          return commitCustomFontInput(fontInput);
+        }
         const slider = target && target.closest && target.closest('[data-fx-bubble-strength]');
         if (!slider) return false;
         const val = clampInt(slider.value, 10, 100, 22);
         bus.setPref('bubbleTintStrength', val);
         return true;
+      },
+
+      onKeyDown(e) {
+        if (disposed || !e || e.key !== 'Enter' || e.isComposing) return false;
+        const target = e.target;
+        const fontInput = target && target.closest && target.closest('[data-fx-font-input]');
+        if (!fontInput) return false;
+        e.preventDefault();
+        e.stopPropagation();
+        return commitCustomFontInput(fontInput);
       }
     });
 
@@ -3642,6 +4230,8 @@
       clearUnreadBadge();
       clearHiddenSessionMarks();
       detachDprWatcher();
+      clearAfterglowHost();
+      removeCompactQuotaChip();
       removeOutlineRail();
       removeOrbDock();
       removeReturnBar(true);
@@ -3664,11 +4254,19 @@
 
       const html = document.documentElement;
       if (html) {
+        html.removeAttribute('data-ag-ps-perf');
+        html.removeAttribute('data-ag-ps-force-motion');
+        html.removeAttribute('data-ag-ps-reduced-motion');
+        html.removeAttribute('data-ag-ps-facets');
+        html.removeAttribute('data-ag-ps-custom-chat-font');
+        html.removeAttribute('data-ag-ps-custom-code-font');
         html.removeAttribute('data-ag-ps-orb-replace');
         html.removeAttribute('data-ag-ps-bubble-tint');
         html.removeAttribute('data-ag-ps-bubble-contrast');
         html.removeAttribute('data-ag-ps-compact');
         html.removeAttribute('data-ag-ps-sidebar-sessions');
+        html.style.removeProperty('--ag-ps-chat-font');
+        html.style.removeProperty('--ag-ps-code-font');
         html.style.removeProperty('--ag-ps-bubble-color');
         html.style.removeProperty('--ag-ps-bubble-mix');
       }

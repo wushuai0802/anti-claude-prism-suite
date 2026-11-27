@@ -584,6 +584,7 @@ export function readLocalAntigravityQuotaCache(options = {}) {
 const PRISM_UI_ENUM_VALIDATORS = Object.freeze({
   lightPalette: new Set(['default', 'crystal', 'alabaster', 'sage']),
   darkPalette: new Set(['default', 'obsidian', 'basalt', 'marine']),
+  performanceMode: new Set(['power-save', 'balanced', 'vivid']),
   mascotCountMode: new Set(['fixed', 'agents']),
   mascotStyle: new Set(['trio', 'zoo', 'cyber', 'crab', 'cat', 'penguin', 'fox', 'shiba', 'robot', 'owlet', 'axolotl', 'bunny', 'frog', 'chick', 'slime']),
   mascotVibe: new Set(['calm', 'lively']),
@@ -602,49 +603,74 @@ const PRISM_UI_BOOL_KEYS = new Set([
   'borderBeam', 'quotaRing', 'thinkingOrb', 'bubbleTint', 'compactLayout',
   'unreadBadge', 'keepOverviewOpen', 'alwaysOutlineRail', 'switchReturnHelper',
   'switchAutoReturn', 'autoDismissOnboarding', 'quotaHandoffAlert',
-  'imageContextMenu', 'cleanCopy', 'sshPaste', 'inlineEditHelper', 'sessionFork', 'composerFileDrop', 'wslExplorerRevealFix'
+  'imageContextMenu', 'cleanCopy', 'sshPaste', 'inlineEditHelper', 'sessionFork', 'composerFileDrop', 'wslExplorerRevealFix',
+  'showWorkbenchBtn', 'fastWindowRestore', 'ignoreReducedMotion',
+  'opticalFacets', 'semanticAfterglow', 'compactQuotaPill'
 ]);
+
+const PRISM_UI_FONT_KEYS = Object.freeze(['chatFontFamily', 'codeFontFamily']);
+const UNSAFE_FONT_FAMILY_RE = /[\x00-\x1f\x7f;{}<>\\]|\/\*|url\s*\(|expression\s*\(|@import/i;
+const hasBalancedFontQuotes = (s) => ((s.match(/"/g) || []).length % 2 === 0) && ((s.match(/'/g) || []).length % 2 === 0);
 
 export function sanitizePrismUiPrefs(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const src = (raw && typeof raw === 'object' && !Array.isArray(raw) && raw.prefs && typeof raw.prefs === 'object' && !Array.isArray(raw.prefs))
+    ? raw.prefs
+    : raw;
   const out = {};
   let recognized = 0;
   for (const [k, allowed] of Object.entries(PRISM_UI_ENUM_VALIDATORS)) {
-    if (!Object.prototype.hasOwnProperty.call(raw, k)) continue;
-    const v = raw[k];
+    if (!Object.prototype.hasOwnProperty.call(src, k)) continue;
+    const v = src[k];
     if (typeof v === 'string' && allowed.has(v)) {
       out[k] = v;
       recognized++;
     }
   }
   for (const k of PRISM_UI_BOOL_KEYS) {
-    if (!Object.prototype.hasOwnProperty.call(raw, k)) continue;
-    if (typeof raw[k] === 'boolean') {
-      out[k] = raw[k];
+    if (!Object.prototype.hasOwnProperty.call(src, k)) continue;
+    if (typeof src[k] === 'boolean') {
+      out[k] = src[k];
       recognized++;
     }
   }
-  if (Object.prototype.hasOwnProperty.call(raw, 'mascotMinCount') && Number.isFinite(Number(raw.mascotMinCount))) {
-    out.mascotMinCount = clampInt(raw.mascotMinCount, 1, 3, 1);
+  if (Object.prototype.hasOwnProperty.call(src, 'mascotMinCount') && Number.isFinite(Number(src.mascotMinCount))) {
+    out.mascotMinCount = clampInt(src.mascotMinCount, 1, 3, 1);
     recognized++;
   }
-  if (Object.prototype.hasOwnProperty.call(raw, 'mascotSize') && Number.isFinite(Number(raw.mascotSize))) {
-    const stepped = Math.round(Number(raw.mascotSize) / 2) * 2;
+  if (Object.prototype.hasOwnProperty.call(src, 'mascotSize') && Number.isFinite(Number(src.mascotSize))) {
+    const stepped = Math.round(Number(src.mascotSize) / 2) * 2;
     out.mascotSize = Math.max(16, Math.min(36, stepped));
     recognized++;
   }
-  if (Object.prototype.hasOwnProperty.call(raw, 'bubbleTintStrength') && Number.isFinite(Number(raw.bubbleTintStrength))) {
-    out.bubbleTintStrength = clampInt(raw.bubbleTintStrength, 10, 100, 22);
+  if (Object.prototype.hasOwnProperty.call(src, 'bubbleTintStrength') && Number.isFinite(Number(src.bubbleTintStrength))) {
+    out.bubbleTintStrength = clampInt(src.bubbleTintStrength, 10, 100, 22);
+    recognized++;
+  }
+  for (const fk of PRISM_UI_FONT_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(src, fk)) continue;
+    const v = src[fk];
+    if (typeof v !== 'string') continue;
+    const trimmedFont = v.trim();
+    if (trimmedFont.length > 160 || UNSAFE_FONT_FAMILY_RE.test(trimmedFont) || !hasBalancedFontQuotes(trimmedFont)) continue;
+    out[fk] = trimmedFont;
     recognized++;
   }
   if (recognized === 0) return null;
   const MIN_USER_TS = 1_700_000_000_000;
-  const rawTs = Number(raw._ts);
-  const isExplicit = raw._tsOrigin !== 'legacy' && Number.isFinite(rawTs) && rawTs >= MIN_USER_TS;
+  const updatedAtRaw = typeof raw.updatedAt === 'string' && raw.updatedAt.trim()
+    ? Date.parse(raw.updatedAt.trim())
+    : (typeof src.updatedAt === 'string' && src.updatedAt.trim() ? Date.parse(src.updatedAt.trim()) : NaN);
+  const rawTs = src._ts !== undefined && src._ts !== null
+    ? Number(src._ts)
+    : (raw._ts !== undefined && raw._ts !== null ? Number(raw._ts) : updatedAtRaw);
+  const tsOriginCandidate = src._tsOrigin ?? raw._tsOrigin;
+  const isExplicit = tsOriginCandidate !== 'legacy' && Number.isFinite(rawTs) && rawTs >= MIN_USER_TS;
   out._ts = isExplicit ? Math.round(rawTs) : 0;
   out._tsOrigin = isExplicit ? 'explicit' : 'legacy';
-  if (!isExplicit && Number.isFinite(Number(raw._legacyMtime)) && Number(raw._legacyMtime) > 0) {
-    out._legacyMtime = Math.round(Number(raw._legacyMtime));
+  const legacyMtime = src._legacyMtime ?? raw._legacyMtime;
+  if (!isExplicit && Number.isFinite(Number(legacyMtime)) && Number(legacyMtime) > 0) {
+    out._legacyMtime = Math.round(Number(legacyMtime));
   }
   return out;
 }
@@ -863,6 +889,10 @@ export function createAccountManager(options = {}) {
   const uiPrefsFile = path.join(stateDir, 'ui-prefs.json');
   const extraExtensionDirs = Array.isArray(options.extensionDirs) ? options.extensionDirs : [];
 
+  const curPlatform = String(options.platform || process.platform);
+  const curWslDistro = options.wslDistro !== undefined
+    ? String(options.wslDistro || '')
+    : (curPlatform === 'linux' ? String(process.env.WSL_DISTRO_NAME || '') : '');
   const vault = options.vault || createAccountVault({
     platform: options.platform,
     isWsl: options.isWsl,
@@ -1084,37 +1114,48 @@ export function createAccountManager(options = {}) {
     const payload = JSON.stringify({
       pid: process.pid,
       hostname: os.hostname(),
+      platform: curPlatform,
+      wslDistro: curWslDistro,
       createdAt: Date.now(),
       targetId: String(targetId || ''),
       lockToken
     });
-    for (let attempt = 0; attempt < 2; attempt++) {
+    const releaseLock = () => {
+      try {
+        if (!fs.existsSync(lockFile)) return;
+        const cur = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+        if (cur && cur.lockToken === lockToken) {
+          fs.rmSync(lockFile, { force: true });
+        }
+      } catch {}
+    };
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         fs.writeFileSync(lockFile, payload, { flag: 'wx', mode: 0o600 });
-        return () => {
-          try {
-            if (!fs.existsSync(lockFile)) return;
-            const cur = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
-            if (cur && cur.lockToken === lockToken) {
-              fs.rmSync(lockFile, { force: true });
-            }
-          } catch {}
-        };
+        return releaseLock;
       } catch (err) {
         if (!err || err.code !== 'EEXIST') throw err;
         let stale = false;
         try {
-          const existing = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+          const rawLock = fs.readFileSync(lockFile, 'utf8');
+          const existing = JSON.parse(rawLock);
           const age = Date.now() - Number(existing.createdAt || 0);
           const sameHost = !existing.hostname || existing.hostname === os.hostname();
-          if (age > STALE_LOCK_MS || (sameHost && !isPidAliveLocal(existing.pid))) {
+          const samePidNamespace =
+            sameHost &&
+            existing.platform === curPlatform &&
+            String(existing.wslDistro || '') === curWslDistro;
+          if (age > STALE_LOCK_MS || (samePidNamespace && !isPidAliveLocal(existing.pid))) {
             stale = true;
           }
         } catch {
-          stale = true;
+          try {
+            const st = fs.statSync(lockFile);
+            if (Date.now() - Number(st.mtimeMs || 0) > 2500) stale = true;
+          } catch {}
         }
-        if (stale && attempt === 0) {
-          try { fs.rmSync(lockFile, { force: true }); } catch {}
+        if (stale && attempt < 2) {
+          try { fs.unlinkSync(lockFile); } catch {}
           continue;
         }
         throw Object.assign(new Error('已有切换事务正在进行中，请稍后再试'), { code: 'SWITCH_IN_PROGRESS' });

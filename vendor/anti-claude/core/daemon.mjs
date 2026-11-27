@@ -18,6 +18,23 @@ import { execFile, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { startCuaBroker, stopCuaBroker, stopCuaBrokerSync } from './cua-broker.mjs';
+import {
+  readWindowsShortcutInfo,
+  resolveWindowsShortcutRoots,
+  writeWindowsShortcutArguments
+} from './ms-lnk.mjs';
+
+export function buildNodeExecEnv(baseEnv = process.env) {
+  const env = { ...baseEnv };
+  if (
+    Boolean(process.versions && process.versions.electron) ||
+    process.env.ELECTRON_RUN_AS_NODE === '1' ||
+    baseEnv?.ELECTRON_RUN_AS_NODE === '1'
+  ) {
+    env.ELECTRON_RUN_AS_NODE = '1';
+  }
+  return env;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -4045,6 +4062,80 @@ function getSafePluginDocRoots(configDir = path.join(HOME, '.gemini', 'config'))
   return roots;
 }
 
+function collectAntigravityShortcutFiles(roots, maxDepth = 5) {
+  const found = [];
+  const seen = new Set();
+  const walk = (dirPath, depth) => {
+    if (depth > maxDepth) return;
+    let entries;
+    try {
+      entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
+      if (ent.isSymbolicLink()) continue;
+      const full = path.join(dirPath, ent.name);
+      if (ent.isDirectory()) {
+        walk(full, depth + 1);
+      } else if (ent.isFile() && /antigravity.*\.lnk$/i.test(ent.name)) {
+        const key = full.toLowerCase();
+        if (!seen.has(key)) {
+          seen.add(key);
+          found.push(full);
+        }
+      }
+    }
+  };
+  for (const r of roots || []) {
+    if (r) walk(r, 0);
+  }
+  return found;
+}
+
+function stripFastRestoreFlagsPreservingQuotes(rawArgs) {
+  const src = String(rawArgs || '').trim();
+  if (!src) return '';
+  const tokens = src.match(/"[^"]*"|'[^']*'|\S+/g) || [];
+  const kept = tokens.filter(
+    (tok) =>
+      !/^--disable-renderer-backgrounding$/i.test(tok) &&
+      !/^--disable-backgrounding-occluded-windows$/i.test(tok)
+  );
+  return kept.join(' ');
+}
+
+export function getFastWindowRestoreStatus({ env = process.env, roots = null } = {}) {
+  try {
+    const searchRoots = Array.isArray(roots) ? roots : resolveWindowsShortcutRoots(env, { includeCommon: false });
+    const lnkFiles = collectAntigravityShortcutFiles(searchRoots);
+    let found = 0;
+    let enabledCount = 0;
+    for (const lnkPath of lnkFiles) {
+      const info = readWindowsShortcutInfo(lnkPath, { env });
+      if (!info.ok || !/(?:^|[\\/])Antigravity\.exe$/i.test(String(info.targetPath || ''))) {
+        continue;
+      }
+      found += 1;
+      const args = String(info.arguments || '');
+      if (
+        /(?:^|\s)--disable-renderer-backgrounding(?=\s|$)/i.test(args) &&
+        /(?:^|\s)--disable-backgrounding-occluded-windows(?=\s|$)/i.test(args)
+      ) {
+        enabledCount += 1;
+      }
+    }
+    return {
+      ok: true,
+      found,
+      enabledCount,
+      enabled: found > 0 && enabledCount === found
+    };
+  } catch (err) {
+    return { ok: false, found: 0, enabledCount: 0, enabled: false, error: String(err?.message || err) };
+  }
+}
+
 async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
   let req;
   try {
@@ -4081,7 +4172,7 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
           lightPalette: ['default', 'crystal', 'alabaster', 'sage'],
           darkPalette: ['default', 'obsidian', 'basalt', 'marine'],
           mascotCountMode: ['fixed', 'agents'],
-          mascotStyle: ['trio', 'zoo', 'cyber', 'crab', 'cat', 'penguin', 'fox'],
+          mascotStyle: ['trio', 'zoo', 'cyber', 'crab', 'cat', 'penguin', 'fox', 'shiba', 'robot', 'owlet', 'axolotl', 'bunny', 'frog', 'chick', 'slime'],
           mascotVibe: ['calm', 'lively'],
           thoughtMode: ['off', 'bilingual', 'immersive'],
           borderBeamMode: ['always', 'busy'],
@@ -4090,7 +4181,8 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
           thinkingOrbMode: ['both', 'replace'],
           bubbleTintPreset: ['accent', 'sky', 'emerald', 'amber', 'violet'],
           sidebarSessions: ['default', '10', 'all'],
-          i18nExtraMode: ['off', 'zh-CN', 'zh-TW', 'en']
+          i18nExtraMode: ['off', 'zh-CN', 'zh-TW', 'en'],
+          performanceMode: ['power-save', 'balanced', 'vivid']
         };
         const BOOL_ALLOW = new Set([
           'showWorkbenchBtn', 'outline', 'usageExtra', 'inkStream', 'mascot', 'mascotRoam',
@@ -4098,8 +4190,12 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
           'unreadBadge', 'keepOverviewOpen', 'alwaysOutlineRail', 'switchReturnHelper',
           'switchAutoReturn', 'autoDismissOnboarding', 'quotaHandoffAlert',
           'imageContextMenu', 'cleanCopy', 'sshPaste', 'inlineEditHelper',
-          'sessionFork', 'composerFileDrop', 'wslExplorerRevealFix', 'fastWindowRestore'
+          'sessionFork', 'composerFileDrop', 'wslExplorerRevealFix', 'fastWindowRestore',
+          'ignoreReducedMotion', 'opticalFacets', 'semanticAfterglow', 'compactQuotaPill'
         ]);
+        const FONT_STR_ALLOW = new Set(['chatFontFamily', 'codeFontFamily']);
+        const UNSAFE_FONT_VAL_RE = /[;{}<>\\]|\/\*|url\s*\(|expression\s*\(|@import|[\x00-\x1f\x7f]/i;
+        const hasBalancedQuotes = (s) => ((s.match(/"/g) || []).length % 2 === 0) && ((s.match(/'/g) || []).length % 2 === 0);
         const sanitizeSeedObj = (obj) => {
           if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
           const out = {};
@@ -4111,6 +4207,12 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
             } else if (Object.prototype.hasOwnProperty.call(ENUM_ALLOW, k) && ENUM_ALLOW[k].includes(obj[k])) {
               out[k] = obj[k];
               cnt++;
+            } else if (FONT_STR_ALLOW.has(k) && typeof obj[k] === 'string') {
+              const trimmed = obj[k].trim();
+              if (trimmed.length <= 160 && !UNSAFE_FONT_VAL_RE.test(trimmed) && hasBalancedQuotes(trimmed)) {
+                out[k] = trimmed;
+                cnt++;
+              }
             } else if (k === 'mascotMinCount' && Number.isFinite(Number(obj[k]))) {
               out[k] = Math.max(1, Math.min(3, Math.round(Number(obj[k]))));
               cnt++;
@@ -4274,77 +4376,69 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       const result = await translateThoughtText(payload?.text, payload?.targetLang || 'zh-CN');
       return { reqId, result };
     }
+    if (action === 'getFastWindowRestoreStatus') {
+      if (process.platform !== 'win32') {
+        return { reqId, result: { ok: true, found: 0, enabledCount: 0, enabled: false, note: 'windows_only' } };
+      }
+      return { reqId, result: getFastWindowRestoreStatus() };
+    }
     if (action === 'setFastWindowRestoreShortcut') {
       const wantEnabled = Boolean(payload?.enabled);
       if (process.platform !== 'win32') {
         return { reqId, result: { ok: true, updated: 0, note: 'windows_only' } };
       }
       try {
-        const psScript = [
-          "$ErrorActionPreference = 'SilentlyContinue'",
-          `$enableFlag = $${wantEnabled ? 'true' : 'false'}`,
-          '$roots = @([Environment]::GetFolderPath("DesktopDirectory"), [Environment]::GetFolderPath("Programs")) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }',
-          '$shell = New-Object -ComObject WScript.Shell',
-          '$updated = 0',
-          'foreach ($r in $roots) {',
-          '  Get-ChildItem -LiteralPath $r -Filter "*Antigravity*.lnk" -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {',
-          '    try {',
-          '      $sc = $shell.CreateShortcut($_.FullName)',
-          '      if ($sc.TargetPath -and $sc.TargetPath.EndsWith("Antigravity.exe", [System.StringComparison]::OrdinalIgnoreCase)) {',
-          '        $cur = [string]$sc.Arguments',
-          '        $cleaned = ($cur -replace "(?i)(?:^|\\s+)--disable-renderer-backgrounding(?=\\s|$)", " " -replace "(?i)(?:^|\\s+)--disable-backgrounding-occluded-windows(?=\\s|$)", " ").Trim()',
-          '        $next = if ($enableFlag) { ($cleaned + " --disable-renderer-backgrounding --disable-backgrounding-occluded-windows").Trim() } else { $cleaned }',
-          '        if ($next -ne $cur.Trim()) {',
-          '          $sc.Arguments = $next',
-          '          $sc.Save()',
-          '          $updated++',
-          '        }',
-          '      }',
-          '    } catch {}',
-          '  }',
-          '}',
-          'Write-Output $updated'
-        ].join('\r\n');
-        const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
-        const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
-          encoding: 'utf8',
-          timeout: 8000,
-          windowsHide: true,
-          stdio: ['ignore', 'pipe', 'ignore']
-        }).trim();
-        return { reqId, result: { ok: true, enabled: wantEnabled, updated: parseInt(out, 10) || 0 } };
+        const roots = resolveWindowsShortcutRoots(process.env, { includeCommon: false });
+        const lnkFiles = collectAntigravityShortcutFiles(roots);
+        let updated = 0;
+        for (const lnkPath of lnkFiles) {
+          try {
+            const info = readWindowsShortcutInfo(lnkPath, { env: process.env });
+            if (!info.ok || !/(?:^|[\\/])Antigravity\.exe$/i.test(String(info.targetPath || ''))) {
+              continue;
+            }
+            const cur = String(info.arguments || '').trim();
+            const cleaned = stripFastRestoreFlagsPreservingQuotes(cur);
+            const next = wantEnabled
+              ? `${cleaned} --disable-renderer-backgrounding --disable-backgrounding-occluded-windows`.trim()
+              : cleaned;
+            if (next !== cur) {
+              writeWindowsShortcutArguments(lnkPath, next);
+              updated += 1;
+            }
+          } catch {}
+        }
+        return { reqId, result: { ok: true, enabled: wantEnabled, updated } };
       } catch (err) {
         return { reqId, result: { ok: false, error: String(err?.message || err) } };
       }
     }
-    if (action === 'revealInOsFileManager') {
-      const rawTarget = typeof payload?.targetPath === 'string' ? payload.targetPath.trim() : '';
-      if (!rawTarget) return { reqId, result: { ok: false, error: 'missing_path' } };
-      return {
-        reqId,
-        result: await revealLocalPath(rawTarget, {
-          openFolderContents: Boolean(payload?.openFolder),
-          wslDistro: typeof payload?.wslDistro === 'string' ? payload.wslDistro : ''
-        })
-      };
-    }
-    if (action === 'revealFile') {
+    if (action === 'revealInOsFileManager' || action === 'revealFile') {
       const rawTarget = typeof payload?.targetPath === 'string' ? payload.targetPath.trim() : '';
       if (!rawTarget) return { reqId, result: { ok: false, error: 'missing_path' } };
       const hostTarget = resolveHostRevealTarget(rawTarget, {
         wslDistro: typeof payload?.wslDistro === 'string' ? payload.wslDistro : ''
       });
       const absTarget = hostTarget.ok ? hostTarget.path : path.resolve(rawTarget);
+      if (isSensitiveSourcePath(absTarget)) {
+        return { reqId, result: { ok: false, error: 'sensitive_path_blocked' } };
+      }
       const explicitProj = resolveLocalProjectDir(payload?.dirPath);
       const globalAgentsFiles = [
         path.join(HOME, '.gemini', 'AGENTS.md'),
         ...discoverWslGeminiDirs().map((g) => path.join(g, 'AGENTS.md'))
       ];
       const builtinRootDir = path.join(HOME, '.gemini', 'antigravity', 'builtin');
+      const nativeBrainDir = path.join(HOME, '.gemini', 'antigravity', 'brain');
       const wslRoots = [];
       for (const g of discoverWslGeminiDirs()) {
         const cfg = path.join(g, 'config');
-        wslRoots.push(path.join(cfg, 'skills'), path.join(cfg, 'agents'), path.join(g, 'antigravity', 'builtin'));
+        wslRoots.push(
+          path.join(cfg, 'skills'),
+          path.join(cfg, 'agents'),
+          path.join(g, 'antigravity', 'builtin'),
+          ...(action === 'revealInOsFileManager' ? [path.join(g, 'antigravity', 'brain')] : [])
+        );
         wslRoots.push(...getSafePluginDocRoots(cfg));
       }
       const allowedRoots = [
@@ -4353,6 +4447,7 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
         GLOBAL_SKILLS_DIR,
         GLOBAL_AGENTS_DIR,
         builtinRootDir,
+        ...(action === 'revealInOsFileManager' ? [nativeBrainDir] : []),
         ...getSafePluginDocRoots(),
         ...wslRoots
       ];

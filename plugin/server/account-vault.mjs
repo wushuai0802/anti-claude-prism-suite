@@ -23,8 +23,10 @@ export const PRISM_WIN_PREFIX = 'prism-suite:account:';
 export const PRISM_WSL_PREFIX = 'prism-suite:wsl:';
 export const PRISM_PROVIDER_PREFIX = 'prism-suite:provider:';
 export const WSL_CRED_ENVELOPE_KIND = 'prism-wsl-cred-v1';
+export const GO_KEYRING_B64_PREFIX = 'go-keyring-base64:';
 const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9_-]{1,47}$/;
 const PROVIDER_SECRET_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const BASE64_BODY_RE = /^[A-Za-z0-9+/_-]+={0,2}$/;
 
 const PS_CREDMAN_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -223,6 +225,99 @@ function tryExtractEmailFromJwt(jwt) {
   }
 }
 
+function hashRefreshSecret(secret) {
+  if (typeof secret !== 'string') return '';
+  const clean = secret.trim();
+  if (!clean) return '';
+  const buf = Buffer.from(clean, 'utf8');
+  try {
+    return crypto.createHash('sha256').update(buf).digest('hex').slice(0, 12).toLowerCase();
+  } finally {
+    buf.fill(0);
+  }
+}
+
+function tryUnwrapGoKeyringBase64(trimmed) {
+  if (typeof trimmed !== 'string' || !trimmed.startsWith(GO_KEYRING_B64_PREFIX)) return null;
+  const compact = trimmed.slice(GO_KEYRING_B64_PREFIX.length).replace(/\s+/g, '');
+  if (!compact || !BASE64_BODY_RE.test(compact)) return null;
+  try {
+    const normalized = compact.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+    const decoded = Buffer.from(padded, 'base64');
+    return decoded.length > 0 ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractRefreshHashFromParsedObject(obj, depth = 0) {
+  if (!obj || typeof obj !== 'object' || depth > 4) return '';
+  if (obj.kind === WSL_CRED_ENVELOPE_KIND && typeof obj.oauthTokenB64 === 'string') {
+    let innerBuf = null;
+    try {
+      innerBuf = Buffer.from(obj.oauthTokenB64, 'base64');
+      return extractCredentialRefreshHash(innerBuf, depth + 1);
+    } catch {
+      return '';
+    } finally {
+      if (innerBuf) innerBuf.fill(0);
+    }
+  }
+  const direct = hashRefreshSecret(
+    (obj.token && typeof obj.token === 'object' ? obj.token.refresh_token : '') ||
+    (typeof obj.refresh_token === 'string' ? obj.refresh_token : '')
+  );
+  if (direct) return direct;
+  if (typeof obj.token === 'string' && obj.token.trim()) {
+    const fromText = extractRefreshHashFromText(obj.token, depth + 1);
+    if (fromText) return fromText;
+    let decoded = null;
+    try {
+      decoded = Buffer.from(obj.token.trim(), 'base64');
+      if (decoded.length) {
+        const fromB64 = extractCredentialRefreshHash(decoded, depth + 1);
+        if (fromB64) return fromB64;
+      }
+    } catch {
+      // ignore non-base64 token
+    } finally {
+      if (decoded) decoded.fill(0);
+    }
+  } else if (obj.token && typeof obj.token === 'object') {
+    const nested = extractRefreshHashFromParsedObject(obj.token, depth + 1);
+    if (nested) return nested;
+  }
+  return '';
+}
+
+function extractRefreshHashFromText(text, depth = 0) {
+  if (typeof text !== 'string' || depth > 4) return '';
+  const trimmed = text.trim();
+  if (!trimmed) return '';
+  const goBuf = tryUnwrapGoKeyringBase64(trimmed);
+  if (goBuf) {
+    try {
+      return extractCredentialRefreshHash(goBuf, depth + 1);
+    } finally {
+      goBuf.fill(0);
+    }
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === 'object') {
+      return extractRefreshHashFromParsedObject(parsed, depth + 1);
+    }
+  } catch {
+    // not strict JSON
+  }
+  const m = trimmed.match(/"refresh_token"\s*:\s*"([^"\r\n\\]+)"/i);
+  if (m && m[1]) {
+    return hashRefreshSecret(m[1]);
+  }
+  return '';
+}
+
 function extractEmailFromParsedObject(obj, depth = 0) {
   if (!obj || typeof obj !== 'object' || depth > 4) return '';
   if (obj.kind === WSL_CRED_ENVELOPE_KIND && typeof obj.oauthTokenB64 === 'string') {
@@ -273,6 +368,14 @@ function extractEmailFromText(text, depth = 0) {
   if (typeof text !== 'string' || depth > 4) return '';
   const trimmed = text.trim();
   if (!trimmed) return '';
+  const goBuf = tryUnwrapGoKeyringBase64(trimmed);
+  if (goBuf) {
+    try {
+      return extractCredentialEmail(goBuf, depth + 1);
+    } finally {
+      goBuf.fill(0);
+    }
+  }
   try {
     const parsed = JSON.parse(trimmed);
     if (parsed && typeof parsed === 'object') {
@@ -308,6 +411,27 @@ export function extractCredentialEmail(rawInput, depth = 0) {
     return extractEmailFromParsedObject(rawInput, depth);
   }
   return '';
+}
+
+export function extractCredentialRefreshHash(rawInput, depth = 0) {
+  if (!rawInput || depth > 4) return '';
+  if (Buffer.isBuffer(rawInput)) {
+    return extractRefreshHashFromText(rawInput.toString('utf8'), depth);
+  }
+  if (typeof rawInput === 'string') {
+    return extractRefreshHashFromText(rawInput, depth);
+  }
+  if (typeof rawInput === 'object') {
+    return extractRefreshHashFromParsedObject(rawInput, depth);
+  }
+  return '';
+}
+
+export function extractCredentialMeta(rawInput) {
+  return {
+    email: extractCredentialEmail(rawInput, 0),
+    refreshHash: extractCredentialRefreshHash(rawInput, 0)
+  };
 }
 
 export function detectIsWsl({ platform = process.platform, env = process.env, procVersionPath = '/proc/version' } = {}) {
@@ -601,10 +725,13 @@ export function createAccountVault(options = {}) {
       throw Object.assign(new Error('macOS Keychain 读取失败'), { code: 'VAULT_COMMAND_FAILED' });
     }
     let raw = String(res.stdout || '').replace(/\r?\n$/, '');
-    if (/^[0-9a-fA-F]{20,}$/.test(raw) && raw.length % 2 === 0 && !raw.startsWith('prism-b64:')) {
+    if (/^[0-9a-fA-F]{20,}$/.test(raw) && raw.length % 2 === 0 && !raw.startsWith('prism-b64:') && !raw.startsWith(GO_KEYRING_B64_PREFIX)) {
       try {
-        const fromHex = Buffer.from(raw, 'hex').toString('utf8');
-        if (fromHex.startsWith('prism-b64:')) raw = fromHex;
+        const hexBuf = Buffer.from(raw, 'hex');
+        const fromHex = hexBuf.toString('utf8');
+        if (fromHex.startsWith('prism-b64:') || fromHex.startsWith(GO_KEYRING_B64_PREFIX) || fromHex.trim().startsWith('{')) {
+          raw = fromHex;
+        }
       } catch {}
     }
     if (raw.startsWith('prism-b64:')) {
@@ -613,15 +740,13 @@ export function createAccountVault(options = {}) {
     return Buffer.from(raw, 'utf8');
   }
 
-  function writeKeychainBuffer(service, account, buf) {
-    const encoded = `prism-b64:${buf.toString('base64')}`;
-    // Use -X <hex> when payload exceeds interactive stdin line limits (>3KB) to avoid truncation on macOS Keychain
-    if (encoded.length > 3000) {
-      const hexStr = Buffer.from(encoded, 'utf8').toString('hex');
-      const hexRes = runCmd('security', ['add-generic-password', '-U', '-s', service, '-a', account, '-X', hexStr], { timeoutMs: 15000 });
-      if (hexRes.status === 0) return;
-    }
-    const cmdLine = `add-generic-password -U -s ${JSON.stringify(service)} -a ${JSON.stringify(account)} -w ${JSON.stringify(encoded)}\n`;
+  function writeKeychainBuffer(service, account, buf, { rawHostFormat = false } = {}) {
+    const asText = rawHostFormat ? buf.toString('utf8') : `prism-b64:${buf.toString('base64')}`;
+    const hasBinaryOrNewline = rawHostFormat && (Buffer.compare(Buffer.from(asText, 'utf8'), buf) !== 0 || /[\x00-\x1f\x7f]/.test(asText));
+    // Pass secrets strictly via security -i stdin (never argv): use -X <hex> over stdin when >3KB or containing binary/newlines
+    const cmdLine = (asText.length > 3000 || hasBinaryOrNewline)
+      ? `add-generic-password -U -s ${JSON.stringify(service)} -a ${JSON.stringify(account)} -X ${(rawHostFormat ? buf : Buffer.from(asText, 'utf8')).toString('hex')}\n`
+      : `add-generic-password -U -s ${JSON.stringify(service)} -a ${JSON.stringify(account)} -w ${JSON.stringify(asText)}\n`;
     const res = runCmd('security', ['-i'], { input: cmdLine, timeoutMs: 15000 });
     if (res.status !== 0) {
       throw Object.assign(new Error('macOS Keychain 写入失败'), { code: 'VAULT_COMMAND_FAILED' });
@@ -647,12 +772,17 @@ export function createAccountVault(options = {}) {
     return Buffer.from(raw, 'utf8');
   }
 
-  function writeSecretToolBuffer(service, account, label, buf) {
-    const encoded = `prism-b64:${buf.toString('base64')}`;
+  function writeSecretToolBuffer(service, account, label, buf, { rawHostFormat = false } = {}) {
+    const asText = buf.toString('utf8');
+    const canWriteRaw = Buffer.compare(Buffer.from(asText, 'utf8'), buf) === 0 && !asText.includes('\0');
+    if (rawHostFormat && !canWriteRaw) {
+      throw Object.assign(new Error('Linux Secret Service 活跃凭据包含非法二进制字节，拒绝写入'), { code: 'CORRUPT_CREDENTIAL' });
+    }
+    const payload = rawHostFormat ? asText : `prism-b64:${buf.toString('base64')}`;
     const res = runCmd(
       'secret-tool',
       ['store', '--label', label, 'service', service, 'account', account],
-      { input: encoded, timeoutMs: 15000 }
+      { input: payload, timeoutMs: 15000 }
     );
     if (res.status !== 0) {
       throw Object.assign(new Error('Linux secret-tool 写入失败'), { code: 'VAULT_COMMAND_FAILED' });
@@ -740,11 +870,11 @@ export function createAccountVault(options = {}) {
       return;
     }
     if (backendInfo.backend === 'darwin-keychain') {
-      writeKeychainBuffer('gemini', 'antigravity', buf);
+      writeKeychainBuffer('gemini', 'antigravity', buf, { rawHostFormat: true });
       return;
     }
     if (backendInfo.backend === 'linux-secret-service') {
-      writeSecretToolBuffer('gemini', 'antigravity', 'Antigravity Active Credential', buf);
+      writeSecretToolBuffer('gemini', 'antigravity', 'Antigravity Active Credential', buf, { rawHostFormat: true });
       return;
     }
     throw Object.assign(new Error(`当前平台不支持隔离凭据库: ${backendInfo.backend}`), { code: 'UNSUPPORTED_VAULT' });
@@ -839,17 +969,20 @@ export function createAccountVault(options = {}) {
         exists: false,
         email: '',
         hashPrefix: '',
+        refreshHash: '',
         byteLength: 0,
         hasUserScope: raw.hasUserScope,
         backend: backendInfo.backend
       };
     }
     try {
+      const meta = extractCredentialMeta(raw.buf);
       return {
         ok: true,
         exists: true,
-        email: extractCredentialEmail(raw.buf),
+        email: meta.email,
         hashPrefix: fingerprintBuffer(raw.buf),
+        refreshHash: meta.refreshHash,
         byteLength: raw.buf.length,
         hasUserScope: raw.hasUserScope,
         backend: backendInfo.backend
@@ -877,6 +1010,7 @@ export function createAccountVault(options = {}) {
         accountId: cleanId,
         email: '',
         hashPrefix: '',
+        refreshHash: '',
         byteLength: 0,
         backend: backendInfo.backend
       };
@@ -884,12 +1018,14 @@ export function createAccountVault(options = {}) {
       return emptyMeta;
     }
     try {
+      const parsedMeta = extractCredentialMeta(buf);
       const meta = {
         ok: true,
         exists: true,
         accountId: cleanId,
-        email: extractCredentialEmail(buf),
+        email: parsedMeta.email,
         hashPrefix: fingerprintBuffer(buf),
+        refreshHash: parsedMeta.refreshHash,
         byteLength: buf.length,
         backend: backendInfo.backend
       };
@@ -926,19 +1062,21 @@ export function createAccountVault(options = {}) {
         const cleanId = missingIds[i];
         const r = results[i];
         if (!r || !r.found) {
-          const emptyMeta = { ok: true, exists: false, accountId: cleanId, email: '', hashPrefix: '', byteLength: 0, backend: backendInfo.backend };
+          const emptyMeta = { ok: true, exists: false, accountId: cleanId, email: '', hashPrefix: '', refreshHash: '', byteLength: 0, backend: backendInfo.backend };
           out[cleanId] = emptyMeta;
           if (reqRev === savedCacheRev) updateSavedCacheEntry(cleanId, emptyMeta);
           continue;
         }
         const buf = Buffer.from(String(r.blobB64 || ''), 'base64');
         try {
+          const parsedMeta = extractCredentialMeta(buf);
           const meta = {
             ok: true,
             exists: true,
             accountId: cleanId,
-            email: extractCredentialEmail(buf),
+            email: parsedMeta.email,
             hashPrefix: fingerprintBuffer(buf),
+            refreshHash: parsedMeta.refreshHash,
             byteLength: buf.length,
             backend: backendInfo.backend
           };
@@ -964,7 +1102,9 @@ export function createAccountVault(options = {}) {
     }
     let verifyBuf = null;
     try {
-      const email = extractCredentialEmail(raw.buf);
+      const activeMeta = extractCredentialMeta(raw.buf);
+      const email = activeMeta.email;
+      const refreshHash = activeMeta.refreshHash;
       const wantEmail = normalizeEmailCandidate(expectedEmail);
       if (wantEmail && email && wantEmail !== email) {
         throw Object.assign(
@@ -1000,6 +1140,7 @@ export function createAccountVault(options = {}) {
         accountId: cleanId,
         email,
         hashPrefix: expectedHash,
+        refreshHash,
         byteLength: raw.buf.length,
         backend: backendInfo.backend
       });
@@ -1008,6 +1149,7 @@ export function createAccountVault(options = {}) {
         accountId: cleanId,
         email,
         hashPrefix: expectedHash,
+        refreshHash,
         byteLength: raw.buf.length,
         hasUserScope: raw.hasUserScope,
         backend: backendInfo.backend
@@ -1076,7 +1218,9 @@ export function createAccountVault(options = {}) {
         throw Object.assign(new Error(`隔离凭据槽 ${cleanTargetId} 不存在或为空`), { code: 'TARGET_CREDENTIAL_MISSING' });
       }
 
-      const targetEmail = extractCredentialEmail(targetBuf);
+      const targetMeta = extractCredentialMeta(targetBuf);
+      const targetEmail = targetMeta.email;
+      const targetRefreshHash = targetMeta.refreshHash;
       const wantEmail = normalizeEmailCandidate(expectedTargetEmail);
       if (wantEmail && targetEmail !== wantEmail) {
         throw Object.assign(
@@ -1099,12 +1243,14 @@ export function createAccountVault(options = {}) {
 
       if (backupCurrentToId && verifyBackupBuf) {
         const cleanBackupId = sanitizeAccountId(backupCurrentToId);
+        const backupMeta = extractCredentialMeta(verifyBackupBuf);
         updateSavedCacheEntry(cleanBackupId, {
           ok: true,
           exists: true,
           accountId: cleanBackupId,
-          email: extractCredentialEmail(verifyBackupBuf),
+          email: backupMeta.email,
           hashPrefix: fingerprintBuffer(verifyBackupBuf),
+          refreshHash: backupMeta.refreshHash,
           byteLength: verifyBackupBuf.length,
           backend: backendInfo.backend
         });
@@ -1115,6 +1261,7 @@ export function createAccountVault(options = {}) {
         targetId: cleanTargetId,
         targetEmail: targetEmail || wantEmail,
         hashPrefix: afterHash,
+        refreshHash: targetRefreshHash,
         byteLength: verifyActiveBuf.length,
         backedUpTo: backupCurrentToId ? sanitizeAccountId(backupCurrentToId) : '',
         rolledBack: false

@@ -16,10 +16,10 @@ using System.Windows.Automation;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Prism Win32 CUA Helper & Native Messaging Bridge")]
-[assembly: AssemblyDescription("Anti-Claude Prism Suite v0.8.4 Controlled Desktop & Browser CUA Helper")]
+[assembly: AssemblyDescription("Anti-Claude Prism Suite v0.9.0 Controlled Desktop & Browser CUA Helper")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.8.4.0")]
-[assembly: AssemblyFileVersion("0.8.4.0")]
+[assembly: AssemblyVersion("0.9.0.0")]
+[assembly: AssemblyFileVersion("0.9.0.0")]
 
 namespace AntiClaudePrismWinCua
 {
@@ -68,6 +68,11 @@ namespace AntiClaudePrismWinCua
         public const int SW_SHOWNOACTIVATE = 4;
         public const int SW_RESTORE = 9;
         public const uint GA_ROOT = 2;
+        public const uint GA_ROOTOWNER = 3;
+        public const uint GW_OWNER = 4;
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
         public const uint CWP_SKIPINVISIBLE = 0x0001;
         public const uint CWP_SKIPDISABLED = 0x0002;
 
@@ -177,6 +182,20 @@ namespace AntiClaudePrismWinCua
         {
             public uint cbSize;
             public uint dwTime;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct GUITHREADINFO
+        {
+            public uint cbSize;
+            public uint flags;
+            public IntPtr hwndActive;
+            public IntPtr hwndFocus;
+            public IntPtr hwndCapture;
+            public IntPtr hwndMenuOwner;
+            public IntPtr hwndMoveSize;
+            public IntPtr hwndCaret;
+            public RECT rcCaret;
         }
 
         [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -427,6 +446,9 @@ namespace AntiClaudePrismWinCua
 
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool GetGUIThreadInfo(uint idThread, ref GUITHREADINFO lpgui);
 
         [DllImport("kernel32.dll")]
         public static extern uint GetTickCount();
@@ -2123,6 +2145,127 @@ namespace AntiClaudePrismWinCua
             return Interlocked.CompareExchange(ref probeState, 0, 0) != 0;
         }
 
+        private static int s_activeMtaPasswordProbes = 0;
+
+        private static bool IsCurrentlyFocusedControlPasswordFailClosed(IntPtr rootHwnd, bool isElectron)
+        {
+            if (isElectron) return true;
+
+            uint pid = 0;
+            uint tid = rootHwnd != IntPtr.Zero ? NativeMethods.GetWindowThreadProcessId(rootHwnd, out pid) : 0;
+            IntPtr focusHwnd = IntPtr.Zero;
+
+            if (tid != 0)
+            {
+                NativeMethods.GUITHREADINFO gti = new NativeMethods.GUITHREADINFO();
+                gti.cbSize = (uint)Marshal.SizeOf(typeof(NativeMethods.GUITHREADINFO));
+                if (NativeMethods.GetGUIThreadInfo(tid, ref gti) && gti.hwndFocus != IntPtr.Zero)
+                {
+                    focusHwnd = gti.hwndFocus;
+                }
+            }
+            if (focusHwnd == IntPtr.Zero)
+            {
+                NativeMethods.GUITHREADINFO fgGti = new NativeMethods.GUITHREADINFO();
+                fgGti.cbSize = (uint)Marshal.SizeOf(typeof(NativeMethods.GUITHREADINFO));
+                if (NativeMethods.GetGUIThreadInfo(0, ref fgGti))
+                {
+                    focusHwnd = fgGti.hwndFocus;
+                }
+            }
+
+            if (focusHwnd != IntPtr.Zero)
+            {
+                uint focusPid = 0;
+                NativeMethods.GetWindowThreadProcessId(focusHwnd, out focusPid);
+                if (pid != 0 && focusPid != 0 && focusPid != pid)
+                {
+                    return true;
+                }
+                string focusCls = WindowSecurity.SafeGetClassName(focusHwnd);
+                if (focusCls.IndexOf("Chrome_WidgetWin", StringComparison.OrdinalIgnoreCase) >= 0
+                    || focusCls.IndexOf("PasswordBox", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+                if (focusCls.IndexOf("Edit", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    int style = NativeMethods.GetWindowLongW(focusHwnd, NativeMethods.GWL_STYLE);
+                    if ((style & NativeMethods.ES_PASSWORD) != 0)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            if (Interlocked.Increment(ref s_activeMtaPasswordProbes) > 3)
+            {
+                Interlocked.Decrement(ref s_activeMtaPasswordProbes);
+                return true;
+            }
+
+            /* State: -1 = pending/unsupported/error (fail-closed), 0 = verified bool false, 1 = verified password */
+            int probeState = -1;
+            uint expectedPid = pid;
+            Thread mta = new Thread((ThreadStart)delegate
+            {
+                try
+                {
+                    AutomationElement elFocus = AutomationElement.FocusedElement;
+                    AutomationElement elHandle = focusHwnd != IntPtr.Zero ? AutomationElement.FromHandle(focusHwnd) : null;
+                    if (elFocus == null && elHandle == null)
+                    {
+                        Interlocked.Exchange(ref probeState, 1);
+                        return;
+                    }
+                    if (elFocus != null)
+                    {
+                        if (expectedPid != 0)
+                        {
+                            int fPid = elFocus.Current.ProcessId;
+                            if (fPid > 0 && fPid != (int)expectedPid)
+                            {
+                                Interlocked.Exchange(ref probeState, 1);
+                                return;
+                            }
+                        }
+                        object vF = elFocus.GetCurrentPropertyValue(AutomationElement.IsPasswordProperty, true);
+                        if (!(vF is bool) || (bool)vF)
+                        {
+                            Interlocked.Exchange(ref probeState, 1);
+                            return;
+                        }
+                    }
+                    if (elHandle != null)
+                    {
+                        object vH = elHandle.GetCurrentPropertyValue(AutomationElement.IsPasswordProperty, true);
+                        if (!(vH is bool) || (bool)vH)
+                        {
+                            Interlocked.Exchange(ref probeState, 1);
+                            return;
+                        }
+                    }
+                    Interlocked.Exchange(ref probeState, 0);
+                }
+                catch
+                {
+                    Interlocked.Exchange(ref probeState, -1);
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref s_activeMtaPasswordProbes);
+                }
+            });
+            mta.IsBackground = true;
+            mta.SetApartmentState(ApartmentState.MTA);
+            mta.Start();
+            if (!mta.Join(650))
+            {
+                return true;
+            }
+            return Interlocked.CompareExchange(ref probeState, 0, 0) != 0;
+        }
+
         private static bool TryInvokeUiaClickMta(
             IntPtr hwnd,
             WindowInfo info,
@@ -2807,6 +2950,10 @@ namespace AntiClaudePrismWinCua
                     return ErrorResult("PASSWORD_FIELD_HANDOFF", "检测到目标坐标为密码或未受验受保护输入控件，已拒绝自动输入");
                 }
             }
+            if (IsCurrentlyFocusedControlPasswordFailClosed(hwnd, info.IsElectron))
+            {
+                return ErrorResult("PASSWORD_FIELD_HANDOFF", "检测到当前键盘焦点为密码或未受验受保护输入控件，已拒绝自动输入");
+            }
 
             string normalized = text.Replace("\r\n", "\n");
             int typedUnits = 0;
@@ -2826,6 +2973,11 @@ namespace AntiClaudePrismWinCua
                         InputController.CreateKeyVkInput(NativeMethods.VK_RETURN, NativeMethods.KEYEVENTF_KEYUP)
                     });
                     typedUnits++;
+                    Thread.Sleep(15);
+                    if (i + 1 < normalized.Length && IsCurrentlyFocusedControlPasswordFailClosed(hwnd, info.IsElectron))
+                    {
+                        return ErrorResult("PASSWORD_FIELD_HANDOFF", "回车切换焦点后命中密码或未受验受保护输入控件，已中止后续输入");
+                    }
                 }
                 else if (c == '\t')
                 {
@@ -2835,6 +2987,11 @@ namespace AntiClaudePrismWinCua
                         InputController.CreateKeyVkInput(NativeMethods.VK_TAB, NativeMethods.KEYEVENTF_KEYUP)
                     });
                     typedUnits++;
+                    Thread.Sleep(15);
+                    if (i + 1 < normalized.Length && IsCurrentlyFocusedControlPasswordFailClosed(hwnd, info.IsElectron))
+                    {
+                        return ErrorResult("PASSWORD_FIELD_HANDOFF", "Tab 切换焦点后命中密码或未受验受保护输入控件，已中止后续输入");
+                    }
                 }
                 else if (char.IsHighSurrogate(c) && i + 1 < normalized.Length && char.IsLowSurrogate(normalized[i + 1]))
                 {
@@ -2899,6 +3056,7 @@ namespace AntiClaudePrismWinCua
             bool hasWin = false;
             bool hasAlt = false;
             bool hasCtrl = false;
+            bool hasShift = false;
 
             string[] parts = chord.Split(new char[] { '+' }, StringSplitOptions.RemoveEmptyEntries);
             for (int i = 0; i < parts.Length; i++)
@@ -2916,6 +3074,7 @@ namespace AntiClaudePrismWinCua
                     if (lower == "shift")
                     {
                         modifiers.Add(NativeMethods.VK_LSHIFT);
+                        hasShift = true;
                         continue;
                     }
                     if (lower == "alt" || lower == "menu")
@@ -2953,13 +3112,50 @@ namespace AntiClaudePrismWinCua
                 return ErrorResult("INVALID_KEY_CHORD", "无法解析主按键: " + chord);
             }
 
+            int targetX = 0;
+            int targetY = 0;
+            bool hasPoint = false;
+            if (JsonUtil.HasKey(step, "x") || JsonUtil.HasKey(step, "screenX") || JsonUtil.HasKey(step, "ref"))
+            {
+                string ptErrCode;
+                string ptErrMsg;
+                if (!ResolveStepPhysicalPoint(hwnd, info, step, false, out targetX, out targetY, out ptErrCode, out ptErrMsg))
+                {
+                    return ErrorResult(ptErrCode, ptErrMsg);
+                }
+                hasPoint = true;
+            }
+
+            bool isShiftInsert = hasShift && mainVk == NativeMethods.VK_INSERT;
+            bool isPureNavVk = mainVk == NativeMethods.VK_TAB
+                || mainVk == NativeMethods.VK_ESCAPE
+                || mainVk == NativeMethods.VK_UP
+                || mainVk == NativeMethods.VK_DOWN
+                || mainVk == NativeMethods.VK_LEFT
+                || mainVk == NativeMethods.VK_RIGHT
+                || mainVk == NativeMethods.VK_SHIFT
+                || mainVk == NativeMethods.VK_LSHIFT
+                || mainVk == NativeMethods.VK_RSHIFT;
+            bool isPureNavigationKey = !hasCtrl && !hasAlt && !hasWin && !isShiftInsert && isPureNavVk;
+
             if (escGuard.IsEscTriggered()) return EscAbortedResult();
 
             if (mouseMode == "strict_virtual" && !info.IsElectron && modifiers.Count == 0)
             {
-                if (NativeMethods.PostMessageW(hwnd, NativeMethods.WM_KEYDOWN, new IntPtr(mainVk), IntPtr.Zero))
+                IntPtr targetKeyHwnd = hasPoint ? FindDeepestChildWindowAtScreenPoint(hwnd, targetX, targetY) : hwnd;
+                if (targetKeyHwnd == IntPtr.Zero) targetKeyHwnd = hwnd;
+                if (!isPureNavigationKey)
                 {
-                    NativeMethods.PostMessageW(hwnd, NativeMethods.WM_KEYUP, new IntPtr(mainVk), IntPtr.Zero);
+                    bool bgPwd = (hasPoint && IsControlPasswordFailClosed(targetKeyHwnd, targetX, targetY, info.IsElectron))
+                        || IsCurrentlyFocusedControlPasswordFailClosed(hwnd, info.IsElectron);
+                    if (bgPwd)
+                    {
+                        return ErrorResult("PASSWORD_FIELD_HANDOFF", "检测到目标或焦点控件为密码或未受验受保护输入控件，已拒绝发送按键");
+                    }
+                }
+                if (NativeMethods.PostMessageW(targetKeyHwnd, NativeMethods.WM_KEYDOWN, new IntPtr(mainVk), IntPtr.Zero))
+                {
+                    NativeMethods.PostMessageW(targetKeyHwnd, NativeMethods.WM_KEYUP, new IntPtr(mainVk), IntPtr.Zero);
                     Dictionary<string, object> bgKeyRes = new Dictionary<string, object>();
                     bgKeyRes["ok"] = true;
                     bgKeyRes["op"] = "press_key";
@@ -2977,6 +3173,16 @@ namespace AntiClaudePrismWinCua
             if (!ActivateWindowForPhysicalInput(hwnd, ref info, mouseMode, escGuard, out actErrCode, out actErrMsg))
             {
                 return ErrorResult(actErrCode, actErrMsg);
+            }
+
+            if (!isPureNavigationKey)
+            {
+                bool fgPwd = (hasPoint && IsControlPasswordFailClosed(FindDeepestChildWindowAtScreenPoint(hwnd, targetX, targetY), targetX, targetY, info.IsElectron))
+                    || IsCurrentlyFocusedControlPasswordFailClosed(hwnd, info.IsElectron);
+                if (fgPwd)
+                {
+                    return ErrorResult("PASSWORD_FIELD_HANDOFF", "检测到目标或当前焦点为密码或未受验受保护输入控件，已拒绝发送按键");
+                }
             }
 
             bool sendingEscape = (mainVk == NativeMethods.VK_ESCAPE && modifiers.Count == 0);
@@ -3061,6 +3267,8 @@ namespace AntiClaudePrismWinCua
                     vk = NativeMethods.VK_RETURN; return true;
                 case "tab":
                     vk = NativeMethods.VK_TAB; return true;
+                case "shift":
+                    vk = NativeMethods.VK_SHIFT; return true;
                 case "esc":
                 case "escape":
                     vk = NativeMethods.VK_ESCAPE; return true;
@@ -3349,7 +3557,7 @@ namespace AntiClaudePrismWinCua
                     {
                         ecp = (ExpandCollapsePattern)pat;
                         ecp.Expand();
-                        Thread.Sleep(40);
+                        Thread.Sleep(60);
                     }
 
                     AutomationElementCollection subItems = target.LiveElement.FindAll(
@@ -3382,6 +3590,78 @@ namespace AntiClaudePrismWinCua
                         {
                             ((SelectionItemPattern)sp2).Select();
                             selected = true;
+                        }
+                    }
+
+                    if (!selected)
+                    {
+                        try
+                        {
+                            Condition topPopupCond = new OrCondition(
+                                new PropertyCondition(AutomationElement.ClassNameProperty, "ComboLBox"),
+                                new AndCondition(
+                                    new PropertyCondition(AutomationElement.ProcessIdProperty, (int)info.Pid),
+                                    new OrCondition(
+                                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.List),
+                                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Window),
+                                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Pane),
+                                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Menu)
+                                    )
+                                )
+                            );
+                            AutomationElementCollection topPopups = AutomationElement.RootElement.FindAll(TreeScope.Children, topPopupCond);
+                            for (int pIdx = 0; pIdx < topPopups.Count && !selected; pIdx++)
+                            {
+                                AutomationElement popup = topPopups[pIdx];
+                                if (popup == null) continue;
+                                try
+                                {
+                                    if (popup.Current.IsOffscreen) continue;
+                                    int popPid = popup.Current.ProcessId;
+                                    if (popPid <= 0 || (info.Pid > 0 && popPid != (int)info.Pid)) continue;
+                                    IntPtr popHwnd = new IntPtr(popup.Current.NativeWindowHandle);
+                                    string popCls = popup.Current.ClassName ?? string.Empty;
+                                    bool isOwnedPopup = popHwnd != IntPtr.Zero && (
+                                        popHwnd == hwnd
+                                        || NativeMethods.GetWindow(popHwnd, NativeMethods.GW_OWNER) == hwnd
+                                        || NativeMethods.GetAncestor(popHwnd, NativeMethods.GA_ROOTOWNER) == hwnd
+                                        || string.Equals(popCls, "ComboLBox", StringComparison.OrdinalIgnoreCase)
+                                    );
+                                    if (!isOwnedPopup) continue;
+                                }
+                                catch
+                                {
+                                    continue;
+                                }
+                                AutomationElementCollection popItems = popup.FindAll(
+                                    TreeScope.Descendants,
+                                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ListItem));
+                                for (int j = 0; j < popItems.Count; j++)
+                                {
+                                    AutomationElement itemEl = popItems[j];
+                                    string nm = itemEl.Current.Name ?? string.Empty;
+                                    if (string.Equals(nm.Trim(), wantVal, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        object spPop;
+                                        if (itemEl.TryGetCurrentPattern(SelectionItemPattern.Pattern, out spPop) && spPop is SelectionItemPattern)
+                                        {
+                                            ((SelectionItemPattern)spPop).Select();
+                                            selected = true;
+                                            break;
+                                        }
+                                        object invPop;
+                                        if (itemEl.TryGetCurrentPattern(InvokePattern.Pattern, out invPop) && invPop is InvokePattern)
+                                        {
+                                            ((InvokePattern)invPop).Invoke();
+                                            selected = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch
+                        {
                         }
                     }
 
@@ -3505,11 +3785,12 @@ namespace AntiClaudePrismWinCua
         {
             int waitMs = JsonUtil.GetInt(step, "ms", JsonUtil.GetInt(step, "timeoutMs", 500));
             if (waitMs < 0) waitMs = 0;
-            if (waitMs > 4500) waitMs = 4500;
+            if (waitMs > 30000) waitMs = 30000;
             string wantText = JsonUtil.GetString(step, "text", string.Empty).Trim();
 
             Stopwatch sw = Stopwatch.StartNew();
             bool matched = string.IsNullOrEmpty(wantText);
+            long nextUiaPollMs = 0;
 
             while (sw.ElapsedMilliseconds < waitMs)
             {
@@ -3518,7 +3799,7 @@ namespace AntiClaudePrismWinCua
                     return EscAbortedResult();
                 }
 
-                if (!matched && !info.IsElectron && IsWindowResponsive(hwnd))
+                if (!matched && !info.IsElectron && sw.ElapsedMilliseconds >= nextUiaPollMs && IsWindowResponsive(hwnd))
                 {
                     string note;
                     List<Dictionary<string, object>> els = CollectUiaElementsMta(hwnd, info.Rect, out note);
@@ -3532,9 +3813,10 @@ namespace AntiClaudePrismWinCua
                         }
                     }
                     if (matched) break;
+                    nextUiaPollMs = sw.ElapsedMilliseconds + 180;
                 }
 
-                int slice = (int)Math.Min(60, Math.Max(10, waitMs - sw.ElapsedMilliseconds));
+                int slice = (int)Math.Min(100, Math.Max(10, waitMs - sw.ElapsedMilliseconds));
                 Thread.Sleep(slice);
             }
 
@@ -4281,8 +4563,19 @@ namespace AntiClaudePrismWinCua
             IntPtr hRgn = NativeMethods.CreateRoundRectRgn(0, 0, Width + 1, Height + 1, 28, 28);
             if (hRgn != IntPtr.Zero)
             {
-                Region = Region.FromHrgn(hRgn);
-                NativeMethods.DeleteObject(hRgn);
+                Region prevRegion = Region;
+                try
+                {
+                    Region = Region.FromHrgn(hRgn);
+                }
+                finally
+                {
+                    NativeMethods.DeleteObject(hRgn);
+                }
+                if (prevRegion != null)
+                {
+                    prevRegion.Dispose();
+                }
             }
         }
 
@@ -4771,7 +5064,7 @@ namespace AntiClaudePrismWinCua
             {
                 Dictionary<string, object> ver = new Dictionary<string, object>();
                 ver["ok"] = true;
-                ver["version"] = "0.8.4";
+                ver["version"] = "0.9.0";
                 ver["platform"] = "win32";
                 WriteJsonLine(ver);
                 return 0;

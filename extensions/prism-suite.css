@@ -1244,47 +1244,49 @@ html[data-ag-ps-dark="marine"] body.dark {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #ag-ps-popover[data-open="1"],
-  #ag-ps-outline[data-open="1"],
-  #ag-claude-ov-sections .ag-ps-book-row[data-switching="1"] .ag-ps-book-val {
+  html:not([data-ag-ps-force-motion="1"]) #ag-ps-popover[data-open="1"],
+  html:not([data-ag-ps-force-motion="1"]) #ag-ps-outline[data-open="1"],
+  html:not([data-ag-ps-force-motion="1"]) #ag-claude-ov-sections .ag-ps-book-row[data-switching="1"] .ag-ps-book-val {
     animation: none !important;
   }
-  #ag-ps-popover[data-closing="1"],
-  #ag-ps-outline[data-closing="1"] {
+  html:not([data-ag-ps-force-motion="1"]) #ag-ps-popover[data-closing="1"],
+  html:not([data-ag-ps-force-motion="1"]) #ag-ps-outline[data-closing="1"] {
     display: none !important;
     animation: none !important;
   }
-  .ag-ps-tb-btn,
-  .ag-ps-account-cta,
-  .ag-ps-pal-btn,
-  .ag-ps-switch,
-  .ag-ps-switch::after,
-  .ag-ps-seg-btn,
-  .ag-ps-range::-webkit-slider-thumb,
-  .ag-ps-mini-reset,
-  .ag-ps-outline-search,
-  .ag-ps-outline-item,
-  .ag-ps-outline-btw,
-  #ag-ps-jump-toast,
-  #ag-claude-ov-sections .ag-ps-book-row,
-  #ag-claude-ov-sections .ag-ps-heat-cell,
-  #ag-ps-mascot-dock,
-  .ag-ps-mascot-bubble,
-  .ag-ps-emote,
-  .ag-ps-more-badge,
-  .ag-ps-thought-peek,
-  #ag-ps-tooltip,
-  .ag-ps-update-pill {
+  html:not([data-ag-ps-force-motion="1"]) .ag-ps-switch::after,
+  html:not([data-ag-ps-force-motion="1"]) .ag-ps-range::-webkit-slider-thumb,
+  html:not([data-ag-ps-force-motion="1"]) :is(
+    .ag-ps-tb-btn,
+    .ag-ps-account-cta,
+    .ag-ps-pal-btn,
+    .ag-ps-switch,
+    .ag-ps-seg-btn,
+    .ag-ps-mini-reset,
+    .ag-ps-outline-search,
+    .ag-ps-outline-item,
+    .ag-ps-outline-btw,
+    #ag-ps-jump-toast,
+    #ag-claude-ov-sections .ag-ps-book-row,
+    #ag-claude-ov-sections .ag-ps-heat-cell,
+    #ag-ps-mascot-dock,
+    .ag-ps-mascot-bubble,
+    .ag-ps-emote,
+    .ag-ps-more-badge,
+    .ag-ps-thought-peek,
+    #ag-ps-tooltip,
+    .ag-ps-update-pill
+  ) {
     transition: none !important;
   }
-  #ag-ps-mascot-dock .ag-ps-actor {
+  html:not([data-ag-ps-force-motion="1"]) #ag-ps-mascot-dock .ag-ps-actor {
     transition: none !important;
     will-change: auto;
   }
-  #ag-ps-mascot-dock .ag-ps-actor-body,
-  #ag-ps-mascot-dock .ag-ps-actor[data-entering="1"] .ag-ps-actor-body,
-  #ag-ps-mascot-dock .ag-ps-actor[data-exiting="1"] .ag-ps-actor-body,
-  #ag-ps-mascot-dock .ag-ps-actor[data-exiting="1"] .ag-ps-emote {
+  html:not([data-ag-ps-force-motion="1"]) #ag-ps-mascot-dock .ag-ps-actor-body,
+  html:not([data-ag-ps-force-motion="1"]) #ag-ps-mascot-dock .ag-ps-actor[data-entering="1"] .ag-ps-actor-body,
+  html:not([data-ag-ps-force-motion="1"]) #ag-ps-mascot-dock .ag-ps-actor[data-exiting="1"] .ag-ps-actor-body,
+  html:not([data-ag-ps-force-motion="1"]) #ag-ps-mascot-dock .ag-ps-actor[data-exiting="1"] .ag-ps-emote {
     animation: none !important;
   }
 }
@@ -1539,6 +1541,35 @@ html[data-ag-ps-dark="marine"] body.dark {
   display: none !important;
 }
 
+.ag-ps-thought-file-ref {
+  display: inline;
+  margin: 0 1px;
+  padding: 0.5px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--sidebar-border, rgba(128, 128, 128, 0.22));
+  background: color-mix(in srgb, var(--secondary, rgba(128, 128, 128, 0.12)) 78%, transparent);
+  color: var(--primary, #2F75C3);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 11.5px;
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+  word-break: break-all;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.ag-ps-thought-file-ref:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  border-color: color-mix(in srgb, var(--primary, #2F75C3) 45%, transparent);
+  background: color-mix(in srgb, var(--primary, #2F75C3) 10%, transparent);
+}
+
+.ag-ps-thought-file-ref:focus-visible {
+  outline: 1.5px solid var(--primary, #2F75C3);
+  outline-offset: 1px;
+}
+
 /* ---- 8. v0.4.1 Pointer-Safe Theme-Adaptive Tooltip, Mascot Dodge & Update Capsule ---- */
 #ag-ps-mascot-dock .ag-ps-actor[data-dodging="1"] {
   pointer-events: none !important;
@@ -1673,7 +1704,39 @@ html[data-ag-ps-dark="marine"] body.dark {
   margin-right: 2px;
 }
 
+html[data-ag-ps-custom-chat-font="1"] :is([data-markdown-root], .prose, .markdown, [data-testid="user-message-content"]) {
+  font-family: var(--ag-ps-chat-font), system-ui, -apple-system, sans-serif !important;
+}
+
+html[data-ag-ps-custom-chat-font="1"] :is([data-testid="planner-response-text"], [data-markdown-root], .prose, .markdown, [data-testid="user-input-step"], [data-testid="user-message-content"], .agy-user-bubble) {
+  --font-sans: var(--ag-ps-chat-font), system-ui, -apple-system, sans-serif !important;
+}
+
+html[data-ag-ps-custom-code-font="1"] :is([data-testid="autoscroll-viewport"] pre, [data-testid="autoscroll-viewport"] code, [data-markdown-root] pre, [data-markdown-root] code, .prose pre, .prose code, .markdown pre, .markdown code, .code-block) {
+  font-family: var(--ag-ps-code-font), ui-monospace, SFMono-Regular, Consolas, monospace !important;
+  --font-mono: var(--ag-ps-code-font), ui-monospace, SFMono-Regular, Consolas, monospace !important;
+  --default-mono-font-family: var(--ag-ps-code-font), ui-monospace, SFMono-Regular, Consolas, monospace !important;
+}
+
+html[data-ag-ps-perf="power-save"] #ag-ps-mascot-stage * {
+  animation-play-state: paused !important;
+}
+
+html[data-ag-ps-perf="power-save"] #ag-ps-mascot-dock,
+html[data-ag-ps-perf="power-save"] #ag-ps-mascot-dock * {
+  animation-play-state: paused !important;
+  transition: none !important;
+  filter: none !important;
+  box-shadow: none !important;
+}
+
+html[data-ag-ps-perf="vivid"]:not([data-ag-prism-hidden="1"]):not([data-ag-ps-reduced-motion="1"]) #ag-ps-mascot-dock[data-mood="busy"] .ag-ps-sprite {
+  filter: drop-shadow(0 2px 5px color-mix(in srgb, var(--primary, #2F75C3) 34%, transparent));
+}
+
 html[data-ag-prism-hidden="1"] #ag-ps-mascot-stage,
-html[data-ag-prism-hidden="1"] #ag-ps-mascot-stage * {
+html[data-ag-prism-hidden="1"] #ag-ps-mascot-stage *,
+html[data-ag-prism-hidden="1"] #ag-ps-mascot-dock,
+html[data-ag-prism-hidden="1"] #ag-ps-mascot-dock * {
   animation-play-state: paused !important;
 }

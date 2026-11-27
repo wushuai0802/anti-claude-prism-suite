@@ -1911,13 +1911,23 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-cm-row:is(:hover, [dat
 }
 
 /* --- Long Code Block Folding & Sticky Header (claudeUxCodeFold) --- */
-[data-ag-code-wrap="true"] > div.min-h-7:first-child {
+[data-ag-code-wrap="true"]:not([data-ag-code-collapsed="true"]) > [data-ag-code-hdr="1"],
+:not([data-ag-code-collapsed="true"]) > [data-ag-code-hdr="1"] {
   position: sticky !important;
   top: 0 !important;
-  z-index: 3 !important;
-  background-color: inherit !important;
+  z-index: 6 !important;
+  background-color: inherit;
+  background-color: var(--muted, #F6F6F4) !important;
   border-top-left-radius: inherit !important;
   border-top-right-radius: inherit !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) [data-ag-code-wrap="true"]:not([data-ag-code-collapsed="true"]) > [data-ag-code-hdr="1"] {
+  background-color: var(--muted, #F6F6F4) !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) [data-ag-code-wrap="true"]:not([data-ag-code-collapsed="true"]) > [data-ag-code-hdr="1"] {
+  background-color: var(--muted, #292927) !important;
 }
 
 [data-ag-code-collapsed="true"] > div.p-3 {
@@ -2789,11 +2799,11 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-claude-folder-badge[da
   #ag-claude-recent-section *,
   [data-testid="settings-button"]
 ),
-.bg-sidebar :has(> #ag-claude-recent-section[data-mode="unified"]) {
+.bg-sidebar div:has(> #ag-claude-recent-section[data-mode="unified"]) {
   -webkit-app-region: no-drag !important;
 }
 
-.bg-sidebar :has(> #ag-claude-recent-section[data-mode="unified"]) {
+.bg-sidebar div:has(> #ag-claude-recent-section[data-mode="unified"]) {
   min-height: 0 !important;
 }
 
