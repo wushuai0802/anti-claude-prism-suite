@@ -1,6 +1,6 @@
 {
   "name": "anti-claude-prism-suite",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "description": "Clean-room pluggable extension suite, 7-in-1 MCP App workbench & default-off Computer-Use Agent (CUA) bridge for Anti-Claude (Google Antigravity): 8 themes, composer border beam & quota ring, ThinkingOrb 3D particle sphere, 12 pixel mascots, outline & session fork, cross-session transcript search, zero-dep SSE Model Hub (T1-T4), opt-in account relay, dual-mode SQLite FTS5 memory, Windows UIA + Chrome/Edge MV3 CUA bridge with global Esc kill-switch, selective Upstream Radar, and Windows 1-click .exe installer.",
   "type": "module",
   "license": "MIT",

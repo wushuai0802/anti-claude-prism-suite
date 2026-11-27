@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.4 - 2026-11-27
+
+- **修复 `ThinkingOrb` 粒子思考球与 `✦ 棱镜` 视觉增强分区初始化中断问题（[prism-suite-fx.js](extensions/prism-suite-fx.js) / [prism-suite.js](extensions/prism-suite.js)）**：
+  - 补齐 `initFxModule` 内部独立的 `fxCleanups` 清理队列（并在 `dispose()` 时按序回收），修复此前两处裸调 `onCleanup(...)` 抛出 `ReferenceError` 导致 `ThinkingOrb` 挂载与 `✦ 棱镜` 特效设置分区未完成注册的问题，同时在 [prism-suite.test.mjs](test/prism-suite.test.mjs) 新增第 24 组初始化防回退单测。
+- **左侧边栏虚拟列表 GPU 合成器原生丝滑滚动与覆盖滚动条图层优化（[custom.js](vendor/anti-claude/user/custom.js) / [custom.css](vendor/anti-claude/user/custom.css)）**：
+  - **解除全局 `passive: false` 滚轮阻塞**：新增 `syncSidebarWheelListener()`，默认原生侧边栏模式下不挂载 `document` 级 `passive: false` 滚轮监听，将滚轮 `100%` 交由 Chromium GPU 合成器线程执行硬件平滑惯性滚动；
+  - **切断虚拟行回收触发主对话区重排**：全局 `MutationObserver` 识别 `[data-testid="conversation-list-sidebar"]` 内部 TanStack Virtual 行换入换出后不再触发全页 `syncStepStream()`（彻底消除长对话场景下滚动侧栏连带重扫主视图代码块与面板尺寸的卡顿），且 `uxI18nObserver` 直接跳过纯会话虚拟行遍历；
+  - **图层隔离与滑块跟帧加速**：为侧边栏列表启用 `contain: layout style` 并收敛 `:has()` 选择器作用域，同时为宿主覆盖滚动条滑块 `[data-testid="overlay-scrollbar-thumb"]` 开启 `will-change: transform` 独立 GPU 位移层。
+- **CI 发布与巡检工作流升级原生 Node 24 官方组件（[release.yml](.github/workflows/release.yml) / [upstream-watch.yml](.github/workflows/upstream-watch.yml)）**：
+  - 将 `actions/checkout`、`actions/setup-node`、`actions/upload-artifact` 升级至 `@v7`，`actions/github-script` 升级至 `@v9`，`softprops/action-gh-release` 升级至 `@v3`，消除 GitHub Actions Runner Node 20 弃用黄标提示。
+
 ## 0.8.3 - 2026-11-27
 
 - **模型会诊中枢与网关配置防 SSRF / 防泄密纵深加固（[prism-profile.mjs](plugin/server/prism-profile.mjs) / [model-hub.mjs](plugin/server/model-hub.mjs)）**：
