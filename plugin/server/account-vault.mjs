@@ -597,7 +597,13 @@ export function createAccountVault(options = {}) {
       if (/could not be found|SecKeychainSearchCopyNext/i.test(res.stderr || '')) return null;
       throw Object.assign(new Error('macOS Keychain 读取失败'), { code: 'VAULT_COMMAND_FAILED' });
     }
-    const raw = String(res.stdout || '').replace(/\r?\n$/, '');
+    let raw = String(res.stdout || '').replace(/\r?\n$/, '');
+    if (/^[0-9a-fA-F]{20,}$/.test(raw) && raw.length % 2 === 0 && !raw.startsWith('prism-b64:')) {
+      try {
+        const fromHex = Buffer.from(raw, 'hex').toString('utf8');
+        if (fromHex.startsWith('prism-b64:')) raw = fromHex;
+      } catch {}
+    }
     if (raw.startsWith('prism-b64:')) {
       return Buffer.from(raw.slice('prism-b64:'.length), 'base64');
     }
@@ -606,6 +612,12 @@ export function createAccountVault(options = {}) {
 
   function writeKeychainBuffer(service, account, buf) {
     const encoded = `prism-b64:${buf.toString('base64')}`;
+    // Use -X <hex> when payload exceeds interactive stdin line limits (>3KB) to avoid truncation on macOS Keychain
+    if (encoded.length > 3000) {
+      const hexStr = Buffer.from(encoded, 'utf8').toString('hex');
+      const hexRes = runCmd('security', ['add-generic-password', '-U', '-s', service, '-a', account, '-X', hexStr], { timeoutMs: 15000 });
+      if (hexRes.status === 0) return;
+    }
     const cmdLine = `add-generic-password -U -s ${JSON.stringify(service)} -a ${JSON.stringify(account)} -w ${JSON.stringify(encoded)}\n`;
     const res = runCmd('security', ['-i'], { input: cmdLine, timeoutMs: 15000 });
     if (res.status !== 0) {

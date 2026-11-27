@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "updatedAt": "2026-11-26",
+  "updatedAt": "2026-11-27",
   "principle": "Selective adoption only: inspect breaking host/credential changes first, surface useful/fun ideas for user approval, never copy-paste wholesale or import GPL-3.0 code.",
   "upstreams": {
     "antiClaude": {
@@ -36,8 +36,8 @@
       "license": "MIT",
       "absorptionPolicy": "selective-feature-ideas",
       "adoptionBoundary": "关注 Antigravity 凭据库路径变动与有趣轻量小工具/视觉创意；不照搬全盘重写与闭环强耦合逻辑。",
-      "baselineTag": "v2.16.3",
-      "baselineCommit": "c9fec80",
+      "baselineTag": "v2.16.10",
+      "baselineCommit": "e785013",
       "watchedPaths": [
         "lib/credential-vault.mjs",
         "extensions/",
@@ -57,8 +57,8 @@
       "license": "GPL-3.0",
       "absorptionPolicy": "inspiration-only-no-code",
       "adoptionBoundary": "Clean-Room 红线：仅提取排版/动效交互思路供用户选择，严禁复制或移植任何 GPL-3.0 源码。",
-      "baselineTag": "v1.0.8-beta.3",
-      "baselineCommit": "41cc481",
+      "baselineTag": "v1.0.8-beta.4",
+      "baselineCommit": "79e27fb",
       "watchedPaths": [
         "CHANGELOG.md",
         "README.md"
@@ -95,7 +95,7 @@
       "absorptionPolicy": "clean-room-cua-patterns",
       "adoptionBoundary": "Clean-Room 参考 UIA 无障碍树压缩、control_overlay 边缘指示胶囊与 control_consent 显式授权机制；严禁引入外部二进制或开启遥测，外部兼容连接须强制 ANONYMIZED_TELEMETRY=false 并排除 Shell/Registry/FileSystem/Process。",
       "baselineTag": "v0.9.0",
-      "baselineCommit": "b32c0ba",
+      "baselineCommit": "e788eda",
       "watchedPaths": [
         "src/",
         "manifest.json",

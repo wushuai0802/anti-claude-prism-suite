@@ -1,5 +1,5 @@
 /**
- * Anti-Claude Prism Suite v0.8.0 — core/cua-broker.mjs
+ * Anti-Claude Prism Suite v0.8.1 — core/cua-broker.mjs
  * Zero-dependency Controlled Desktop & Browser CUA Session Broker + Native Messaging HTTP Relay.
  *
  * Security invariants:
@@ -26,7 +26,7 @@ const SUITE_ROOT_CANDIDATE = path.resolve(__dirname, '..', '..', '..');
 
 export const CUA_EXTENSION_ID = 'lbmibnghmlnidfiihkegicaejaacmkca';
 export const CUA_NM_HOST_NAME = 'com.prism.cua.bridge';
-export const CUA_VERSION = '0.8.0';
+export const CUA_VERSION = '0.8.1';
 export const MAX_CUA_BODY_BYTES = 2 * 1024 * 1024;
 
 export const CUA_STATES = Object.freeze({
@@ -35,6 +35,25 @@ export const CUA_STATES = Object.freeze({
   ARMED_INTERACTIVE: 'ARMED_INTERACTIVE',
   PAUSED_HANDOFF: 'PAUSED_HANDOFF'
 });
+
+export const CUA_MOUSE_MODES = Object.freeze({
+  COURTEOUS: 'courteous',
+  STRICT_VIRTUAL: 'strict_virtual'
+});
+
+export function normalizeCuaMouseMode(raw, { allowPhysicalOverride = false, fallback = CUA_MOUSE_MODES.COURTEOUS } = {}) {
+  const s = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (s === 'strict_virtual' || s === 'virtual_only' || s === 'background') {
+    return CUA_MOUSE_MODES.STRICT_VIRTUAL;
+  }
+  if (allowPhysicalOverride && (s === 'physical' || s === 'hardware')) {
+    return 'physical';
+  }
+  if (s === 'courteous' || s === 'auto' || s === 'smart') {
+    return CUA_MOUSE_MODES.COURTEOUS;
+  }
+  return fallback;
+}
 
 const WSL_IFACE_NAME_RE = /WSL|vEthernet/i;
 const WSL_PRIVATE_GATEWAY_RE = /^172\.(1[6-9]|2\d|3[01])\.\d+\.1$/;
@@ -423,14 +442,40 @@ export function createCuaBroker(options = {}) {
     networkInterfacesFn = () => os.networkInterfaces(),
     wslAdapterIp,
     nmPollHoldMs = 15000,
-    nmHeartbeatTtlMs = 35000
+    nmHeartbeatTtlMs = 35000,
+    defaultMouseMode = ''
   } = options;
 
   const isSupportedPlatform = process.platform === 'win32' || Boolean(allowNonWin32ForTest);
   const token = crypto.randomBytes(32).toString('hex');
   const tokenBuf = Buffer.from(token, 'utf8');
 
+  function resolveSettingsFilePath() {
+    const { winSuiteDir } = resolveBrokerDiscoveryPaths({
+      homeDir,
+      prismSuiteDir,
+      discoverWslGeminiDirs
+    });
+    return path.join(winSuiteDir, 'cua-settings.json');
+  }
+
+  function loadPersistedMouseMode() {
+    if (defaultMouseMode) {
+      return normalizeCuaMouseMode(defaultMouseMode);
+    }
+    try {
+      const f = resolveSettingsFilePath();
+      const st = fs.lstatSync(f, { throwIfNoEntry: false });
+      if (st && st.isFile() && !st.isSymbolicLink()) {
+        const parsed = JSON.parse(fs.readFileSync(f, 'utf8'));
+        return normalizeCuaMouseMode(parsed?.mouseMode);
+      }
+    } catch {}
+    return CUA_MOUSE_MODES.COURTEOUS;
+  }
+
   let state = CUA_STATES.DISARMED;
+  let mouseMode = loadPersistedMouseMode();
   let prePauseState = null;
   let handoffReason = '';
   let scope = null;
@@ -563,6 +608,21 @@ export function createCuaBroker(options = {}) {
 
     try {
       overlayChild.stdin.write(`${JSON.stringify({ state: visualState })}\n`);
+    } catch {}
+  }
+
+  function sendOverlayVirtualCursor({ x, y, op = 'click' } = {}) {
+    const px = Math.round(Number(x));
+    const py = Math.round(Number(y));
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return;
+    if (mockWorkerRunner && !options.spawnOverlayInMock) {
+      mockOverlayHistory.push({ at: Date.now(), state: 'VIRTUAL_CURSOR', x: px, y: py, op });
+      return;
+    }
+    if (process.platform !== 'win32') return;
+    if (!overlayChild || overlayChild.killed || overlayChild.exitCode !== null) return;
+    try {
+      overlayChild.stdin.write(`${JSON.stringify({ state: 'VIRTUAL_CURSOR', x: px, y: py, op })}\n`);
     } catch {}
   }
 
@@ -868,9 +928,57 @@ export function createCuaBroker(options = {}) {
       handoffReason: state === CUA_STATES.PAUSED_HANDOFF ? handoffReason : null,
       windows: Array.isArray(windowsOverride) ? windowsOverride : lastWindows,
       armedTabs: [...armedTabs],
+      mouseMode,
       extensionConnected: isExtensionConnected(now),
       extensionId: CUA_EXTENSION_ID,
       nmRegistered: isNmHostRegistered()
+    };
+  }
+
+  async function handleSetMouseMode(payload = {}) {
+    const raw = payload?.mouseMode ?? payload?.mode;
+    const normalized = normalizeCuaMouseMode(raw, { fallback: '' });
+    if (!normalized) {
+      return {
+        ok: false,
+        code: 'INVALID_MOUSE_MODE',
+        error: 'mouseMode 仅支持 courteous 或 strict_virtual'
+      };
+    }
+    mouseMode = normalized;
+    try {
+      const settingsFile = resolveSettingsFilePath();
+      let prevSettings = {};
+      try {
+        const st = fs.lstatSync(settingsFile, { throwIfNoEntry: false });
+        if (st && st.isFile() && !st.isSymbolicLink()) {
+          const parsed = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            prevSettings = parsed;
+          }
+        }
+      } catch {}
+      writePrivateJsonAtomic(settingsFile, {
+        ...prevSettings,
+        schema: 1,
+        mouseMode,
+        updatedAt: new Date().toISOString()
+      });
+    } catch {}
+    enqueueNmCommand({
+      id: `evt-${Date.now()}`,
+      type: 'cua_state',
+      action: 'cua_state',
+      state,
+      mouseMode,
+      scope,
+      expiresAt
+    });
+    return {
+      ok: true,
+      mouseMode,
+      state,
+      remainingSec: getRemainingSec()
     };
   }
 
@@ -1197,14 +1305,18 @@ export function createCuaBroker(options = {}) {
     if (!check.ok) return check;
 
     const stepObj = payload?.step && typeof payload.step === 'object' ? payload.step : payload;
+    const effectiveMouseMode = normalizeCuaMouseMode(stepObj?.mouseMode ?? payload?.mouseMode, {
+      allowPhysicalOverride: true,
+      fallback: mouseMode
+    });
     sendOverlayUpdate('EXECUTING');
     try {
       const res = await runWorker({
         mode: 'cmd',
         cmd: 'act',
         args: ['--cmd', 'act'],
-        stdinObj: { hwnd: check.hwnd, step: stepObj },
-        timeoutMs: 6000,
+        stdinObj: { hwnd: check.hwnd, mouseMode: effectiveMouseMode, step: stepObj },
+        timeoutMs: 6500,
         trackAbort: true
       });
       if (res?.code === 'USER_ESC_ABORTED') {
@@ -1215,6 +1327,13 @@ export function createCuaBroker(options = {}) {
           error: res.error || '用户按下 Esc 紧急中断',
           state: CUA_STATES.DISARMED
         };
+      }
+      if (res?.ok && Number.isFinite(Number(res.x)) && Number.isFinite(Number(res.y))) {
+        sendOverlayVirtualCursor({
+          x: Number(res.x),
+          y: Number(res.y),
+          op: String(res.op || stepObj?.op || 'click')
+        });
       }
       return res;
     } finally {
@@ -1317,7 +1436,14 @@ export function createCuaBroker(options = {}) {
 
     sendOverlayUpdate('EXECUTING');
     try {
-      const reply = await dispatchBrowserCommand('browser_act', { ...payload, tabId: check.tabId }, 5000);
+      const effectiveMouseMode = normalizeCuaMouseMode(payload?.step?.mouseMode ?? payload?.mouseMode, {
+        fallback: mouseMode
+      });
+      const reply = await dispatchBrowserCommand(
+        'browser_act',
+        { ...payload, tabId: check.tabId, mouseMode: effectiveMouseMode },
+        5000
+      );
       if (reply?.code === 'USER_ESC_ABORTED') {
         disarmInternal({ releaseModifiers: true });
         return {
@@ -1461,6 +1587,9 @@ export function createCuaBroker(options = {}) {
         break;
       case 'register_nm_host':
         result = await handleRegisterNmHost();
+        break;
+      case 'set_mouse_mode':
+        result = await handleSetMouseMode(payload);
         break;
       default:
         result = { ok: false, code: 'UNKNOWN_ACTION', error: `Unsupported CUA action: ${action}` };

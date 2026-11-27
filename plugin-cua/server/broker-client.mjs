@@ -610,6 +610,8 @@ export function createBrokerClient({
       request('request_consent', { needAct: Boolean(needAct), target, reason }, opts),
     pauseHandoff: ({ reason = '', kind = '', code = 'PAUSED_HANDOFF' } = {}, opts = {}) =>
       request('pause_handoff', { reason, kind, code }, opts),
+    setMouseMode: (mouseMode, opts = {}) =>
+      request('set_mouse_mode', { mouseMode }, opts),
     observe: (params = {}, opts = {}) => request('observe', params, opts),
     act: (step, meta = {}, opts = {}) =>
       request(

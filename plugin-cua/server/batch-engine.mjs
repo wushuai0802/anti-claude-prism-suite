@@ -262,6 +262,19 @@ export function validateSingleAction(step, index = 0) {
     }
   }
 
+  if (step.mouseMode !== undefined && step.mouseMode !== null) {
+    if (
+      typeof step.mouseMode !== 'string' ||
+      !['courteous', 'strict_virtual', 'physical'].includes(step.mouseMode.trim().toLowerCase())
+    ) {
+      return {
+        valid: false,
+        code: 'INVALID_ACTION_ARG',
+        error: `${prefix}.mouseMode 仅允许 courteous, strict_virtual 或 physical`
+      };
+    }
+  }
+
   const preValid = validateAssertionSpec(step.expectBefore, `${prefix}.expectBefore`);
   if (!preValid.valid) return preValid;
 
@@ -588,6 +601,7 @@ export function createBatchEngine({
     windowId,
     hwnd,
     tabId,
+    mouseMode,
     includeScreenshot = false,
     initialObservation = null,
     minPacingMs: callPacingMs
@@ -847,12 +861,19 @@ export function createBatchEngine({
 
       let actResp;
       try {
-        actResp = await doAct(step, {
+        const effectiveStepMouseMode = step.mouseMode ?? mouseMode;
+        const wireStep = {
+          ...step,
+          ...(step.clear === undefined && step.clearFirst !== undefined ? { clear: Boolean(step.clearFirst) } : {}),
+          ...(effectiveStepMouseMode ? { mouseMode: effectiveStepMouseMode } : {})
+        };
+        actResp = await doAct(wireStep, {
           stepIndex: i,
           target,
           windowId,
           hwnd,
           tabId,
+          ...(effectiveStepMouseMode ? { mouseMode: effectiveStepMouseMode } : {}),
           idempotencyKey: cleanIdempotencyKey ? `${cleanIdempotencyKey}:${i}` : undefined
         });
       } catch (actErr) {
@@ -1060,7 +1081,9 @@ export function createBatchEngine({
       stepResults.push({
         index: i,
         op: step.op,
-        ref: step.ref ?? null,
+        ref: step.ref ?? actResp?.ref ?? null,
+        delivery: actResp?.delivery ?? null,
+        physicalCursorMoved: Boolean(actResp?.physicalCursorMoved),
         ok: true
       });
     }

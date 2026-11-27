@@ -1182,7 +1182,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.8.0' },
+            appInfo: { name: 'prism-files', version: '0.8.1' },
             appCapabilities: {}
           }, 12000);
           state.hostCapabilities = initRes?.hostCapabilities || {};

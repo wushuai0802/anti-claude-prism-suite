@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const AGENT_VERSION = '0.8.0';
+  const AGENT_VERSION = '0.8.1';
   if (window.__prismCuaContentAgent && window.__prismCuaContentAgent.version === AGENT_VERSION) {
     return;
   }
@@ -363,10 +363,96 @@
     return { ok: true, ref: key, el };
   }
 
-  function dispatchPointerClickSequence(el, { doubleClick = false } = {}) {
+  let vCursorHost = null;
+  let vCursorPtr = null;
+  let vCursorRing = null;
+  let vCursorFadeTimer = null;
+  let vCursorCleanupTimer = null;
+  let lastVCursorX = -1;
+  let lastVCursorY = -1;
+
+  function pulseVirtualCursor(clientX, clientY, kind = 'click') {
+    try {
+      const vw = Math.max(1, window.innerWidth || 1280);
+      const vh = Math.max(1, window.innerHeight || 720);
+      const x = Math.max(2, Math.min(vw - 2, Math.round(Number(clientX) || vw / 2)));
+      const y = Math.max(2, Math.min(vh - 2, Math.round(Number(clientY) || vh / 2)));
+
+      if (!vCursorHost || !vCursorHost.isConnected) {
+        const host = document.createElement('div');
+        host.id = '__prism_cua_vcursor_host';
+        host.setAttribute('aria-hidden', 'true');
+        host.style.cssText = 'position:fixed!important;inset:0!important;pointer-events:none!important;z-index:2147483646!important;overflow:hidden!important;contain:layout style paint!important;';
+        const root = host.attachShadow ? host.attachShadow({ mode: 'open' }) : host;
+        const accent = kind === 'type_text' ? '#8b5cf6' : (kind === 'scroll' ? '#10b981' : '#2563eb');
+        root.innerHTML =
+          '<style>' +
+          '.vc-wrap{position:fixed;left:0;top:0;width:48px;height:48px;pointer-events:none;will-change:transform,opacity;transition:transform 165ms cubic-bezier(0.22,1,0.36,1),opacity 210ms ease;opacity:0;}' +
+          '.vc-ring{position:absolute;left:-11px;top:-11px;width:22px;height:22px;border-radius:999px;border:2px solid var(--vc-accent,#38bdf8);opacity:0;transform:scale(0.35);}' +
+          '.vc-ring.is-pulse{animation:vcPulse 340ms cubic-bezier(0.16,1,0.3,1) forwards;}' +
+          '.vc-badge{position:absolute;left:15px;top:19px;padding:1px 4px;border-radius:4px;background:rgba(15,23,42,0.92);border:1px solid var(--vc-accent,#38bdf8);color:#f8fafc;font:700 9px/1.15 system-ui,-apple-system,sans-serif;letter-spacing:0.03em;box-shadow:0 2px 6px rgba(0,0,0,0.28);}' +
+          '@keyframes vcPulse{0%{opacity:0.92;transform:scale(0.35);}100%{opacity:0;transform:scale(1.85);}}' +
+          '</style>' +
+          `<div class="vc-wrap" style="--vc-accent:${accent}">` +
+          '<div class="vc-ring"></div>' +
+          '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" style="filter:drop-shadow(0 2px 5px rgba(15,23,42,0.38))">' +
+          '<path d="M2 2L2 19.5L6.8 15.2L10.2 22L13.2 20.5L9.8 13.8L16.2 13.8L2 2Z" fill="var(--vc-accent,#2563eb)" stroke="#f8fafc" stroke-width="1.6" stroke-linejoin="round"/>' +
+          '</svg>' +
+          '<span class="vc-badge">AI</span>' +
+          '</div>';
+        (document.documentElement || document.body).appendChild(host);
+        vCursorHost = host;
+        vCursorPtr = root.querySelector('.vc-wrap');
+        vCursorRing = root.querySelector('.vc-ring');
+        const startX = lastVCursorX >= 0 ? lastVCursorX : Math.max(4, x - 32);
+        const startY = lastVCursorY >= 0 ? lastVCursorY : Math.min(vh - 4, y + 24);
+        if (vCursorPtr) {
+          vCursorPtr.style.transition = 'none';
+          vCursorPtr.style.transform = `translate3d(${startX - 2}px, ${startY - 2}px, 0)`;
+          void vCursorPtr.offsetWidth;
+          vCursorPtr.style.transition = 'transform 165ms cubic-bezier(0.22,1,0.36,1), opacity 210ms ease';
+        }
+      }
+
+      const accentColor = kind === 'type_text' ? '#8b5cf6' : (kind === 'scroll' ? '#10b981' : '#2563eb');
+      if (vCursorPtr) {
+        vCursorPtr.style.setProperty('--vc-accent', accentColor);
+        vCursorPtr.style.opacity = '1';
+        vCursorPtr.style.transform = `translate3d(${x - 2}px, ${y - 2}px, 0)`;
+      }
+      if (vCursorRing) {
+        vCursorRing.classList.remove('is-pulse');
+        void vCursorRing.offsetWidth;
+        vCursorRing.classList.add('is-pulse');
+      }
+      lastVCursorX = x;
+      lastVCursorY = y;
+
+      if (vCursorFadeTimer) clearTimeout(vCursorFadeTimer);
+      if (vCursorCleanupTimer) clearTimeout(vCursorCleanupTimer);
+      vCursorFadeTimer = setTimeout(() => {
+        if (vCursorPtr) vCursorPtr.style.opacity = '0';
+      }, 760);
+      vCursorCleanupTimer = setTimeout(() => {
+        if (vCursorHost && vCursorHost.parentNode) {
+          vCursorHost.parentNode.removeChild(vCursorHost);
+        }
+        vCursorHost = null;
+        vCursorPtr = null;
+        vCursorRing = null;
+        vCursorFadeTimer = null;
+        vCursorCleanupTimer = null;
+      }, 1020);
+    } catch {}
+  }
+
+  function dispatchPointerClickSequence(el, { doubleClick = false, rightClick = false, overrideX = null, overrideY = null } = {}) {
     const rect = el.getBoundingClientRect();
-    const clientX = Math.round(rect.left + rect.width / 2);
-    const clientY = Math.round(rect.top + rect.height / 2);
+    const clientX = Number.isFinite(overrideX) ? Math.round(overrideX) : Math.round(rect.left + rect.width / 2);
+    const clientY = Number.isFinite(overrideY) ? Math.round(overrideY) : Math.round(rect.top + rect.height / 2);
+    pulseVirtualCursor(clientX, clientY, 'click');
+    const btnCode = rightClick ? 2 : 0;
+    const btnMask = rightClick ? 2 : 1;
     const commonInit = {
       bubbles: true,
       cancelable: true,
@@ -374,8 +460,8 @@
       view: window,
       clientX,
       clientY,
-      button: 0,
-      buttons: 1
+      button: btnCode,
+      buttons: btnMask
     };
 
     const fireSingle = (detail) => {
@@ -383,7 +469,7 @@
         el.dispatchEvent(new PointerEvent('pointerdown', { ...commonInit, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
       } catch {}
       el.dispatchEvent(new MouseEvent('mousedown', { ...commonInit, detail }));
-      if (typeof el.focus === 'function') {
+      if (!rightClick && typeof el.focus === 'function') {
         try { el.focus({ preventScroll: true }); } catch {}
       }
       try {
@@ -391,6 +477,12 @@
       } catch {}
       el.dispatchEvent(new MouseEvent('mouseup', { ...commonInit, buttons: 0, detail }));
     };
+
+    if (rightClick) {
+      fireSingle(1);
+      el.dispatchEvent(new MouseEvent('contextmenu', { ...commonInit, buttons: 0, detail: 1 }));
+      return { clientX, clientY };
+    }
 
     fireSingle(1);
     if (typeof el.click === 'function') {
@@ -404,6 +496,7 @@
       el.dispatchEvent(new MouseEvent('click', { ...commonInit, buttons: 0, detail: 2 }));
       el.dispatchEvent(new MouseEvent('dblclick', { ...commonInit, buttons: 0, detail: 2 }));
     }
+    return { clientX, clientY };
   }
 
   function setNativeControlValue(el, nextValue) {
@@ -543,22 +636,61 @@
     const action = String(step.action || step.type || step.op || '').trim().toLowerCase();
     const rawRef = step.ref ?? step.target ?? '';
 
-    if (action === 'click' || action === 'double_click' || action === 'dblclick') {
-      const resolved = resolveRefElement(rawRef);
-      if (!resolved.ok) return resolved;
-      const { el, ref } = resolved;
-      try {
-        el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
-      } catch {
-        try { el.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch {}
+    if (action === 'click' || action === 'double_click' || action === 'dblclick' || action === 'right_click') {
+      let el = null;
+      let ref = null;
+      let overrideX = null;
+      let overrideY = null;
+      if (rawRef) {
+        const resolved = resolveRefElement(rawRef);
+        if (!resolved.ok) return resolved;
+        el = resolved.el;
+        ref = resolved.ref;
+        try {
+          el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+        } catch {
+          try { el.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch {}
+        }
+        await sleepMs(25);
+      } else if (Number.isFinite(Number(step.x)) && Number.isFinite(Number(step.y))) {
+        overrideX = Math.round(Number(step.x));
+        overrideY = Math.round(Number(step.y));
+        el = document.elementFromPoint(overrideX, overrideY);
+        if (!el) {
+          return { ok: false, code: 'POINT_OUT_OF_VIEWPORT', error: `坐标 (${overrideX}, ${overrideY}) 未命中页面可见元素` };
+        }
+      } else {
+        return { ok: false, code: 'MISSING_REF_OR_COORDS', error: '点击操作需要提供 ref (@eN) 或 (x, y) 坐标' };
       }
-      await sleepMs(25);
-      dispatchPointerClickSequence(el, { doubleClick: action !== 'click' });
+
+      if (isSensitiveField(el)) {
+        const msg = '目标字段为密码或支付敏感区域，已拦截自动点击，请人工操作';
+        return {
+          ok: false,
+          blocked: true,
+          humanRequired: true,
+          handoffRequired: true,
+          code: 'PASSWORD_FIELD_BLOCKED',
+          reason: msg,
+          error: msg
+        };
+      }
+
+      const pt = dispatchPointerClickSequence(el, {
+        doubleClick: action === 'double_click' || action === 'dblclick',
+        rightClick: action === 'right_click',
+        overrideX,
+        overrideY
+      });
       await sleepMs(60);
       return {
         ok: true,
-        action: action === 'click' ? 'click' : 'double_click',
+        action: action === 'right_click' ? 'right_click' : (action === 'click' ? 'click' : 'double_click'),
         ref,
+        x: pt.clientX,
+        y: pt.clientY,
+        delivery: 'dom_virtual',
+        physicalCursorMoved: false,
         url: window.location.href,
         origin: window.location.origin,
         title: cleanText(document.title || '', 160),
@@ -574,6 +706,8 @@
         if (!resolved.ok) return resolved;
         el = resolved.el;
         ref = resolved.ref;
+      } else if (Number.isFinite(Number(step.x)) && Number.isFinite(Number(step.y))) {
+        el = document.elementFromPoint(Math.round(Number(step.x)), Math.round(Number(step.y)));
       } else if (document.activeElement && document.activeElement !== document.body) {
         el = document.activeElement;
       }
@@ -594,10 +728,15 @@
       }
 
       const textToType = String(step.text ?? step.value ?? '');
-      const shouldClear = step.clear !== undefined ? Boolean(step.clear) : !Boolean(step.append);
+      const explicitClear = step.clear !== undefined ? step.clear : step.clearFirst;
+      const shouldClear = explicitClear !== undefined ? Boolean(explicitClear) : !Boolean(step.append);
 
       try {
         el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+      } catch {}
+      try {
+        const r = el.getBoundingClientRect();
+        pulseVirtualCursor(r.left + r.width / 2, r.top + r.height / 2, 'type_text');
       } catch {}
       if (typeof el.focus === 'function') {
         try { el.focus({ preventScroll: true }); } catch {}
@@ -651,6 +790,8 @@
         action: 'type_text',
         ref: ref || null,
         charCount: textToType.length,
+        delivery: 'dom_virtual',
+        physicalCursorMoved: false,
         url: window.location.href,
         origin: window.location.origin,
         title: cleanText(document.title || '', 160),
@@ -732,6 +873,10 @@
       } else {
         el.selectedIndex = matchedIndex;
       }
+      try {
+        const r = el.getBoundingClientRect();
+        pulseVirtualCursor(r.left + r.width / 2, r.top + r.height / 2, 'click');
+      } catch {}
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
       await sleepMs(45);
@@ -741,6 +886,8 @@
         ref,
         selectedValue: cleanText(chosen.value, 80),
         selectedLabel: cleanText(chosen.text, 80),
+        delivery: 'dom_virtual',
+        physicalCursorMoved: false,
         url: window.location.href,
         origin: window.location.origin
       };
@@ -777,6 +924,11 @@
         };
       }
 
+      pulseVirtualCursor(
+        Number.isFinite(Number(step.x)) ? Number(step.x) : (window.innerWidth || 800) * 0.5,
+        Number.isFinite(Number(step.y)) ? Number(step.y) : (window.innerHeight || 600) * 0.5,
+        'scroll'
+      );
       if (dir === 'top') {
         window.scrollTo({ top: 0, behavior: 'instant' });
       } else if (dir === 'bottom') {
@@ -788,6 +940,8 @@
       return {
         ok: true,
         action: 'scroll',
+        delivery: 'dom_virtual',
+        physicalCursorMoved: false,
         scrollX: Math.round(window.scrollX || 0),
         scrollY: Math.round(window.scrollY || 0),
         pageHeight: Math.max(document.documentElement?.scrollHeight || 0, document.body?.scrollHeight || 0)

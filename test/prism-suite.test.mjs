@@ -115,7 +115,8 @@ test('all v0.4.0 extension & helper scripts pass syntax check and enforce zero-b
   assert.match(jsSrc, /openPrismWorkbenchQuick/);
   assert.match(jsSrc, /findWorkbenchEntry/);
   assert.match(jsSrc, /skipSidebar/);
-  assert.match(jsSrc, /triggerRadixTrigger/);
+  assert.match(jsSrc, /triggerRadixMenuOpen/);
+  assert.match(jsSrc, /safeClickElement/);
   assert.match(jsSrc, /ag-ps-btn-workbench/);
   assert.match(jsSrc, /ensureMascotDodgeWatcher/);
   assert.match(cssSrc, /data-yield="1"/);
@@ -1527,11 +1528,11 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.8.0');
-    assert.equal(pluginJson.version, '0.8.0');
+    assert.equal(pkgJson.version, '0.8.1');
+    assert.equal(pluginJson.version, '0.8.1');
     assert.ok(Array.isArray(pluginJson.suggested_prompts) && pluginJson.suggested_prompts.length <= 3);
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
-    assert.match(jsSrc, /SUITE_VERSION = '0\.8\.0'/);
+    assert.match(jsSrc, /SUITE_VERSION = '0\.8\.1'/);
     assert.match(jsSrc, /COOKIE_PREFS_KEY = 'ag_prism_prefs_v1'/);
     assert.match(jsSrc, /getActiveInputBox/);
     assert.match(jsSrc, /getInputBoxEl: getActiveInputBox/);
@@ -1559,7 +1560,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(wfSrc, /composerFileDrop/);
     assert.match(jsSrc, /ag_claude_ux_quota_cache_v1/);
     assert.match(jsSrc, /readAntiClaudeQuotaCache/);
-    assert.match(inlineHtml, /version: '0\.8\.0'/);
+    assert.match(inlineHtml, /version: '0\.8\.1'/);
     assert.match(jsSrc, /__agPrismBridge/);
     assert.match(jsSrc, /bridge-ping/);
     assert.match(jsSrc, /bridge-pong/);
@@ -1591,7 +1592,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(csSrc, /EnsureDebugPortOnUserShortcuts/);
     assert.match(csSrc, /InstallKernel/);
     assert.match(csSrc, /prism-suite-00-prefs\.js/);
-    assert.match(csSrc, /v0\.8\.0/);
+    assert.match(csSrc, /v0\.8\.1/);
     const installPluginSlice = csSrc.slice(csSrc.indexOf('public static int InstallPlugin('), csSrc.indexOf('private static bool IsReparsePoint('));
     assert.doesNotMatch(installPluginSlice, /Directory\.Delete\(targetDir,\s*true\)/, 'InstallPlugin must update in-place without deleting prism-files root');
   } finally {
@@ -2796,7 +2797,7 @@ test('v0.8.0 prism-cua end-to-end broker/MCP roundtrip, batch_actions, safety/CA
     // 1. Strict 3-tool model visibility & default-disabled plugin manifest
     const cuaPluginJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'plugin-cua', 'plugin.json'), 'utf8'));
     assert.equal(cuaPluginJson.name, 'prism-cua');
-    assert.equal(cuaPluginJson.version, '0.8.0');
+    assert.equal(cuaPluginJson.version, '0.8.1');
     assert.equal(cuaPluginJson.disabled, true, 'prism-cua must ship disabled by default');
     assert.deepEqual(CUA_TOOLS.map((t) => t.name), ['cua_status', 'cua_observe', 'cua_act']);
 
@@ -3009,6 +3010,476 @@ test('v0.8.0 prism-cua end-to-end broker/MCP roundtrip, batch_actions, safety/CA
     assert.equal(broker.state, 'PAUSED_HANDOFF');
     assert.match(capRes.content[0].text, /\[HANDOFF REQUIRED: CAPTCHA_DETECTED\]/);
   } finally {
+    if (broker) await broker.stop();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('v0.8.1 visual virtual cursor overlay, 4-tier non-intrusive mouse routing (courteous vs strict_virtual), PHYSICAL_CURSOR_REQUIRED guard, and workbench mouseMode toggle', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-v081-vcursor-'));
+  let broker = null;
+  const prevBrokerEnv = process.env.PRISM_CUA_BROKER_FILE;
+  try {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const winCuaCs = fs.readFileSync(path.join(repoRoot, 'native', 'win-cua', 'PrismWinCua.cs'), 'utf8');
+    const contentAgentJs = fs.readFileSync(path.join(repoRoot, 'extensions', 'chrome-cua-bridge', 'content-agent.js'), 'utf8');
+    const appHtml = fs.readFileSync(path.join(repoRoot, 'plugin', 'ui', 'app.html'), 'utf8');
+
+    // 1. Static invariants for Win32 per-pixel click-through VirtualCursorForm & 4-tier routing
+    assert.match(winCuaCs, /class VirtualCursorForm : Form/);
+    assert.match(winCuaCs, /WS_EX_LAYERED[\s\S]{0,160}WS_EX_TRANSPARENT[\s\S]{0,160}WS_EX_NOACTIVATE/);
+    assert.match(winCuaCs, /UpdateLayeredWindow\(/);
+    assert.match(winCuaCs, /TryInvokeUiaClickMta\(/);
+    assert.match(winCuaCs, /TrySetTextUiaOrWin32Mta\(/);
+    assert.match(winCuaCs, /TryPostWin32MouseClick\(/);
+    assert.match(winCuaCs, /WaitForUserInputIdle\(350,/);
+    assert.match(winCuaCs, /PHYSICAL_CURSOR_REQUIRED/);
+    assert.match(winCuaCs, /NativeMethods\.SetCursorPos\(origCursor\.X,\s*origCursor\.Y\)/);
+
+    // 2. Browser Shadow DOM virtual cursor & Workbench toggle UI invariants
+    assert.match(contentAgentJs, /AGENT_VERSION = '0\.8\.1'/);
+    assert.match(contentAgentJs, /function pulseVirtualCursor\(/);
+    assert.match(contentAgentJs, /__prism_cua_vcursor_host/);
+    assert.match(contentAgentJs, /delivery:\s*'dom_virtual'/);
+    assert.match(appHtml, /data-cua-action="set-mouse-mode"/);
+    assert.match(appHtml, /cua_bridge_set_mouse_mode/);
+
+    // 3. Live Broker + prism-cua + prism-files mouseMode roundtrip & VIRTUAL_CURSOR pulse check
+    const { createCuaBroker } = await import(
+      pathToFileURL(path.join(repoRoot, 'vendor', 'anti-claude', 'core', 'cua-broker.mjs')).href
+    );
+    const { createPrismCuaServer } = await import(
+      pathToFileURL(path.join(repoRoot, 'plugin-cua', 'server', 'index.mjs')).href
+    );
+
+    const prismSuiteDir = path.join(tmp, '.gemini', 'antigravity', 'prism-suite');
+    const seenMouseModes = [];
+
+    broker = createCuaBroker({
+      allowNonWin32ForTest: true,
+      homeDir: tmp,
+      prismSuiteDir,
+      wslAdapterIp: null,
+      discoverWslGeminiDirs: () => [],
+      mockWorkerRunner: async ({ cmd, stdin }) => {
+        if (cmd === 'list-windows') {
+          return {
+            ok: true,
+            windows: [
+              { hwnd: '0x00300100', title: 'WinForms Counter Demo', processName: 'demo.exe', className: 'WindowsForms10.Window.8', isElectron: false, isElevated: false },
+              { hwnd: '0x00300200', title: 'Custom Canvas App', processName: 'canvas.exe', className: 'Chrome_WidgetWin_1', isElectron: true, isElevated: false }
+            ]
+          };
+        }
+        if (cmd === 'consent') {
+          return {
+            ok: true,
+            granted: true,
+            state: 'ARMED_INTERACTIVE',
+            durationMinutes: 15,
+            scope: { type: 'desktop_safe' }
+          };
+        }
+        if (cmd === 'observe') {
+          const isCanvas = String(stdin?.hwnd).includes('300200');
+          return {
+            ok: true,
+            window: isCanvas
+              ? { hwnd: '0x00300200', title: 'Custom Canvas App', processName: 'canvas.exe' }
+              : { hwnd: '0x00300100', title: 'WinForms Counter Demo', processName: 'demo.exe' },
+            elements: isCanvas
+              ? []
+              : [{ ref: '@w1', role: 'button', name: '计数+1', bounds: { x: 220, y: 180, width: 90, height: 32 } }]
+          };
+        }
+        if (cmd === 'act') {
+          seenMouseModes.push(stdin?.mouseMode);
+          const isCanvas = String(stdin?.hwnd).includes('300200');
+          if (isCanvas) {
+            if (stdin?.mouseMode === 'strict_virtual') {
+              return {
+                ok: false,
+                code: 'PHYSICAL_CURSOR_REQUIRED',
+                error: '严格后台虚拟鼠标模式已拦截物理光标移动'
+              };
+            }
+            return {
+              ok: true,
+              op: stdin?.step?.op,
+              x: 320,
+              y: 240,
+              delivery: 'courteous_physical_restore',
+              physicalCursorMoved: true,
+              cursorRestored: true
+            };
+          }
+          return {
+            ok: true,
+            op: stdin?.step?.op,
+            x: 265,
+            y: 196,
+            ref: '@w1',
+            delivery: 'uia_invoke',
+            physicalCursorMoved: false,
+            focusStolen: false
+          };
+        }
+        return { ok: true };
+      }
+    });
+
+    await broker.start();
+    const brokerJsonPath = path.join(prismSuiteDir, 'cua-broker.json');
+    process.env.PRISM_CUA_BROKER_FILE = brokerJsonPath;
+
+    const cuaServer = createPrismCuaServer({ brokerFilePath: brokerJsonPath, minPacingMs: 0 });
+    const filesServer = createPrismFilesServer({
+      homeDir: tmp,
+      dataDir: path.join(tmp, 'files-data'),
+      defaultRoot: tmp
+    });
+
+    const stInitial = await filesServer.handleToolCall('cua_bridge_status', {});
+    assert.equal(stInitial.structuredContent.brokerOnline, true);
+    assert.equal(stInitial.structuredContent.mouseMode, 'courteous');
+
+    // Tier L2 UIA click: zero physical cursor movement + emits VIRTUAL_CURSOR pulse to overlay
+    const uiaAct = await cuaServer.handleToolCall('cua_act', {
+      target: 'desktop',
+      hwnd: '0x00300100',
+      actions: [{ op: 'click', ref: '@w1' }]
+    });
+    assert.equal(uiaAct.structuredContent.ok, true);
+    assert.equal(uiaAct.structuredContent.stepResults[0].delivery, 'uia_invoke');
+    assert.equal(uiaAct.structuredContent.stepResults[0].physicalCursorMoved, false);
+    assert.ok(
+      broker.mockOverlayHistory.some((e) => e.state === 'VIRTUAL_CURSOR' && e.x === 265 && e.y === 196),
+      'Broker must dispatch VIRTUAL_CURSOR pulse coordinates to overlay'
+    );
+
+    // Switch to strict_virtual via Workbench App-only tool -> persists & blocks L4 custom canvas click
+    const setStrict = await filesServer.handleToolCall('cua_bridge_set_mouse_mode', {
+      mouseMode: 'strict_virtual'
+    });
+    assert.equal(setStrict.structuredContent.ok, true);
+    assert.equal(setStrict.structuredContent.mouseMode, 'strict_virtual');
+    assert.ok(fs.existsSync(path.join(prismSuiteDir, 'cua-settings.json')));
+
+    const stStrict = await filesServer.handleToolCall('cua_bridge_status', {});
+    assert.equal(stStrict.structuredContent.mouseMode, 'strict_virtual');
+
+    const blockedCanvasAct = await cuaServer.handleToolCall('cua_act', {
+      target: 'desktop',
+      hwnd: '0x00300200',
+      actions: [{ op: 'click', x: 320, y: 240 }]
+    });
+    assert.equal(blockedCanvasAct.isError, true);
+    assert.equal(blockedCanvasAct.structuredContent.code, 'PHYSICAL_CURSOR_REQUIRED');
+
+    // Per-call override back to courteous allows L4 courteous click with cursor restore
+    const courteousCanvasAct = await cuaServer.handleToolCall('cua_act', {
+      target: 'desktop',
+      hwnd: '0x00300200',
+      mouseMode: 'courteous',
+      actions: [{ op: 'click', x: 320, y: 240 }]
+    });
+    assert.equal(courteousCanvasAct.structuredContent.ok, true);
+    assert.equal(courteousCanvasAct.structuredContent.stepResults[0].delivery, 'courteous_physical_restore');
+    assert.deepEqual(seenMouseModes, ['courteous', 'strict_virtual', 'courteous']);
+
+    // 4. Issue #1 (--no-plugin, --no-file-card-rule, --no-skills, showWorkbenchBtn, granular MCP exposure) & sidebar @dnd-kit drag safety
+    const suiteJsSrc = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite.js'), 'utf8');
+    assert.match(suiteJsSrc, /showWorkbenchBtn:\s*true/);
+    assert.match(suiteJsSrc, /function safeClickElement\(/);
+    assert.match(suiteJsSrc, /function triggerRadixMenuOpen\(/);
+    assert.doesNotMatch(suiteJsSrc, /function triggerRadixTrigger\(/, 'Legacy unpaired pointerdown triggerRadixTrigger must be removed');
+    assert.match(suiteJsSrc, /if \(getActiveViewportEl\(\)\) return false;/, 'isFullPageWorkbenchActive must ignore hidden cached viewports');
+
+    const noPlugUser = path.join(tmp, 'noplug-user');
+    const noPlugPlugins = path.join(tmp, 'noplug-plugins');
+    const noPlugRes = installAll({ argv: ['--no-plugin', '--no-kernel-daemon'], userDir: noPlugUser, pluginsDir: noPlugPlugins });
+    assert.ok(noPlugRes.kernel?.installed?.length > 0, '--no-plugin must still deploy bundled Anti-Claude kernel');
+    assert.ok(noPlugRes.extensions?.installed?.length === 6, '--no-plugin must deploy Prism UI extensions');
+    assert.equal(noPlugRes.plugin, null, '--no-plugin must skip prism-files and prism-cua plugins');
+    assert.ok(!fs.existsSync(path.join(noPlugPlugins, 'prism-files')));
+
+    const slimPlugins = path.join(tmp, 'slim-plugins');
+    installAll({
+      argv: ['--no-file-card-rule', '--no-skills'],
+      userDir: path.join(tmp, 'slim-user'),
+      pluginsDir: slimPlugins,
+      skipKernel: true
+    });
+    assert.ok(fs.existsSync(path.join(slimPlugins, 'prism-files', 'plugin.json')));
+    assert.ok(!fs.existsSync(path.join(slimPlugins, 'prism-files', 'rules', 'AGENTS.md')), '--no-file-card-rule must omit rules/AGENTS.md');
+    assert.ok(!fs.existsSync(path.join(slimPlugins, 'prism-files', 'skills')), '--no-skills must omit skills/');
+
+    const rpcListDefault = await filesServer.handleRpc({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    const modelVisibleDefault = rpcListDefault.result.tools.filter((t) => !t._meta?.ui?.visibility?.includes('app'));
+    assert.equal(modelVisibleDefault.length, 8);
+
+      await filesServer.handleToolCall('plugin_exposure_update', {
+        fileTools: false,
+        modelHubTools: false
+      });
+      const rpcListSlim = await filesServer.handleRpc({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+      const modelVisibleSlim = rpcListSlim.result.tools.filter((t) => !t._meta?.ui?.visibility?.includes('app'));
+      assert.equal(modelVisibleSlim.length, 4, 'Disabling fileTools (2) + modelHubTools (2) must leave only 4 memory tools exposed to model');
+      const blockedInline = await filesServer.handleToolCall('show_files_inline', { files: [path.join(repoRoot, 'package.json')] });
+      assert.equal(blockedInline.isError, true, 'Disabled MCP tool group must also block direct tools/call execution');
+      assert.equal(blockedInline.structuredContent.code, 'TOOL_GROUP_DISABLED');
+
+      // 4b. CUA 1-click tools sleep switch (cua_bridge_set_tools_enabled) + preserve mouseMode + plugin-cua tools/list & tools/call enforcement
+      const sleepRes = await filesServer.handleToolCall('cua_bridge_set_tools_enabled', { enabled: false });
+      assert.equal(sleepRes.structuredContent.ok, true);
+      assert.equal(sleepRes.structuredContent.toolsEnabled, false);
+      const cuaListAsleep = await cuaServer.handleRpc({ jsonrpc: '2.0', id: 20, method: 'tools/list' });
+      assert.equal(cuaListAsleep.result.tools.length, 0, 'When toolsEnabled=false, prism-cua must expose 0 tools for zero token cost');
+      const cuaCallAsleep = await cuaServer.handleToolCall('cua_status', {});
+      assert.equal(cuaCallAsleep.isError, true);
+      assert.equal(cuaCallAsleep.structuredContent.code, 'CUA_TOOLS_DISABLED');
+
+      const wakeRes = await filesServer.handleToolCall('cua_bridge_set_tools_enabled', { enabled: true });
+      assert.equal(wakeRes.structuredContent.toolsEnabled, true);
+      const cuaBridgeAfterWake = await filesServer.handleToolCall('cua_bridge_status', {});
+      assert.equal(cuaBridgeAfterWake.structuredContent.mouseMode, 'strict_virtual', 'Toggling toolsEnabled must preserve saved mouseMode');
+      assert.equal(cuaBridgeAfterWake.structuredContent.toolsEnabled, true);
+      const cuaListAwake = await cuaServer.handleRpc({ jsonrpc: '2.0', id: 21, method: 'tools/list' });
+      assert.equal(cuaListAwake.result.tools.length, 3, 'When toolsEnabled=true, prism-cua must expose all 3 CUA tools');
+
+      // 4c. Static UI checks: collapsible radarList accordion + toggle-cua-tools + hardened onboarding text matcher
+      const appHtmlSrc = fs.readFileSync(path.join(repoRoot, 'plugin', 'ui', 'app.html'), 'utf8');
+      assert.match(appHtmlSrc, /data-sec="radarList"/, 'app.html must render independent collapsible radarList accordion');
+      assert.match(appHtmlSrc, /data-acc-action="radar-collapse"/, 'app.html must include explicit collapse button for upstream radar list');
+      assert.match(appHtmlSrc, /data-cua-action="toggle-cua-tools"/, 'app.html must render 1-click CUA tools sleep/wake switch');
+      const fxSrc = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite-fx.js'), 'utf8');
+      assert.match(fxSrc, /function isSafeOnboardingTextMatch\b/, 'prism-suite-fx.js must include hardened onboarding text matcher');
+      assert.match(fxSrc, /由\[你您\]掌控/, 'prism-suite-fx.js must match both 由你掌控 and 由您掌控 i18n variants');
+
+    // 5. Upstream Radar anti-rate-limit: in-memory gh auth token reuse + ETag / If-None-Match 304 quota-free cache
+    const {
+      resolveAmbientGitHubToken,
+      resetUpstreamRadarRuntimeCachesForTest,
+      checkUpstreams: checkUpstreamsWithEtag,
+      checkPrismSelfUpdate: checkSelfUpdWithEtag
+    } = await import(pathToFileURL(path.join(repoRoot, 'plugin', 'server', 'upstream-radar.mjs')).href);
+
+    resetUpstreamRadarRuntimeCachesForTest();
+    let ghCalls = 0;
+    const concurrentTokens = await Promise.all(
+      Array.from({ length: 6 }, () =>
+        resolveAmbientGitHubToken({
+          explicitToken: '',
+          env: {},
+          ghExecFn: async () => {
+            ghCalls += 1;
+            await new Promise((r) => setTimeout(r, 15));
+            return { stdout: 'mock_gh_cli_ram_token_123456\n' };
+          }
+        })
+      )
+    );
+    assert.deepEqual(concurrentTokens, Array(6).fill('mock_gh_cli_ram_token_123456'));
+    const cachedRepeatTok = await resolveAmbientGitHubToken({
+      explicitToken: '',
+      env: {},
+      ghExecFn: async () => {
+        ghCalls += 1;
+        return { stdout: 'should_not_be_called_again\n' };
+      }
+    });
+    assert.equal(cachedRepeatTok, 'mock_gh_cli_ram_token_123456');
+    assert.equal(ghCalls, 1, 'gh auth token must be invoked at most once per process and reused in memory');
+
+    resetUpstreamRadarRuntimeCachesForTest();
+    let ghFailCalls = 0;
+    const tokFallback = await resolveAmbientGitHubToken({
+      explicitToken: '',
+      env: {},
+      ghExecFn: async () => {
+        ghFailCalls += 1;
+        throw new Error('gh not logged in');
+      }
+    });
+    const tokFallbackSecond = await resolveAmbientGitHubToken({
+      explicitToken: '',
+      env: {},
+      ghExecFn: async () => {
+        ghFailCalls += 1;
+        throw new Error('gh still not logged in');
+      }
+    });
+    assert.equal(tokFallback, '', 'Failed gh auth token must silently fall back to empty anonymous mode');
+    assert.equal(tokFallbackSecond, '');
+    assert.equal(ghFailCalls, 1, 'Failed gh probe must also memoize empty token in RAM without re-spawning gh');
+
+    resetUpstreamRadarRuntimeCachesForTest();
+    const savedGhEnv = process.env.GITHUB_TOKEN;
+    const savedGhTokEnv = process.env.GH_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.GH_TOKEN;
+    try {
+      const etagFile = path.join(tmp, 'etag', 'github-etag-cache.json');
+      const seenHeaders = [];
+      let fetchRound = 0;
+      const mockGitHub304Fetch = async (_url, opts = {}) => {
+        fetchRound += 1;
+        seenHeaders.push({ ...(opts.headers || {}) });
+        if (fetchRound === 1) {
+          return {
+            ok: true,
+            status: 200,
+            headers: {
+              get: (h) => (String(h).toLowerCase() === 'etag' ? 'W/"etag-v081-rel"' : null)
+            },
+            json: async () => ({
+              tag_name: 'v0.8.1',
+              name: 'v0.8.1',
+              published_at: '2026-11-27T05:00:00Z',
+              body: '- Virtual cursor',
+              assets: []
+            })
+          };
+        }
+        assert.equal(opts.headers['If-None-Match'], 'W/"etag-v081-rel"', 'Second request must send If-None-Match');
+        return {
+          ok: false,
+          status: 304,
+          headers: { get: () => null },
+          json: async () => {
+            throw new Error('304 response has empty body and must not call res.json()');
+          }
+        };
+      };
+
+      let prodGhCalls = 0;
+      const prodGhExec = async () => {
+        prodGhCalls += 1;
+        return { stdout: 'mock_gh_cli_ram_token_999999\n' };
+      };
+
+      const r200 = await checkSelfUpdWithEtag({
+        currentVersion: '0.8.0',
+        fetchImpl: mockGitHub304Fetch,
+        etagCacheFile: etagFile,
+        ghExecFn: prodGhExec
+      });
+      assert.equal(r200.latestTag, 'v0.8.1');
+      assert.equal(seenHeaders[0].Authorization, 'Bearer mock_gh_cli_ram_token_999999');
+      const etagDiskRaw = fs.readFileSync(etagFile, 'utf8');
+      assert.doesNotMatch(etagDiskRaw, /mock_gh_cli_ram_token_999999/, 'GitHub token must NEVER be persisted to disk');
+
+      const r304 = await checkSelfUpdWithEtag({
+        currentVersion: '0.8.0',
+        fetchImpl: mockGitHub304Fetch,
+        etagCacheFile: etagFile,
+        ghExecFn: prodGhExec
+      });
+      assert.equal(r304.latestTag, 'v0.8.1', '304 Not Modified must seamlessly return ETag-cached release payload');
+      assert.equal(fetchRound, 2);
+      assert.equal(prodGhCalls, 1, 'Subsequent API checks must reuse RAM token without calling gh again');
+
+      // Stale/revoked gh token (HTTP 401) must invalidate RAM cache and silently retry anonymously + slim /compare patch bloat
+      resetUpstreamRadarRuntimeCachesForTest();
+      const miniUpstreamCfg = path.join(tmp, 'mini-upstream.json');
+      fs.writeFileSync(
+        miniUpstreamCfg,
+        JSON.stringify({
+          upstreams: {
+            demo: {
+              repo: 'owner/demo',
+              role: 'feature-reference',
+              license: 'MIT',
+              baselineTag: 'v1.0.0',
+              baselineCommit: '1111111'
+            }
+          }
+        }),
+        'utf8'
+      );
+      const staleAuthHeaders = [];
+      const staleEtagFile = path.join(tmp, 'etag', 'stale-etag-cache.json');
+      fs.mkdirSync(path.dirname(staleEtagFile), { recursive: true });
+      const cryptoMod = await import('node:crypto');
+      const staleTokHash = cryptoMod.default.createHash('sha256').update('prism-etag-auth:stale_revoked_gh_token_abcdef123456').digest('hex').slice(0, 16);
+      fs.writeFileSync(
+        staleEtagFile,
+        JSON.stringify({
+          schema: 1,
+          entries: {
+            [`tok:${staleTokHash}|https://api.github.com/repos/owner/demo/releases?per_page=6`]: {
+              etag: '"private-tok-etag"',
+              data: [{ tag_name: 'v9.9.9-private' }],
+              updatedAtMs: Date.now()
+            }
+          }
+        }),
+        'utf8'
+      );
+      const mock401FallbackFetch = async (u, opts = {}) => {
+        staleAuthHeaders.push({
+          url: u,
+          auth: opts.headers?.Authorization || '',
+          ifNoneMatch: opts.headers?.['If-None-Match'] || ''
+        });
+        if (opts.headers?.Authorization) {
+          return { ok: false, status: 401, headers: { get: () => null }, json: async () => ({}) };
+        }
+        assert.notEqual(opts.headers?.['If-None-Match'], '"private-tok-etag"', 'Anonymous 401 retry must NOT reuse authenticated ETag');
+        if (u.includes('/releases?')) {
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: (h) => (String(h).toLowerCase() === 'etag' ? '"etag-rel"' : null) },
+            json: async () => [{ tag_name: 'v1.1.0', name: 'v1.1.0', body: '- 新增极速缓存支持', html_url: 'https://github.com/owner/demo/releases/tag/v1.1.0' }]
+          };
+        }
+        if (u.includes('/commits?')) {
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: (h) => (String(h).toLowerCase() === 'etag' ? '"etag-cmt"' : null) },
+            json: async () => [{ sha: '2222222abcdef', commit: { message: 'feat: add etag cache', committer: { date: '2026-11-27T05:00:00Z' } } }]
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (h) => (String(h).toLowerCase() === 'etag' ? '"etag-cmp"' : null) },
+          json: async () => ({
+            status: 'ahead',
+            ahead_by: 1,
+            commits: [{ sha: '2222222abcdef', commit: { message: 'feat: add etag cache' } }],
+            files: [{ filename: 'src/index.js', status: 'modified', patch: '@@ -1,1 +1,999 @@\n' + 'x'.repeat(20000) }]
+          })
+        };
+      };
+
+      const rep401 = await checkUpstreamsWithEtag({
+        configPath: miniUpstreamCfg,
+        fetchImpl: mock401FallbackFetch,
+        cacheFile: '',
+        etagCacheFile: staleEtagFile,
+        force: true,
+        ghExecFn: async () => ({ stdout: 'stale_revoked_gh_token_abcdef123456\n' })
+      });
+      assert.equal(rep401.summary.errors, 0, 'Stale gh token returning 401 must silently retry anonymously without failing');
+      assert.equal(rep401.results[0].hasUpdate, true);
+      assert.ok(staleAuthHeaders.some((h) => h.auth === ''), 'Must fall back to anonymous request after 401');
+      const staleDiskRaw = fs.readFileSync(staleEtagFile, 'utf8');
+      assert.doesNotMatch(staleDiskRaw, /stale_revoked_gh_token_abcdef123456/);
+      assert.ok(!staleDiskRaw.includes('x'.repeat(200)), 'Compare patch diff bloat must be stripped from ETag disk cache');
+    } finally {
+      if (savedGhEnv !== undefined) process.env.GITHUB_TOKEN = savedGhEnv;
+      if (savedGhTokEnv !== undefined) process.env.GH_TOKEN = savedGhTokEnv;
+      resetUpstreamRadarRuntimeCachesForTest();
+    }
+  } finally {
+    if (prevBrokerEnv === undefined) {
+      delete process.env.PRISM_CUA_BROKER_FILE;
+    } else {
+      process.env.PRISM_CUA_BROKER_FILE = prevBrokerEnv;
+    }
     if (broker) await broker.stop();
     fs.rmSync(tmp, { recursive: true, force: true });
   }

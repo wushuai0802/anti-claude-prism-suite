@@ -24,6 +24,324 @@ const RADAR_CACHE_SCHEMA_VERSION = 4;
 export const PRISM_OFFICIAL_REPO = 'wushuai0802/anti-claude-prism-suite';
 const DEFAULT_CACHE_TTL_MS = 10 * 60 * 1000;
 const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_ETAG_CACHE_ENTRIES = 96;
+const MAX_ETAG_ENTRY_BYTES = 512 * 1024;
+const MAX_ETAG_FILE_BYTES = 8 * 1024 * 1024;
+const DEFAULT_ETAG_CACHE_FILE = path.join(os.homedir(), '.gemini', 'antigravity', 'prism-suite', 'github-etag-cache.json');
+const SAFE_GH_TOKEN_RE = /^[A-Za-z0-9_.-]{16,256}$/;
+
+// Strictly in-memory process cache for `gh auth token` (never written to disk, never logged)
+let ghCliProbeCompleted = false;
+let cachedGhCliToken = '';
+let ghCliProbePromise = null;
+const memoryEtagCache = new Map();
+const diskEtagStateByFile = new Map();
+
+export function resetUpstreamRadarRuntimeCachesForTest() {
+  ghCliProbeCompleted = false;
+  cachedGhCliToken = '';
+  ghCliProbePromise = null;
+  memoryEtagCache.clear();
+  diskEtagStateByFile.clear();
+}
+
+function invalidateCachedGhCliToken() {
+  ghCliProbeCompleted = true;
+  cachedGhCliToken = '';
+  ghCliProbePromise = null;
+}
+
+function buildEtagScopeKey(url, bearerToken) {
+  const scope = bearerToken
+    ? `tok:${crypto.createHash('sha256').update(`prism-etag-auth:${bearerToken}`).digest('hex').slice(0, 16)}`
+    : 'anon';
+  return `${scope}|${url}`;
+}
+
+async function resolveAmbientGitHubTokenWithSource({
+  explicitToken = '',
+  env = process.env,
+  ghExecFn = null,
+  allowGhCli = true
+} = {}) {
+  const explicitClean = String(explicitToken || '').trim();
+  if (explicitClean) return { token: explicitClean, source: 'explicit' };
+  const envClean = String(env?.GITHUB_TOKEN || env?.GH_TOKEN || '').trim();
+  if (envClean) return { token: envClean, source: 'env' };
+  if (!allowGhCli) return { token: '', source: 'none' };
+
+  if (ghCliProbeCompleted) {
+    return { token: cachedGhCliToken, source: cachedGhCliToken ? 'gh_cli' : 'none' };
+  }
+  if (ghCliProbePromise) {
+    const probed = await ghCliProbePromise;
+    return { token: probed, source: probed ? 'gh_cli' : 'none' };
+  }
+
+  ghCliProbePromise = (async () => {
+    const isWsl = typeof ghExecFn === 'function'
+      ? Boolean(env?.WSL_DISTRO_NAME || env?.WSL_INTEROP)
+      : (detectIsWslHost(process.platform) || Boolean(env?.WSL_DISTRO_NAME || env?.WSL_INTEROP));
+    const cwd = resolveSafeExecCwd({ isWsl, platform: process.platform, homeDir: os.homedir() });
+    const runner = typeof ghExecFn === 'function' ? ghExecFn : execFileAsync;
+
+    try {
+      const childEnv = {
+        ...(env || process.env),
+        GH_PROMPT_DISABLED: '1',
+        NO_COLOR: '1'
+      };
+      const out = await runner('gh', ['auth', 'token'], {
+        timeout: 2800,
+        windowsHide: true,
+        cwd,
+        env: childEnv
+      });
+      const cand = String(typeof out === 'string' ? out : (out?.stdout ?? '')).trim();
+      if (SAFE_GH_TOKEN_RE.test(cand)) {
+        cachedGhCliToken = cand;
+        ghCliProbeCompleted = true;
+        return cand;
+      }
+    } catch {
+      // Silent fallback to anonymous
+    }
+    cachedGhCliToken = '';
+    ghCliProbeCompleted = true;
+    return '';
+  })().finally(() => {
+    ghCliProbePromise = null;
+  });
+
+  const tok = await ghCliProbePromise;
+  return { token: tok, source: tok ? 'gh_cli' : 'none' };
+}
+
+export async function resolveAmbientGitHubToken(opts = {}) {
+  const { token } = await resolveAmbientGitHubTokenWithSource(opts);
+  return token;
+}
+
+function slimReleaseItemForCache(item) {
+  if (!item || typeof item !== 'object') return item;
+  return {
+    tag_name: item.tag_name,
+    name: item.name,
+    prerelease: Boolean(item.prerelease),
+    draft: Boolean(item.draft),
+    published_at: item.published_at,
+    html_url: item.html_url,
+    body: typeof item.body === 'string' ? item.body : '',
+    assets: Array.isArray(item.assets)
+      ? item.assets.map((a) => ({
+          name: a?.name,
+          browser_download_url: a?.browser_download_url,
+          size: Number(a?.size) || 0
+        }))
+      : []
+  };
+}
+
+function slimGitHubPayloadForEtagCache(url, data) {
+  if (!data || typeof data !== 'object') return data;
+  let pathname = '';
+  try {
+    pathname = new URL(url).pathname.toLowerCase();
+  } catch {}
+
+  if (Array.isArray(data)) {
+    if (pathname.includes('/releases')) {
+      return data.map(slimReleaseItemForCache);
+    }
+    if (pathname.includes('/commits')) {
+      return data.map((c) => (c && typeof c === 'object' ? {
+        sha: c.sha,
+        html_url: c.html_url,
+        commit: c.commit && typeof c.commit === 'object' ? {
+          message: c.commit.message,
+          author: c.commit.author ? { date: c.commit.author.date } : undefined,
+          committer: c.commit.committer ? { date: c.commit.committer.date } : undefined
+        } : undefined
+      } : c));
+    }
+    return data;
+  }
+
+  if (pathname.includes('/releases') && typeof data.tag_name === 'string') {
+    return slimReleaseItemForCache(data);
+  }
+
+  if (pathname.includes('/compare/') && (Array.isArray(data.commits) || Array.isArray(data.files))) {
+    return {
+      status: data.status,
+      ahead_by: data.ahead_by,
+      behind_by: data.behind_by,
+      total_commits: data.total_commits,
+      commits: Array.isArray(data.commits)
+        ? data.commits.map((c) => ({
+            sha: c?.sha,
+            commit: c?.commit ? {
+              message: c.commit.message,
+              committer: c.commit.committer ? { date: c.commit.committer.date } : undefined
+            } : undefined
+          }))
+        : [],
+      files: Array.isArray(data.files)
+        ? data.files.map((f) => ({
+            filename: f?.filename,
+            status: f?.status,
+            additions: f?.additions,
+            deletions: f?.deletions,
+            changes: f?.changes
+          }))
+        : []
+    };
+  }
+
+  return data;
+}
+
+function pruneEtagMapInPlace(map) {
+  if (map.size <= MAX_ETAG_CACHE_ENTRIES) return;
+  const sorted = Array.from(map.entries())
+    .sort((a, b) => (Number(a[1]?.updatedAtMs) || 0) - (Number(b[1]?.updatedAtMs) || 0))
+    .slice(-MAX_ETAG_CACHE_ENTRIES);
+  map.clear();
+  for (const [k, v] of sorted) {
+    map.set(k, v);
+  }
+}
+
+function loadDiskEtagMap(etagCacheFile) {
+  if (!etagCacheFile) return new Map();
+  const resolved = path.resolve(etagCacheFile);
+  try {
+    const st = fs.lstatSync(resolved, { throwIfNoEntry: false });
+    if (!st || !st.isFile() || st.isSymbolicLink() || st.size > MAX_ETAG_FILE_BYTES) {
+      diskEtagStateByFile.delete(resolved);
+      return new Map();
+    }
+    const cachedState = diskEtagStateByFile.get(resolved);
+    if (cachedState && cachedState.mtimeMs === st.mtimeMs && cachedState.size === st.size) {
+      return cachedState.map;
+    }
+    const parsed = JSON.parse(fs.readFileSync(resolved, 'utf8'));
+    const map = new Map();
+    const entries = parsed?.entries;
+    if (entries && typeof entries === 'object' && !Array.isArray(entries)) {
+      for (const [u, rec] of Object.entries(entries)) {
+        if (
+          typeof u === 'string' &&
+          u.length <= 1024 &&
+          u.includes('https://api.github.com/') &&
+          rec &&
+          typeof rec === 'object' &&
+          typeof rec.etag === 'string' &&
+          rec.etag.length > 0 &&
+          rec.etag.length <= 256 &&
+          'data' in rec
+        ) {
+          map.set(u, {
+            etag: rec.etag,
+            data: rec.data,
+            updatedAtMs: Number(rec.updatedAtMs) || 0
+          });
+        }
+      }
+      pruneEtagMapInPlace(map);
+    }
+    diskEtagStateByFile.set(resolved, { mtimeMs: st.mtimeMs, size: st.size, map });
+    return map;
+  } catch {
+    diskEtagStateByFile.delete(resolved);
+    return new Map();
+  }
+}
+
+function touchEtagCacheHit(etagCacheFile, cacheKey, entryObj, refreshedEtag = '') {
+  const updated = {
+    etag: refreshedEtag || entryObj.etag,
+    data: entryObj.data,
+    updatedAtMs: Date.now()
+  };
+  memoryEtagCache.delete(cacheKey);
+  memoryEtagCache.set(cacheKey, updated);
+  pruneEtagMapInPlace(memoryEtagCache);
+  if (etagCacheFile) {
+    const resolved = path.resolve(etagCacheFile);
+    const state = diskEtagStateByFile.get(resolved);
+    if (state?.map) {
+      state.map.delete(cacheKey);
+      state.map.set(cacheKey, updated);
+      pruneEtagMapInPlace(state.map);
+    }
+  }
+}
+
+function saveDiskEtagEntry(etagCacheFile, cacheKey, rawUrl, entryObj) {
+  const slimData = slimGitHubPayloadForEtagCache(rawUrl, entryObj.data);
+  let serializedEntrySize = 0;
+  try {
+    serializedEntrySize = Buffer.byteLength(JSON.stringify(slimData), 'utf8');
+  } catch {
+    return;
+  }
+  if (serializedEntrySize > MAX_ETAG_ENTRY_BYTES) return;
+
+  const slimEntry = {
+    etag: entryObj.etag,
+    data: slimData,
+    updatedAtMs: entryObj.updatedAtMs || Date.now()
+  };
+
+  memoryEtagCache.delete(cacheKey);
+  memoryEtagCache.set(cacheKey, slimEntry);
+  pruneEtagMapInPlace(memoryEtagCache);
+
+  if (!etagCacheFile) return;
+  const resolved = path.resolve(etagCacheFile);
+  let tmp = '';
+  try {
+    const dir = path.dirname(resolved);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const existing = fs.lstatSync(resolved, { throwIfNoEntry: false });
+    if (existing && (existing.isSymbolicLink() || existing.isDirectory())) {
+      diskEtagStateByFile.delete(resolved);
+      return;
+    }
+
+    const merged = loadDiskEtagMap(resolved);
+    merged.delete(cacheKey);
+    merged.set(cacheKey, slimEntry);
+    pruneEtagMapInPlace(merged);
+
+    const serializedEntries = {};
+    for (const [k, v] of merged.entries()) {
+      serializedEntries[k] = v;
+    }
+    const payload = `${JSON.stringify({ schema: 1, entries: serializedEntries }, null, 2)}\n`;
+    tmp = `${resolved}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+    fs.writeFileSync(tmp, payload, { mode: 0o600 });
+    try {
+      fs.renameSync(tmp, resolved);
+    } catch (renameErr) {
+      if (renameErr && (renameErr.code === 'EPERM' || renameErr.code === 'EACCES')) {
+        fs.writeFileSync(resolved, payload, { mode: 0o600 });
+        try { fs.rmSync(tmp, { force: true }); } catch {}
+      } else {
+        throw renameErr;
+      }
+    }
+    const stAfter = fs.lstatSync(resolved, { throwIfNoEntry: false });
+    if (stAfter && stAfter.isFile()) {
+      diskEtagStateByFile.set(resolved, { mtimeMs: stAfter.mtimeMs, size: stAfter.size, map: merged });
+    }
+  } catch {
+    if (tmp) {
+      try { fs.rmSync(tmp, { force: true }); } catch {}
+    }
+  }
+}
 const ALLOWED_DOWNLOAD_HOSTS = new Set([
   'github.com',
   'objects.githubusercontent.com',
@@ -536,15 +854,68 @@ export function evaluateRepoUpdate(key, entry, fetched = {}) {
   };
 }
 
-async function defaultFetchJson(url, { fetchImpl = globalThis.fetch, token = process.env.GITHUB_TOKEN || '' } = {}) {
-  const headers = {
-    'User-Agent': 'anti-claude-prism-suite-upstream-radar',
-    Accept: 'application/vnd.github+json'
+async function defaultFetchJson(
+  url,
+  {
+    fetchImpl = globalThis.fetch,
+    token = '',
+    etagCacheFile = '',
+    allowGhCli = fetchImpl === globalThis.fetch,
+    ghExecFn = null
+  } = {}
+) {
+  let isGitHubApi = false;
+  try {
+    isGitHubApi = new URL(url).hostname.toLowerCase() === 'api.github.com';
+  } catch {}
+
+  const authResolved = isGitHubApi
+    ? await resolveAmbientGitHubTokenWithSource({ explicitToken: token, allowGhCli, ghExecFn })
+    : { token: '', source: 'none' };
+  let activeToken = authResolved.token;
+  let activeCacheKey = isGitHubApi ? buildEtagScopeKey(url, activeToken) : '';
+
+  const lookupCachedEntry = (cacheKey) => {
+    if (!isGitHubApi || !cacheKey) return null;
+    if (etagCacheFile) {
+      return loadDiskEtagMap(etagCacheFile).get(cacheKey) || null;
+    }
+    if (fetchImpl === globalThis.fetch) {
+      return memoryEtagCache.get(cacheKey) || null;
+    }
+    return null;
   };
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
+
+  let cachedEntry = lookupCachedEntry(activeCacheKey);
+
+  const buildHeaders = (bearerToken, entryForEtag) => {
+    const h = {
+      'User-Agent': 'anti-claude-prism-suite-upstream-radar',
+      Accept: 'application/vnd.github+json'
+    };
+    if (bearerToken && isGitHubApi) {
+      h.Authorization = `Bearer ${bearerToken}`;
+    }
+    if (entryForEtag?.etag) {
+      h['If-None-Match'] = entryForEtag.etag;
+    }
+    return h;
+  };
+
+  let res = await fetchImpl(url, { headers: buildHeaders(activeToken, cachedEntry), signal: AbortSignal.timeout(9000) });
+  if (Number(res?.status) === 401 && isGitHubApi && authResolved.source === 'gh_cli') {
+    // Stale/revoked local `gh` token: invalidate RAM cache and silently fall back to anonymous scope
+    invalidateCachedGhCliToken();
+    activeToken = '';
+    activeCacheKey = buildEtagScopeKey(url, '');
+    cachedEntry = lookupCachedEntry(activeCacheKey);
+    res = await fetchImpl(url, { headers: buildHeaders('', cachedEntry), signal: AbortSignal.timeout(9000) });
   }
-  const res = await fetchImpl(url, { headers, signal: AbortSignal.timeout(9000) });
+  if (Number(res?.status) === 304 && cachedEntry && cachedEntry.data !== undefined) {
+    const resp304Etag = String(res.headers?.get?.('etag') || res.headers?.get?.('ETag') || '').trim();
+    touchEtagCacheHit(etagCacheFile, activeCacheKey, cachedEntry, resp304Etag);
+    return JSON.parse(JSON.stringify(cachedEntry.data));
+  }
   if (!res.ok) {
     const remaining = res.headers?.get?.('x-ratelimit-remaining');
     const resetEpoch = Number(res.headers?.get?.('x-ratelimit-reset') || 0);
@@ -556,7 +927,18 @@ async function defaultFetchJson(url, { fetchImpl = globalThis.fetch, token = pro
       rateLimitReset: resetIso
     });
   }
-  return res.json();
+  const data = await res.json();
+  if (isGitHubApi && activeCacheKey) {
+    const respEtag = String(res.headers?.get?.('etag') || res.headers?.get?.('ETag') || '').trim();
+    if (respEtag && respEtag.length <= 256) {
+      saveDiskEtagEntry(etagCacheFile, activeCacheKey, url, {
+        etag: respEtag,
+        data,
+        updatedAtMs: Date.now()
+      });
+    }
+  }
+  return data;
 }
 
 export async function checkUpstreams({
@@ -564,10 +946,24 @@ export async function checkUpstreams({
   fetchImpl = globalThis.fetch,
   token = process.env.GITHUB_TOKEN || '',
   cacheFile = path.join(os.homedir(), '.gemini', 'antigravity', 'prism-suite', 'upstream-cache.json'),
+  etagCacheFile,
+  ghExecFn = null,
   cacheTtlMs = DEFAULT_CACHE_TTL_MS,
   force = false,
   onlyKeys = []
 } = {}) {
+  const effectiveEtagFile = etagCacheFile !== undefined
+    ? etagCacheFile
+    : (fetchImpl === globalThis.fetch
+        ? (cacheFile ? path.join(path.dirname(cacheFile), 'github-etag-cache.json') : DEFAULT_ETAG_CACHE_FILE)
+        : '');
+  const fetchOpts = {
+    fetchImpl,
+    token,
+    etagCacheFile: effectiveEtagFile,
+    allowGhCli: fetchImpl === globalThis.fetch || typeof ghExecFn === 'function',
+    ghExecFn
+  };
   const { configPath: resolvedCfg, config } = loadUpstreamConfig(configPath);
   const upstreams = config.upstreams || {};
   const keys = Object.keys(upstreams).filter((k) => !onlyKeys.length || onlyKeys.includes(k));
@@ -592,13 +988,13 @@ export async function checkUpstreams({
       try {
         const fetchReleasesWithFallback = async () => {
           try {
-            const list = await defaultFetchJson(`https://api.github.com/repos/${repo}/releases?per_page=6`, { fetchImpl, token });
+            const list = await defaultFetchJson(`https://api.github.com/repos/${repo}/releases?per_page=6`, fetchOpts);
             if (Array.isArray(list) && list.length > 0) return list;
           } catch (err) {
             if (err && err.rateLimited) throw err;
           }
           try {
-            const single = await defaultFetchJson(`https://api.github.com/repos/${repo}/releases/latest`, { fetchImpl, token });
+            const single = await defaultFetchJson(`https://api.github.com/repos/${repo}/releases/latest`, fetchOpts);
             return single && typeof single === 'object' ? [single] : [];
           } catch (err) {
             if (err && err.rateLimited) throw err;
@@ -608,7 +1004,7 @@ export async function checkUpstreams({
 
         const [relList, commits] = await Promise.all([
           fetchReleasesWithFallback(),
-          defaultFetchJson(`https://api.github.com/repos/${repo}/commits?per_page=1`, { fetchImpl, token })
+          defaultFetchJson(`https://api.github.com/repos/${repo}/commits?per_page=1`, fetchOpts)
         ]);
         const rel = Array.isArray(relList) && relList.length > 0 ? relList[0] : null;
         const baselineTagClean = String(entry.baselineTag || '').trim();
@@ -628,7 +1024,7 @@ export async function checkUpstreams({
         if (headSha && baselineCommit && !headSha.toLowerCase().startsWith(baselineCommit.toLowerCase())) {
           compareData = await defaultFetchJson(
             `https://api.github.com/repos/${repo}/compare/${encodeURIComponent(baselineCommit)}...${encodeURIComponent(headSha)}`,
-            { fetchImpl, token }
+            fetchOpts
           ).catch(() => null);
         }
 
@@ -1115,10 +1511,21 @@ export async function checkPrismSelfUpdate({
   currentVersion = '0.0.0',
   repo = PRISM_OFFICIAL_REPO,
   fetchImpl = globalThis.fetch,
-  token = process.env.GITHUB_TOKEN || ''
+  token = process.env.GITHUB_TOKEN || '',
+  etagCacheFile,
+  ghExecFn = null
 } = {}) {
   const cur = String(currentVersion || '0.0.0').replace(/^v/i, '').trim();
-  const rel = await defaultFetchJson(`https://api.github.com/repos/${repo}/releases/latest`, { fetchImpl, token });
+  const effectiveEtagFile = etagCacheFile !== undefined
+    ? etagCacheFile
+    : (fetchImpl === globalThis.fetch ? DEFAULT_ETAG_CACHE_FILE : '');
+  const rel = await defaultFetchJson(`https://api.github.com/repos/${repo}/releases/latest`, {
+    fetchImpl,
+    token,
+    etagCacheFile: effectiveEtagFile,
+    allowGhCli: fetchImpl === globalThis.fetch || typeof ghExecFn === 'function',
+    ghExecFn
+  });
   const latestTag = String(rel?.tag_name || '').trim();
   if (!latestTag || !/^v?\d+\.\d+\.\d+/.test(latestTag)) {
     throw new Error('未获取到有效的官方发布版本号');

@@ -16,10 +16,10 @@ using System.Windows.Automation;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Prism Win32 CUA Helper & Native Messaging Bridge")]
-[assembly: AssemblyDescription("Anti-Claude Prism Suite v0.8.0 Controlled Desktop & Browser CUA Helper")]
+[assembly: AssemblyDescription("Anti-Claude Prism Suite v0.8.1 Controlled Desktop & Browser CUA Helper")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.8.0.0")]
-[assembly: AssemblyFileVersion("0.8.0.0")]
+[assembly: AssemblyVersion("0.8.1.0")]
+[assembly: AssemblyFileVersion("0.8.1.0")]
 
 namespace AntiClaudePrismWinCua
 {
@@ -39,11 +39,24 @@ namespace AntiClaudePrismWinCua
         public const int SECURITY_MANDATORY_HIGH_RID = 0x00003000;
 
         public const uint WM_NULL = 0x0000;
-        public const uint WM_GETTEXT = 0x000D;
-        public const uint WM_GETTEXTLENGTH = 0x000E;
+        public const uint WM_SETTEXT = 0x000C;
         public const int WM_MOUSEACTIVATE = 0x0021;
+        public const uint WM_KEYDOWN = 0x0100;
+        public const uint WM_KEYUP = 0x0101;
+        public const uint WM_CHAR = 0x0102;
+        public const uint WM_MOUSEMOVE = 0x0200;
+        public const uint WM_LBUTTONDOWN = 0x0201;
+        public const uint WM_LBUTTONUP = 0x0202;
+        public const uint WM_LBUTTONDBLCLK = 0x0203;
+        public const uint WM_RBUTTONDOWN = 0x0204;
+        public const uint WM_RBUTTONUP = 0x0205;
+        public const uint WM_MOUSEWHEEL = 0x020A;
+        public const uint WM_MOUSEHWHEEL = 0x020E;
         public const int WM_HOTKEY = 0x0312;
         public const int MA_NOACTIVATE = 3;
+
+        public const int MK_LBUTTON = 0x0001;
+        public const int MK_RBUTTON = 0x0002;
 
         public const uint SMTO_BLOCK = 0x0001;
         public const uint SMTO_ABORTIFHUNG = 0x0002;
@@ -52,8 +65,15 @@ namespace AntiClaudePrismWinCua
         public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
         public const int DWMWA_CLOAKED = 14;
 
+        public const int SW_SHOWNOACTIVATE = 4;
         public const int SW_RESTORE = 9;
         public const uint GA_ROOT = 2;
+        public const uint CWP_SKIPINVISIBLE = 0x0001;
+        public const uint CWP_SKIPDISABLED = 0x0002;
+
+        public const uint ULW_ALPHA = 0x00000002;
+        public const byte AC_SRC_OVER = 0x00;
+        public const byte AC_SRC_ALPHA = 0x01;
 
         public const uint MOD_ALT = 0x0001;
         public const uint MOD_CONTROL = 0x0002;
@@ -120,7 +140,9 @@ namespace AntiClaudePrismWinCua
         public const int SM_CYVIRTUALSCREEN = 79;
 
         public const int WS_EX_TOPMOST = 0x00000008;
+        public const int WS_EX_TRANSPARENT = 0x00000020;
         public const int WS_EX_TOOLWINDOW = 0x00000080;
+        public const int WS_EX_LAYERED = 0x00080000;
         public const int WS_EX_NOACTIVATE = 0x08000000;
 
         public const uint PM_REMOVE = 0x0001;
@@ -141,6 +163,29 @@ namespace AntiClaudePrismWinCua
         {
             public int X;
             public int Y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct SIZE
+        {
+            public int cx;
+            public int cy;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct LASTINPUTINFO
+        {
+            public uint cbSize;
+            public uint dwTime;
+        }
+
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct BLENDFUNCTION
+        {
+            public byte BlendOp;
+            public byte BlendFlags;
+            public byte SourceConstantAlpha;
+            public byte AlphaFormat;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -256,6 +301,12 @@ namespace AntiClaudePrismWinCua
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool SetProcessDPIAware();
 
+        public const int GWL_STYLE = -16;
+        public const int ES_PASSWORD = 0x0020;
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern int GetWindowLongW(IntPtr hWnd, int nIndex);
+
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         public static extern IntPtr CreateJobObjectW(IntPtr lpJobAttributes, string lpName);
 
@@ -364,6 +415,73 @@ namespace AntiClaudePrismWinCua
 
         [DllImport("user32.dll")]
         public static extern bool PeekMessageW(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool GetCursorPos(out POINT lpPoint);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool SetCursorPos(int X, int Y);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+
+        [DllImport("kernel32.dll")]
+        public static extern uint GetTickCount();
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool ScreenToClient(IntPtr hWnd, ref POINT lpPoint);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern IntPtr ChildWindowFromPointEx(IntPtr hwndParent, POINT pt, uint uFlags);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern IntPtr RealChildWindowFromPoint(IntPtr hwndParent, POINT ptParentClientCoords);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsChild(IntPtr hWndParent, IntPtr hWnd);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool PostMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr SendMessageTimeoutStringW(
+            IntPtr hWnd,
+            uint Msg,
+            IntPtr wParam,
+            string lParam,
+            uint fuFlags,
+            uint uTimeout,
+            out IntPtr lpdwResult);
+
+        [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
+        public static extern IntPtr GetDC(IntPtr hWnd);
+
+        [DllImport("user32.dll", ExactSpelling = true)]
+        public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+        [DllImport("gdi32.dll", ExactSpelling = true, SetLastError = true)]
+        public static extern IntPtr CreateCompatibleDC(IntPtr hDC);
+
+        [DllImport("gdi32.dll", ExactSpelling = true, SetLastError = true)]
+        public static extern bool DeleteDC(IntPtr hdc);
+
+        [DllImport("gdi32.dll", ExactSpelling = true)]
+        public static extern IntPtr SelectObject(IntPtr hDC, IntPtr hObject);
+
+        [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
+        public static extern bool UpdateLayeredWindow(
+            IntPtr hwnd,
+            IntPtr hdcDst,
+            ref POINT pptDst,
+            ref SIZE psize,
+            IntPtr hdcSrc,
+            ref POINT pptSrc,
+            uint crKey,
+            ref BLENDFUNCTION pblend,
+            uint dwFlags);
 
         [DllImport("gdi32.dll")]
         public static extern IntPtr CreateRoundRectRgn(int nLeftRect, int nTopRect, int nRightRect, int nBottomRect, int nWidthEllipse, int nHeightEllipse);
@@ -570,6 +688,15 @@ namespace AntiClaudePrismWinCua
             int len = NativeMethods.GetWindowTextW(hwnd, sb, sb.Capacity);
             if (len <= 0) return string.Empty;
             return sb.ToString(0, len);
+        }
+
+        public static string SafeGetWindowText(IntPtr hwnd, int maxChars)
+        {
+            if (hwnd == IntPtr.Zero) return string.Empty;
+            int cap = Math.Max(16, Math.Min(4096, maxChars));
+            StringBuilder sb = new StringBuilder(cap);
+            int wLen = NativeMethods.GetWindowTextW(hwnd, sb, sb.Capacity);
+            return wLen > 0 ? sb.ToString(0, wLen) : string.Empty;
         }
 
         public static string SafeGetProcessName(uint pid)
@@ -1575,6 +1702,13 @@ namespace AntiClaudePrismWinCua
                 return ErrorResult("INVALID_STEP_OP", "缺少操作类型 op");
             }
 
+            string rawMouseMode = JsonUtil.GetString(step, "mouseMode", string.Empty);
+            if (string.IsNullOrEmpty(rawMouseMode))
+            {
+                rawMouseMode = JsonUtil.GetString(payload, "mouseMode", "courteous");
+            }
+            string mouseMode = NormalizeMouseMode(rawMouseMode);
+
             EscEmergencyGuard escGuard = new EscEmergencyGuard();
             try
             {
@@ -1583,15 +1717,10 @@ namespace AntiClaudePrismWinCua
                     return EscAbortedResult();
                 }
 
-                if (op != "wait_for")
+                if (op != "wait_for" && NativeMethods.IsIconic(hwnd) && mouseMode != "strict_virtual")
                 {
-                    if (NativeMethods.IsIconic(hwnd))
-                    {
-                        NativeMethods.ShowWindow(hwnd, NativeMethods.SW_RESTORE);
-                        Thread.Sleep(60);
-                    }
-                    NativeMethods.SetForegroundWindow(hwnd);
-                    Thread.Sleep(25);
+                    NativeMethods.ShowWindow(hwnd, NativeMethods.SW_SHOWNOACTIVATE);
+                    Thread.Sleep(45);
                     info = WindowSecurity.InspectWindow(hwnd) ?? info;
                 }
 
@@ -1605,16 +1734,19 @@ namespace AntiClaudePrismWinCua
                     case "click":
                     case "double_click":
                     case "right_click":
-                        return ExecuteMouseClick(hwnd, info, step, op, escGuard);
+                        return ExecuteMouseClick(hwnd, info, step, op, mouseMode, escGuard);
 
                     case "type_text":
-                        return ExecuteTypeText(info, step, escGuard);
+                        return ExecuteTypeText(hwnd, info, step, mouseMode, escGuard);
 
                     case "press_key":
-                        return ExecutePressKey(info, step, escGuard);
+                        return ExecutePressKey(hwnd, info, step, mouseMode, escGuard);
 
                     case "scroll":
-                        return ExecuteScroll(hwnd, info, step, escGuard);
+                        return ExecuteScroll(hwnd, info, step, mouseMode, escGuard);
+
+                    case "select_option":
+                        return ExecuteSelectOption(hwnd, info, step, mouseMode, escGuard);
 
                     case "focus_ref":
                         return ExecuteFocusRef(hwnd, info, step, escGuard);
@@ -1633,10 +1765,163 @@ namespace AntiClaudePrismWinCua
             }
         }
 
+        private static string NormalizeMouseMode(string raw)
+        {
+            string s = (raw ?? string.Empty).Trim().ToLowerInvariant();
+            if (s == "strict_virtual" || s == "virtual_only" || s == "background")
+            {
+                return "strict_virtual";
+            }
+            if (s == "physical" || s == "hardware")
+            {
+                return "physical";
+            }
+            return "courteous";
+        }
+
+        private static IntPtr MakeLParam(int loWord, int hiWord)
+        {
+            return new IntPtr(((hiWord & 0xFFFF) << 16) | (loWord & 0xFFFF));
+        }
+
+        private static IntPtr FindDeepestChildWindowAtScreenPoint(IntPtr rootHwnd, int screenX, int screenY)
+        {
+            if (rootHwnd == IntPtr.Zero) return IntPtr.Zero;
+            IntPtr cur = rootHwnd;
+            for (int depth = 0; depth < 16; depth++)
+            {
+                NativeMethods.POINT clientPt = new NativeMethods.POINT();
+                clientPt.X = screenX;
+                clientPt.Y = screenY;
+                if (!NativeMethods.ScreenToClient(cur, ref clientPt))
+                {
+                    break;
+                }
+
+                IntPtr next = NativeMethods.RealChildWindowFromPoint(cur, clientPt);
+                if (next == IntPtr.Zero || next == cur)
+                {
+                    next = NativeMethods.ChildWindowFromPointEx(
+                        cur,
+                        clientPt,
+                        NativeMethods.CWP_SKIPINVISIBLE | NativeMethods.CWP_SKIPDISABLED);
+                }
+                if (next == IntPtr.Zero || next == cur)
+                {
+                    break;
+                }
+                if (!NativeMethods.IsChild(rootHwnd, next))
+                {
+                    break;
+                }
+                cur = next;
+            }
+            return cur;
+        }
+
+        private static bool WaitForUserInputIdle(
+            int idleThresholdMs,
+            int maxWaitMs,
+            EscEmergencyGuard escGuard,
+            out string errCode,
+            out string errMsg)
+        {
+            errCode = null;
+            errMsg = null;
+
+            Stopwatch sw = Stopwatch.StartNew();
+            NativeMethods.POINT lastPt;
+            NativeMethods.GetCursorPos(out lastPt);
+
+            while (sw.ElapsedMilliseconds < maxWaitMs)
+            {
+                if (escGuard != null && escGuard.IsEscTriggered())
+                {
+                    errCode = "USER_ESC_ABORTED";
+                    errMsg = "用户按下 Esc 紧急中断";
+                    return false;
+                }
+
+                bool mouseBtnDown = (NativeMethods.GetAsyncKeyState(0x01) & 0x8000) != 0
+                    || (NativeMethods.GetAsyncKeyState(0x02) & 0x8000) != 0
+                    || (NativeMethods.GetAsyncKeyState(0x04) & 0x8000) != 0;
+
+                NativeMethods.LASTINPUTINFO lii = new NativeMethods.LASTINPUTINFO();
+                lii.cbSize = (uint)Marshal.SizeOf(typeof(NativeMethods.LASTINPUTINFO));
+                uint idleMs = 999999;
+                if (NativeMethods.GetLastInputInfo(ref lii))
+                {
+                    idleMs = unchecked(NativeMethods.GetTickCount() - lii.dwTime);
+                }
+
+                NativeMethods.POINT curPt;
+                NativeMethods.GetCursorPos(out curPt);
+                bool cursorMoved = Math.Abs(curPt.X - lastPt.X) > 1 || Math.Abs(curPt.Y - lastPt.Y) > 1;
+                lastPt = curPt;
+
+                if (!mouseBtnDown && !cursorMoved && idleMs >= (uint)idleThresholdMs)
+                {
+                    return true;
+                }
+
+                Thread.Sleep(35);
+            }
+
+            if ((NativeMethods.GetAsyncKeyState(0x01) & 0x8000) != 0
+                || (NativeMethods.GetAsyncKeyState(0x02) & 0x8000) != 0)
+            {
+                errCode = "USER_MOUSE_DRAGGING";
+                errMsg = "检测到用户正在按住物理鼠标拖拽或点击，已礼让暂停借用系统光标";
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool ActivateWindowForPhysicalInput(
+            IntPtr hwnd,
+            ref WindowInfo info,
+            string mouseMode,
+            EscEmergencyGuard escGuard,
+            out string errCode,
+            out string errMsg)
+        {
+            errCode = null;
+            errMsg = null;
+
+            if (mouseMode == "strict_virtual")
+            {
+                errCode = "PHYSICAL_CURSOR_REQUIRED";
+                errMsg = "当前处于「严格后台虚拟鼠标」模式 (strict_virtual)，目标窗口 ("
+                    + (info != null ? info.ClassName : "Unknown")
+                    + ") 不支持后台无感投递，已拦截物理键鼠与焦点占用";
+                return false;
+            }
+
+            if (mouseMode == "courteous")
+            {
+                if (!WaitForUserInputIdle(350, 2200, escGuard, out errCode, out errMsg))
+                {
+                    return false;
+                }
+            }
+
+            if (NativeMethods.IsIconic(hwnd))
+            {
+                NativeMethods.ShowWindow(hwnd, NativeMethods.SW_RESTORE);
+                Thread.Sleep(55);
+            }
+            NativeMethods.SetForegroundWindow(hwnd);
+            Thread.Sleep(20);
+            info = WindowSecurity.InspectWindow(hwnd) ?? info;
+            return true;
+        }
+
         private static bool ResolveStepPhysicalPoint(
             IntPtr hwnd,
             WindowInfo info,
             Dictionary<string, object> step,
+            bool checkScreenOcclusion,
             out int physX,
             out int physY,
             out string errCode,
@@ -1667,7 +1952,7 @@ namespace AntiClaudePrismWinCua
                         {
                             physX = Convert.ToInt32(b["x"]) + Convert.ToInt32(b["width"]) / 2;
                             physY = Convert.ToInt32(b["y"]) + Convert.ToInt32(b["height"]) / 2;
-                            return ValidateTargetPointSafety(info, physX, physY, out errCode, out errMsg);
+                            return ValidateTargetPointSafety(info, physX, physY, checkScreenOcclusion, out errCode, out errMsg);
                         }
                     }
                 }
@@ -1680,7 +1965,7 @@ namespace AntiClaudePrismWinCua
             {
                 physX = JsonUtil.GetInt(step, "screenX", 0);
                 physY = JsonUtil.GetInt(step, "screenY", 0);
-                return ValidateTargetPointSafety(info, physX, physY, out errCode, out errMsg);
+                return ValidateTargetPointSafety(info, physX, physY, checkScreenOcclusion, out errCode, out errMsg);
             }
 
             if (!JsonUtil.HasKey(step, "x") || !JsonUtil.HasKey(step, "y"))
@@ -1727,10 +2012,16 @@ namespace AntiClaudePrismWinCua
                 physY = rawY;
             }
 
-            return ValidateTargetPointSafety(info, physX, physY, out errCode, out errMsg);
+            return ValidateTargetPointSafety(info, physX, physY, checkScreenOcclusion, out errCode, out errMsg);
         }
 
-        private static bool ValidateTargetPointSafety(WindowInfo targetInfo, int physX, int physY, out string errCode, out string errMsg)
+        private static bool ValidateTargetPointSafety(
+            WindowInfo targetInfo,
+            int physX,
+            int physY,
+            bool checkScreenOcclusion,
+            out string errCode,
+            out string errMsg)
         {
             errCode = null;
             errMsg = null;
@@ -1743,26 +2034,330 @@ namespace AntiClaudePrismWinCua
                 return false;
             }
 
-            NativeMethods.POINT pt = new NativeMethods.POINT();
-            pt.X = physX;
-            pt.Y = physY;
-            IntPtr hit = NativeMethods.WindowFromPoint(pt);
-            if (hit != IntPtr.Zero)
+            if (checkScreenOcclusion)
             {
-                IntPtr rootHit = NativeMethods.GetAncestor(hit, NativeMethods.GA_ROOT);
-                if (rootHit != IntPtr.Zero && rootHit != targetInfo.Hwnd)
+                NativeMethods.POINT pt = new NativeMethods.POINT();
+                pt.X = physX;
+                pt.Y = physY;
+                IntPtr hit = NativeMethods.WindowFromPoint(pt);
+                if (hit != IntPtr.Zero)
                 {
-                    WindowInfo hitInfo = WindowSecurity.InspectWindow(rootHit);
-                    string bCode;
-                    string bReason;
-                    if (hitInfo != null && WindowSecurity.CheckWindowBlocked(hitInfo, out bCode, out bReason))
+                    IntPtr rootHit = NativeMethods.GetAncestor(hit, NativeMethods.GA_ROOT);
+                    if (rootHit != IntPtr.Zero && rootHit != targetInfo.Hwnd)
                     {
-                        errCode = bCode;
-                        errMsg = bReason;
+                        WindowInfo hitInfo = WindowSecurity.InspectWindow(rootHit);
+                        string bCode;
+                        string bReason;
+                        if (hitInfo != null && WindowSecurity.CheckWindowBlocked(hitInfo, out bCode, out bReason))
+                        {
+                            errCode = bCode;
+                            errMsg = bReason;
+                            return false;
+                        }
+                        errCode = "TARGET_OCCLUDED";
+                        errMsg = "目标坐标当前被其他置顶或活动窗口遮挡，已拦截物理点击以防误触";
                         return false;
                     }
                 }
             }
+            return true;
+        }
+
+        private static bool IsControlPasswordFailClosed(IntPtr ctrlHwnd, int physX, int physY, bool isElectronHost)
+        {
+            if (ctrlHwnd == IntPtr.Zero) return true;
+            if (isElectronHost) return true;
+            string cls = WindowSecurity.SafeGetClassName(ctrlHwnd);
+            if (cls.IndexOf("Edit", StringComparison.OrdinalIgnoreCase) >= 0
+                || cls.IndexOf("PasswordBox", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                int style = NativeMethods.GetWindowLongW(ctrlHwnd, NativeMethods.GWL_STYLE);
+                if ((style & NativeMethods.ES_PASSWORD) != 0)
+                {
+                    return true;
+                }
+            }
+            /* State: -1 = pending/unsupported/error (fail-closed), 0 = verified bool false, 1 = verified password */
+            int probeState = -1;
+            Thread mta = new Thread((ThreadStart)delegate
+            {
+                try
+                {
+                    AutomationElement elHandle = AutomationElement.FromHandle(ctrlHwnd);
+                    AutomationElement elPoint = AutomationElement.FromPoint(new System.Windows.Point(physX, physY));
+                    if (elHandle != null)
+                    {
+                        object vH = elHandle.GetCurrentPropertyValue(AutomationElement.IsPasswordProperty, true);
+                        if (!(vH is bool) || (bool)vH)
+                        {
+                            Interlocked.Exchange(ref probeState, 1);
+                            return;
+                        }
+                    }
+                    if (elPoint != null)
+                    {
+                        object vP = elPoint.GetCurrentPropertyValue(AutomationElement.IsPasswordProperty, true);
+                        if (!(vP is bool) || (bool)vP)
+                        {
+                            Interlocked.Exchange(ref probeState, 1);
+                            return;
+                        }
+                    }
+                    if (elHandle != null || elPoint != null)
+                    {
+                        Interlocked.Exchange(ref probeState, 0);
+                    }
+                }
+                catch
+                {
+                    Interlocked.Exchange(ref probeState, -1);
+                }
+            });
+            mta.IsBackground = true;
+            mta.SetApartmentState(ApartmentState.MTA);
+            mta.Start();
+            if (!mta.Join(650))
+            {
+                return true;
+            }
+            return Interlocked.CompareExchange(ref probeState, 0, 0) != 0;
+        }
+
+        private static bool TryInvokeUiaClickMta(
+            IntPtr hwnd,
+            WindowInfo info,
+            string refId,
+            bool hasFallbackPoint,
+            int fallbackX,
+            int fallbackY,
+            out int outX,
+            out int outY,
+            out string matchedRef,
+            out string deliveryMethod,
+            out string fatalErrCode,
+            out string fatalErrMsg)
+        {
+            outX = fallbackX;
+            outY = fallbackY;
+            matchedRef = null;
+            deliveryMethod = null;
+            fatalErrCode = null;
+            fatalErrMsg = null;
+
+            if (info.IsElectron)
+            {
+                if (!string.IsNullOrEmpty(refId))
+                {
+                    fatalErrCode = "ELECTRON_UIA_DISABLED";
+                    fatalErrMsg = "Electron 窗口启用了 0ms 防卡顿守卫，请使用坐标或浏览器桥定位";
+                }
+                return false;
+            }
+
+            bool invoked = false;
+            int localX = fallbackX;
+            int localY = fallbackY;
+            string localRef = null;
+            string localDelivery = null;
+            string localErrCode = null;
+            string localErrMsg = null;
+
+            Thread mta = new Thread((ThreadStart)delegate
+            {
+                try
+                {
+                    string walkNote;
+                    List<UiaMtaItem> items = WalkUiaTreeMta(hwnd, info.Rect, true, out walkNote);
+                    UiaMtaItem target = null;
+
+                    if (!string.IsNullOrEmpty(refId))
+                    {
+                        for (int i = 0; i < items.Count; i++)
+                        {
+                            if (string.Equals(items[i].RefId, refId, StringComparison.OrdinalIgnoreCase))
+                            {
+                                target = items[i];
+                                break;
+                            }
+                        }
+                        if (target == null)
+                        {
+                            localErrCode = "REF_NOT_FOUND";
+                            localErrMsg = "未找到指定的控件引用: " + refId;
+                            return;
+                        }
+                    }
+                    else if (hasFallbackPoint)
+                    {
+                        long bestArea = long.MaxValue;
+                        for (int i = 0; i < items.Count; i++)
+                        {
+                            Dictionary<string, object> b = items[i].Dict["bounds"] as Dictionary<string, object>;
+                            if (b == null) continue;
+                            int bx = Convert.ToInt32(b["x"]);
+                            int by = Convert.ToInt32(b["y"]);
+                            int bw = Convert.ToInt32(b["width"]);
+                            int bh = Convert.ToInt32(b["height"]);
+                            if (fallbackX < bx || fallbackX > bx + bw || fallbackY < by || fallbackY > by + bh)
+                            {
+                                continue;
+                            }
+                            string role = Convert.ToString(items[i].Dict["role"] ?? string.Empty);
+                            if (role != "Button" && role != "CheckBox" && role != "RadioButton"
+                                && role != "MenuItem" && role != "TabItem" && role != "Hyperlink"
+                                && role != "ListItem" && role != "SplitButton")
+                            {
+                                continue;
+                            }
+                            long area = (long)bw * (long)bh;
+                            if (area > 0 && area < bestArea)
+                            {
+                                bestArea = area;
+                                target = items[i];
+                            }
+                        }
+                    }
+
+                    if (target == null || target.LiveElement == null)
+                    {
+                        return;
+                    }
+
+                    Dictionary<string, object> tb = target.Dict["bounds"] as Dictionary<string, object>;
+                    if (tb != null)
+                    {
+                        localX = Convert.ToInt32(tb["x"]) + Convert.ToInt32(tb["width"]) / 2;
+                        localY = Convert.ToInt32(tb["y"]) + Convert.ToInt32(tb["height"]) / 2;
+                    }
+                    localRef = target.RefId;
+
+                    bool enabled = true;
+                    if (target.Dict.ContainsKey("enabled") && target.Dict["enabled"] is bool)
+                    {
+                        enabled = (bool)target.Dict["enabled"];
+                    }
+                    if (!enabled)
+                    {
+                        if (!string.IsNullOrEmpty(refId))
+                        {
+                            localErrCode = "ELEMENT_DISABLED";
+                            localErrMsg = "目标控件当前处于禁用状态: " + refId;
+                        }
+                        return;
+                    }
+
+                    object pat;
+                    if (target.LiveElement.TryGetCurrentPattern(InvokePattern.Pattern, out pat) && pat is InvokePattern)
+                    {
+                        ((InvokePattern)pat).Invoke();
+                        localDelivery = "uia_invoke";
+                        invoked = true;
+                        return;
+                    }
+                    if (target.LiveElement.TryGetCurrentPattern(TogglePattern.Pattern, out pat) && pat is TogglePattern)
+                    {
+                        ((TogglePattern)pat).Toggle();
+                        localDelivery = "uia_toggle";
+                        invoked = true;
+                        return;
+                    }
+                    if (target.LiveElement.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pat) && pat is SelectionItemPattern)
+                    {
+                        ((SelectionItemPattern)pat).Select();
+                        localDelivery = "uia_select";
+                        invoked = true;
+                        return;
+                    }
+                    if (!string.IsNullOrEmpty(refId)
+                        && target.LiveElement.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out pat)
+                        && pat is ExpandCollapsePattern)
+                    {
+                        ExpandCollapsePattern ecp = (ExpandCollapsePattern)pat;
+                        ExpandCollapseState st = ecp.Current.ExpandCollapseState;
+                        if (st == ExpandCollapseState.Collapsed || st == ExpandCollapseState.PartiallyExpanded)
+                        {
+                            ecp.Expand();
+                        }
+                        else if (st == ExpandCollapseState.Expanded)
+                        {
+                            ecp.Collapse();
+                        }
+                        localDelivery = "uia_expand_collapse";
+                        invoked = true;
+                        return;
+                    }
+                }
+                catch
+                {
+                }
+            });
+            mta.IsBackground = true;
+            mta.SetApartmentState(ApartmentState.MTA);
+            mta.Start();
+            mta.Join(2200);
+
+            outX = localX;
+            outY = localY;
+            matchedRef = localRef;
+            deliveryMethod = localDelivery;
+            fatalErrCode = localErrCode;
+            fatalErrMsg = localErrMsg;
+            return invoked;
+        }
+
+        private static bool TryPostWin32MouseClick(
+            IntPtr rootHwnd,
+            WindowInfo info,
+            int physX,
+            int physY,
+            string op,
+            Dictionary<string, object> step)
+        {
+            if (info.IsElectron) return false;
+            if (!JsonUtil.GetBool(step, "allowPostMessage", true)) return false;
+            if (JsonUtil.GetBool(step, "forcePhysical", false)) return false;
+
+            IntPtr targetHwnd = FindDeepestChildWindowAtScreenPoint(rootHwnd, physX, physY);
+            if (targetHwnd == IntPtr.Zero) return false;
+
+            NativeMethods.POINT clientPt = new NativeMethods.POINT();
+            clientPt.X = physX;
+            clientPt.Y = physY;
+            if (!NativeMethods.ScreenToClient(targetHwnd, ref clientPt))
+            {
+                return false;
+            }
+
+            IntPtr lParam = MakeLParam(clientPt.X, clientPt.Y);
+            NativeMethods.PostMessageW(targetHwnd, NativeMethods.WM_MOUSEMOVE, IntPtr.Zero, lParam);
+
+            if (op == "right_click")
+            {
+                if (!NativeMethods.PostMessageW(targetHwnd, NativeMethods.WM_RBUTTONDOWN, new IntPtr(NativeMethods.MK_RBUTTON), lParam))
+                {
+                    return false;
+                }
+                NativeMethods.PostMessageW(targetHwnd, NativeMethods.WM_RBUTTONUP, IntPtr.Zero, lParam);
+                return true;
+            }
+
+            if (op == "double_click")
+            {
+                if (!NativeMethods.PostMessageW(targetHwnd, NativeMethods.WM_LBUTTONDOWN, new IntPtr(NativeMethods.MK_LBUTTON), lParam))
+                {
+                    return false;
+                }
+                NativeMethods.PostMessageW(targetHwnd, NativeMethods.WM_LBUTTONUP, IntPtr.Zero, lParam);
+                NativeMethods.PostMessageW(targetHwnd, NativeMethods.WM_LBUTTONDBLCLK, new IntPtr(NativeMethods.MK_LBUTTON), lParam);
+                NativeMethods.PostMessageW(targetHwnd, NativeMethods.WM_LBUTTONUP, IntPtr.Zero, lParam);
+                return true;
+            }
+
+            if (!NativeMethods.PostMessageW(targetHwnd, NativeMethods.WM_LBUTTONDOWN, new IntPtr(NativeMethods.MK_LBUTTON), lParam))
+            {
+                return false;
+            }
+            NativeMethods.PostMessageW(targetHwnd, NativeMethods.WM_LBUTTONUP, IntPtr.Zero, lParam);
             return true;
         }
 
@@ -1771,52 +2366,172 @@ namespace AntiClaudePrismWinCua
             WindowInfo info,
             Dictionary<string, object> step,
             string op,
+            string mouseMode,
             EscEmergencyGuard escGuard)
         {
-            int physX;
-            int physY;
+            string refId = JsonUtil.GetString(step, "ref", string.Empty).Trim();
+            int physX = 0;
+            int physY = 0;
+            bool hasPoint = false;
             string errCode;
             string errMsg;
-            if (!ResolveStepPhysicalPoint(hwnd, info, step, out physX, out physY, out errCode, out errMsg))
+
+            if (JsonUtil.HasKey(step, "x") || JsonUtil.HasKey(step, "screenX"))
+            {
+                if (!ResolveStepPhysicalPoint(hwnd, info, step, false, out physX, out physY, out errCode, out errMsg))
+                {
+                    return ErrorResult(errCode, errMsg);
+                }
+                hasPoint = true;
+            }
+
+            /* Tier L2: UIA Control Pattern (Zero cursor movement, preserve user foreground window) */
+            if (mouseMode != "physical" && op == "click" && !info.IsElectron && (!string.IsNullOrEmpty(refId) || hasPoint))
+            {
+                IntPtr prevFg = NativeMethods.GetForegroundWindow();
+                int uiaX;
+                int uiaY;
+                string matchedRef;
+                string uiaDelivery;
+                string uiaErrCode;
+                string uiaErrMsg;
+                if (TryInvokeUiaClickMta(
+                    hwnd,
+                    info,
+                    refId,
+                    hasPoint,
+                    physX,
+                    physY,
+                    out uiaX,
+                    out uiaY,
+                    out matchedRef,
+                    out uiaDelivery,
+                    out uiaErrCode,
+                    out uiaErrMsg))
+                {
+                    if (prevFg != IntPtr.Zero && prevFg != hwnd && NativeMethods.GetForegroundWindow() == hwnd
+                        && JsonUtil.GetBool(step, "preserveForeground", true) && NativeMethods.IsWindow(prevFg))
+                    {
+                        NativeMethods.SetForegroundWindow(prevFg);
+                    }
+                    IntPtr afterFg = NativeMethods.GetForegroundWindow();
+                    Dictionary<string, object> uiaRes = new Dictionary<string, object>();
+                    uiaRes["ok"] = true;
+                    uiaRes["op"] = op;
+                    uiaRes["x"] = uiaX;
+                    uiaRes["y"] = uiaY;
+                    if (!string.IsNullOrEmpty(matchedRef)) uiaRes["ref"] = matchedRef;
+                    uiaRes["delivery"] = uiaDelivery;
+                    uiaRes["mouseMode"] = mouseMode;
+                    uiaRes["physicalCursorMoved"] = false;
+                    uiaRes["focusStolen"] = (prevFg != IntPtr.Zero && afterFg != prevFg);
+                    return uiaRes;
+                }
+                if (!string.IsNullOrEmpty(uiaErrCode))
+                {
+                    return ErrorResult(uiaErrCode, uiaErrMsg);
+                }
+                if (!hasPoint && uiaX != 0 && uiaY != 0)
+                {
+                    physX = uiaX;
+                    physY = uiaY;
+                    hasPoint = ValidateTargetPointSafety(info, physX, physY, false, out errCode, out errMsg);
+                }
+            }
+
+            if (!hasPoint)
+            {
+                if (!ResolveStepPhysicalPoint(hwnd, info, step, false, out physX, out physY, out errCode, out errMsg))
+                {
+                    return ErrorResult(errCode, errMsg);
+                }
+                hasPoint = true;
+            }
+            if (escGuard.IsEscTriggered()) return EscAbortedResult();
+
+            /* Tier L3: Win32 Child HWND PostMessageW (Zero cursor movement, zero focus stealing) */
+            if (mouseMode != "physical" && !info.IsElectron)
+            {
+                if (TryPostWin32MouseClick(hwnd, info, physX, physY, op, step))
+                {
+                    Dictionary<string, object> msgRes = new Dictionary<string, object>();
+                    msgRes["ok"] = true;
+                    msgRes["op"] = op;
+                    msgRes["x"] = physX;
+                    msgRes["y"] = physY;
+                    if (!string.IsNullOrEmpty(refId)) msgRes["ref"] = refId;
+                    msgRes["delivery"] = "win32_message";
+                    msgRes["mouseMode"] = mouseMode;
+                    msgRes["physicalCursorMoved"] = false;
+                    msgRes["focusStolen"] = false;
+                    return msgRes;
+                }
+            }
+
+            /* Tier L4: Courteous Physical Fallback (Idle Yield >= 350ms + Instant Cursor Restore) */
+            if (!ActivateWindowForPhysicalInput(hwnd, ref info, mouseMode, escGuard, out errCode, out errMsg))
+            {
+                return ErrorResult(errCode, errMsg);
+            }
+            if (!ResolveStepPhysicalPoint(hwnd, info, step, true, out physX, out physY, out errCode, out errMsg))
             {
                 return ErrorResult(errCode, errMsg);
             }
             if (escGuard.IsEscTriggered()) return EscAbortedResult();
 
-            NativeMethods.INPUT move = InputController.CreateMouseAbsMoveInput(physX, physY);
-            if (op == "right_click")
+            bool restoreCursor = JsonUtil.GetBool(step, "restoreCursor", mouseMode == "courteous");
+            NativeMethods.POINT origCursor = new NativeMethods.POINT();
+            bool hasOrigCursor = restoreCursor && NativeMethods.GetCursorPos(out origCursor);
+
+            try
             {
-                InputController.SendInputs(new NativeMethods.INPUT[]
+                NativeMethods.INPUT move = InputController.CreateMouseAbsMoveInput(physX, physY);
+                if (op == "right_click")
                 {
-                    move,
-                    InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_RIGHTDOWN, 0),
-                    InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_RIGHTUP, 0)
-                });
+                    InputController.SendInputs(new NativeMethods.INPUT[]
+                    {
+                        move,
+                        InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_RIGHTDOWN, 0),
+                        InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_RIGHTUP, 0)
+                    });
+                }
+                else if (op == "double_click")
+                {
+                    InputController.SendInputs(new NativeMethods.INPUT[]
+                    {
+                        move,
+                        InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_LEFTDOWN, 0),
+                        InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_LEFTUP, 0)
+                    });
+                    Thread.Sleep(35);
+                    if (escGuard.IsEscTriggered()) return EscAbortedResult();
+                    InputController.SendInputs(new NativeMethods.INPUT[]
+                    {
+                        InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_LEFTDOWN, 0),
+                        InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_LEFTUP, 0)
+                    });
+                }
+                else
+                {
+                    InputController.SendInputs(new NativeMethods.INPUT[]
+                    {
+                        move,
+                        InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_LEFTDOWN, 0),
+                        InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_LEFTUP, 0)
+                    });
+                }
+
+                if (hasOrigCursor)
+                {
+                    Thread.Sleep(6);
+                }
             }
-            else if (op == "double_click")
+            finally
             {
-                InputController.SendInputs(new NativeMethods.INPUT[]
+                if (hasOrigCursor)
                 {
-                    move,
-                    InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_LEFTDOWN, 0),
-                    InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_LEFTUP, 0)
-                });
-                Thread.Sleep(35);
-                if (escGuard.IsEscTriggered()) return EscAbortedResult();
-                InputController.SendInputs(new NativeMethods.INPUT[]
-                {
-                    InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_LEFTDOWN, 0),
-                    InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_LEFTUP, 0)
-                });
-            }
-            else
-            {
-                InputController.SendInputs(new NativeMethods.INPUT[]
-                {
-                    move,
-                    InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_LEFTDOWN, 0),
-                    InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_LEFTUP, 0)
-                });
+                    NativeMethods.SetCursorPos(origCursor.X, origCursor.Y);
+                }
             }
 
             Dictionary<string, object> res = new Dictionary<string, object>();
@@ -1824,12 +2539,183 @@ namespace AntiClaudePrismWinCua
             res["op"] = op;
             res["x"] = physX;
             res["y"] = physY;
+            res["delivery"] = hasOrigCursor ? "courteous_physical_restore" : "physical_sendinput";
+            res["mouseMode"] = mouseMode;
+            res["physicalCursorMoved"] = true;
+            res["cursorRestored"] = hasOrigCursor;
             return res;
         }
 
+        private static bool TrySetTextUiaOrWin32Mta(
+            IntPtr hwnd,
+            WindowInfo info,
+            string refId,
+            bool hasPoint,
+            int targetX,
+            int targetY,
+            string text,
+            bool clearFirst,
+            out int outX,
+            out int outY,
+            out string matchedRef,
+            out string deliveryMethod,
+            out string fatalErrCode,
+            out string fatalErrMsg)
+        {
+            outX = targetX;
+            outY = targetY;
+            matchedRef = null;
+            deliveryMethod = null;
+            fatalErrCode = null;
+            fatalErrMsg = null;
+
+            if (info.IsElectron)
+            {
+                if (!string.IsNullOrEmpty(refId))
+                {
+                    fatalErrCode = "ELECTRON_UIA_DISABLED";
+                    fatalErrMsg = "Electron 窗口启用了 0ms 防卡顿守卫，不支持 UIA ValuePattern";
+                }
+                return false;
+            }
+
+            bool applied = false;
+            int localX = targetX;
+            int localY = targetY;
+            string localRef = null;
+            string localDelivery = null;
+            string localErrCode = null;
+            string localErrMsg = null;
+
+            Thread mta = new Thread((ThreadStart)delegate
+            {
+                try
+                {
+                    string walkNote;
+                    List<UiaMtaItem> items = WalkUiaTreeMta(hwnd, info.Rect, true, out walkNote);
+                    UiaMtaItem target = null;
+
+                    if (!string.IsNullOrEmpty(refId))
+                    {
+                        for (int i = 0; i < items.Count; i++)
+                        {
+                            if (string.Equals(items[i].RefId, refId, StringComparison.OrdinalIgnoreCase))
+                            {
+                                target = items[i];
+                                break;
+                            }
+                        }
+                        if (target == null)
+                        {
+                            localErrCode = "REF_NOT_FOUND";
+                            localErrMsg = "未找到指定的输入控件引用: " + refId;
+                            return;
+                        }
+                    }
+                    else if (hasPoint)
+                    {
+                        long bestArea = long.MaxValue;
+                        for (int i = 0; i < items.Count; i++)
+                        {
+                            Dictionary<string, object> b = items[i].Dict["bounds"] as Dictionary<string, object>;
+                            if (b == null) continue;
+                            int bx = Convert.ToInt32(b["x"]);
+                            int by = Convert.ToInt32(b["y"]);
+                            int bw = Convert.ToInt32(b["width"]);
+                            int bh = Convert.ToInt32(b["height"]);
+                            if (targetX < bx || targetX > bx + bw || targetY < by || targetY > by + bh) continue;
+                            string role = Convert.ToString(items[i].Dict["role"] ?? string.Empty);
+                            if (role != "Edit" && role != "Document" && role != "ComboBox") continue;
+                            long area = (long)bw * (long)bh;
+                            if (area > 0 && area < bestArea)
+                            {
+                                bestArea = area;
+                                target = items[i];
+                            }
+                        }
+                    }
+
+                    if (target == null || target.LiveElement == null) return;
+
+                    Dictionary<string, object> tb = target.Dict["bounds"] as Dictionary<string, object>;
+                    if (tb != null)
+                    {
+                        localX = Convert.ToInt32(tb["x"]) + Convert.ToInt32(tb["width"]) / 2;
+                        localY = Convert.ToInt32(tb["y"]) + Convert.ToInt32(tb["height"]) / 2;
+                    }
+                    localRef = target.RefId;
+
+                    bool isPwd = (target.Dict.ContainsKey("isPassword") && target.Dict["isPassword"] is bool && (bool)target.Dict["isPassword"])
+                        || target.LiveElement.Current.IsPassword;
+                    if (isPwd)
+                    {
+                        localErrCode = "PASSWORD_FIELD_HANDOFF";
+                        localErrMsg = "检测到密码输入框，已拒绝自动输入，请人工处理";
+                        return;
+                    }
+
+                    object pat;
+                    if (target.LiveElement.TryGetCurrentPattern(ValuePattern.Pattern, out pat) && pat is ValuePattern)
+                    {
+                        ValuePattern vp = (ValuePattern)pat;
+                        if (!vp.Current.IsReadOnly)
+                        {
+                            string baseVal = clearFirst ? string.Empty : (vp.Current.Value ?? string.Empty);
+                            vp.SetValue(baseVal + text);
+                            localDelivery = "uia_value";
+                            applied = true;
+                            return;
+                        }
+                    }
+
+                    int nativeHandle = target.LiveElement.Current.NativeWindowHandle;
+                    if (nativeHandle != 0)
+                    {
+                        IntPtr ctrlHwnd = new IntPtr(nativeHandle);
+                        if (ctrlHwnd == hwnd || NativeMethods.IsChild(hwnd, ctrlHwnd))
+                        {
+                            string existing = clearFirst ? string.Empty : WindowSecurity.SafeGetWindowText(ctrlHwnd, 4096);
+                            IntPtr msgRes;
+                            IntPtr sent = NativeMethods.SendMessageTimeoutStringW(
+                                ctrlHwnd,
+                                NativeMethods.WM_SETTEXT,
+                                IntPtr.Zero,
+                                existing + text,
+                                NativeMethods.SMTO_ABORTIFHUNG,
+                                600,
+                                out msgRes);
+                            if (sent != IntPtr.Zero)
+                            {
+                                localDelivery = "win32_settext";
+                                applied = true;
+                                return;
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                }
+            });
+            mta.IsBackground = true;
+            mta.SetApartmentState(ApartmentState.MTA);
+            mta.Start();
+            mta.Join(2200);
+
+            outX = localX;
+            outY = localY;
+            matchedRef = localRef;
+            deliveryMethod = localDelivery;
+            fatalErrCode = localErrCode;
+            fatalErrMsg = localErrMsg;
+            return applied;
+        }
+
         private static Dictionary<string, object> ExecuteTypeText(
+            IntPtr hwnd,
             WindowInfo info,
             Dictionary<string, object> step,
+            string mouseMode,
             EscEmergencyGuard escGuard)
         {
             string text = JsonUtil.GetString(step, "text", string.Empty);
@@ -1839,11 +2725,87 @@ namespace AntiClaudePrismWinCua
                 emptyRes["ok"] = true;
                 emptyRes["op"] = "type_text";
                 emptyRes["typedUnits"] = 0;
+                emptyRes["physicalCursorMoved"] = false;
                 return emptyRes;
             }
             if (text.Length > 8192)
             {
                 return ErrorResult("TEXT_TOO_LONG", "单次 type_text 长度不能超过 8192 字符");
+            }
+
+            string refId = JsonUtil.GetString(step, "ref", string.Empty).Trim();
+            bool clearFirst = JsonUtil.GetBool(step, "clear", JsonUtil.GetBool(step, "clearFirst", false));
+            int targetX = 0;
+            int targetY = 0;
+            bool hasPoint = false;
+            string errCode;
+            string errMsg;
+
+            if (JsonUtil.HasKey(step, "x") || JsonUtil.HasKey(step, "screenX"))
+            {
+                if (!ResolveStepPhysicalPoint(hwnd, info, step, false, out targetX, out targetY, out errCode, out errMsg))
+                {
+                    return ErrorResult(errCode, errMsg);
+                }
+                hasPoint = true;
+            }
+
+            /* Tier L2 / L3: UIA ValuePattern or Win32 WM_SETTEXT (Zero cursor movement, zero focus stealing) */
+            if (mouseMode != "physical" && !info.IsElectron && (!string.IsNullOrEmpty(refId) || hasPoint))
+            {
+                int uiaX;
+                int uiaY;
+                string matchedRef;
+                string delivery;
+                string uiaErrCode;
+                string uiaErrMsg;
+                if (TrySetTextUiaOrWin32Mta(
+                    hwnd,
+                    info,
+                    refId,
+                    hasPoint,
+                    targetX,
+                    targetY,
+                    text,
+                    clearFirst,
+                    out uiaX,
+                    out uiaY,
+                    out matchedRef,
+                    out delivery,
+                    out uiaErrCode,
+                    out uiaErrMsg))
+                {
+                    Dictionary<string, object> bgRes = new Dictionary<string, object>();
+                    bgRes["ok"] = true;
+                    bgRes["op"] = "type_text";
+                    bgRes["typedUnits"] = text.Length;
+                    bgRes["x"] = uiaX;
+                    bgRes["y"] = uiaY;
+                    if (!string.IsNullOrEmpty(matchedRef)) bgRes["ref"] = matchedRef;
+                    bgRes["delivery"] = delivery;
+                    bgRes["mouseMode"] = mouseMode;
+                    bgRes["physicalCursorMoved"] = false;
+                    bgRes["focusStolen"] = false;
+                    return bgRes;
+                }
+                if (!string.IsNullOrEmpty(uiaErrCode))
+                {
+                    return ErrorResult(uiaErrCode, uiaErrMsg);
+                }
+            }
+
+            /* Tier L4: Courteous Physical Keyboard Fallback */
+            if (!ActivateWindowForPhysicalInput(hwnd, ref info, mouseMode, escGuard, out errCode, out errMsg))
+            {
+                return ErrorResult(errCode, errMsg);
+            }
+            if (hasPoint)
+            {
+                IntPtr hitChild = FindDeepestChildWindowAtScreenPoint(hwnd, targetX, targetY);
+                if (IsControlPasswordFailClosed(hitChild, targetX, targetY, info.IsElectron))
+                {
+                    return ErrorResult("PASSWORD_FIELD_HANDOFF", "检测到目标坐标为密码或未受验受保护输入控件，已拒绝自动输入");
+                }
             }
 
             string normalized = text.Replace("\r\n", "\n");
@@ -1911,12 +2873,17 @@ namespace AntiClaudePrismWinCua
             res["ok"] = true;
             res["op"] = "type_text";
             res["typedUnits"] = typedUnits;
+            res["delivery"] = "courteous_keyboard";
+            res["mouseMode"] = mouseMode;
+            res["physicalCursorMoved"] = false;
             return res;
         }
 
         private static Dictionary<string, object> ExecutePressKey(
+            IntPtr hwnd,
             WindowInfo info,
             Dictionary<string, object> step,
+            string mouseMode,
             EscEmergencyGuard escGuard)
         {
             string chord = JsonUtil.GetString(step, "key", string.Empty);
@@ -1988,6 +2955,30 @@ namespace AntiClaudePrismWinCua
 
             if (escGuard.IsEscTriggered()) return EscAbortedResult();
 
+            if (mouseMode == "strict_virtual" && !info.IsElectron && modifiers.Count == 0)
+            {
+                if (NativeMethods.PostMessageW(hwnd, NativeMethods.WM_KEYDOWN, new IntPtr(mainVk), IntPtr.Zero))
+                {
+                    NativeMethods.PostMessageW(hwnd, NativeMethods.WM_KEYUP, new IntPtr(mainVk), IntPtr.Zero);
+                    Dictionary<string, object> bgKeyRes = new Dictionary<string, object>();
+                    bgKeyRes["ok"] = true;
+                    bgKeyRes["op"] = "press_key";
+                    bgKeyRes["key"] = chord;
+                    bgKeyRes["delivery"] = "win32_message";
+                    bgKeyRes["mouseMode"] = mouseMode;
+                    bgKeyRes["physicalCursorMoved"] = false;
+                    bgKeyRes["focusStolen"] = false;
+                    return bgKeyRes;
+                }
+            }
+
+            string actErrCode;
+            string actErrMsg;
+            if (!ActivateWindowForPhysicalInput(hwnd, ref info, mouseMode, escGuard, out actErrCode, out actErrMsg))
+            {
+                return ErrorResult(actErrCode, actErrMsg);
+            }
+
             bool sendingEscape = (mainVk == NativeMethods.VK_ESCAPE && modifiers.Count == 0);
             if (sendingEscape)
             {
@@ -2036,6 +3027,9 @@ namespace AntiClaudePrismWinCua
             res["ok"] = true;
             res["op"] = "press_key";
             res["key"] = chord;
+            res["delivery"] = "courteous_keyboard";
+            res["mouseMode"] = mouseMode;
+            res["physicalCursorMoved"] = false;
             return res;
         }
 
@@ -2122,48 +3116,320 @@ namespace AntiClaudePrismWinCua
             IntPtr hwnd,
             WindowInfo info,
             Dictionary<string, object> step,
+            string mouseMode,
             EscEmergencyGuard escGuard)
         {
-            List<NativeMethods.INPUT> inputs = new List<NativeMethods.INPUT>();
+            int px;
+            int py;
+            string errCode;
+            string errMsg;
             if (JsonUtil.HasKey(step, "x") || JsonUtil.HasKey(step, "screenX") || JsonUtil.HasKey(step, "ref"))
             {
-                int px;
-                int py;
-                string errCode;
-                string errMsg;
-                if (!ResolveStepPhysicalPoint(hwnd, info, step, out px, out py, out errCode, out errMsg))
+                if (!ResolveStepPhysicalPoint(hwnd, info, step, false, out px, out py, out errCode, out errMsg))
                 {
                     return ErrorResult(errCode, errMsg);
                 }
-                inputs.Add(InputController.CreateMouseAbsMoveInput(px, py));
             }
             else
             {
-                int cx = (info.Rect.Left + info.Rect.Right) / 2;
-                int cy = (info.Rect.Top + info.Rect.Bottom) / 2;
-                inputs.Add(InputController.CreateMouseAbsMoveInput(cx, cy));
+                px = (info.Rect.Left + info.Rect.Right) / 2;
+                py = (info.Rect.Top + info.Rect.Bottom) / 2;
             }
 
             int deltaY = JsonUtil.GetInt(step, "deltaY", JsonUtil.GetInt(step, "delta", -240));
             int deltaX = JsonUtil.GetInt(step, "deltaX", 0);
+            string refId = JsonUtil.GetString(step, "ref", string.Empty).Trim();
 
-            if (deltaY != 0)
+            /* Tier L2: UIA ScrollPattern when ref is specified */
+            if (mouseMode != "physical" && !info.IsElectron && !string.IsNullOrEmpty(refId))
             {
-                inputs.Add(InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_WHEEL, unchecked((uint)deltaY)));
-            }
-            if (deltaX != 0)
-            {
-                inputs.Add(InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_HWHEEL, unchecked((uint)deltaX)));
+                bool uiaScrolled = false;
+                Thread mta = new Thread((ThreadStart)delegate
+                {
+                    try
+                    {
+                        string walkNote;
+                        List<UiaMtaItem> items = WalkUiaTreeMta(hwnd, info.Rect, true, out walkNote);
+                        for (int i = 0; i < items.Count; i++)
+                        {
+                            if (!string.Equals(items[i].RefId, refId, StringComparison.OrdinalIgnoreCase) || items[i].LiveElement == null)
+                            {
+                                continue;
+                            }
+                            object pat;
+                            if (items[i].LiveElement.TryGetCurrentPattern(ScrollPattern.Pattern, out pat) && pat is ScrollPattern)
+                            {
+                                ScrollPattern sp = (ScrollPattern)pat;
+                                ScrollAmount vAmt = deltaY < 0 ? ScrollAmount.SmallIncrement : (deltaY > 0 ? ScrollAmount.SmallDecrement : ScrollAmount.NoAmount);
+                                ScrollAmount hAmt = deltaX > 0 ? ScrollAmount.SmallIncrement : (deltaX < 0 ? ScrollAmount.SmallDecrement : ScrollAmount.NoAmount);
+                                sp.Scroll(
+                                    sp.Current.HorizontallyScrollable ? hAmt : ScrollAmount.NoAmount,
+                                    sp.Current.VerticallyScrollable ? vAmt : ScrollAmount.NoAmount);
+                                uiaScrolled = true;
+                            }
+                            break;
+                        }
+                    }
+                    catch
+                    {
+                    }
+                });
+                mta.IsBackground = true;
+                mta.SetApartmentState(ApartmentState.MTA);
+                mta.Start();
+                mta.Join(1800);
+                if (uiaScrolled)
+                {
+                    Dictionary<string, object> uiaRes = new Dictionary<string, object>();
+                    uiaRes["ok"] = true;
+                    uiaRes["op"] = "scroll";
+                    uiaRes["x"] = px;
+                    uiaRes["y"] = py;
+                    uiaRes["deltaY"] = deltaY;
+                    uiaRes["deltaX"] = deltaX;
+                    uiaRes["delivery"] = "uia_scroll";
+                    uiaRes["mouseMode"] = mouseMode;
+                    uiaRes["physicalCursorMoved"] = false;
+                    uiaRes["focusStolen"] = false;
+                    return uiaRes;
+                }
             }
 
+            /* Tier L3: Win32 Child HWND WM_MOUSEWHEEL (Zero cursor movement, zero focus stealing) */
+            if (mouseMode != "physical" && !info.IsElectron && JsonUtil.GetBool(step, "allowPostMessage", true))
+            {
+                IntPtr childHwnd = FindDeepestChildWindowAtScreenPoint(hwnd, px, py);
+                if (childHwnd != IntPtr.Zero)
+                {
+                    IntPtr lParamScreen = MakeLParam(px, py);
+                    bool posted = false;
+                    if (deltaY != 0)
+                    {
+                        IntPtr wParamY = new IntPtr((deltaY & 0xFFFF) << 16);
+                        posted = NativeMethods.PostMessageW(childHwnd, NativeMethods.WM_MOUSEWHEEL, wParamY, lParamScreen) || posted;
+                    }
+                    if (deltaX != 0)
+                    {
+                        IntPtr wParamX = new IntPtr((deltaX & 0xFFFF) << 16);
+                        posted = NativeMethods.PostMessageW(childHwnd, NativeMethods.WM_MOUSEHWHEEL, wParamX, lParamScreen) || posted;
+                    }
+                    if (posted || (deltaY == 0 && deltaX == 0))
+                    {
+                        Dictionary<string, object> msgRes = new Dictionary<string, object>();
+                        msgRes["ok"] = true;
+                        msgRes["op"] = "scroll";
+                        msgRes["x"] = px;
+                        msgRes["y"] = py;
+                        msgRes["deltaY"] = deltaY;
+                        msgRes["deltaX"] = deltaX;
+                        msgRes["delivery"] = "win32_message";
+                        msgRes["mouseMode"] = mouseMode;
+                        msgRes["physicalCursorMoved"] = false;
+                        msgRes["focusStolen"] = false;
+                        return msgRes;
+                    }
+                }
+            }
+
+            /* Tier L4: Courteous Physical Wheel Fallback */
+            if (!ActivateWindowForPhysicalInput(hwnd, ref info, mouseMode, escGuard, out errCode, out errMsg))
+            {
+                return ErrorResult(errCode, errMsg);
+            }
+            if (!ValidateTargetPointSafety(info, px, py, true, out errCode, out errMsg))
+            {
+                return ErrorResult(errCode, errMsg);
+            }
             if (escGuard.IsEscTriggered()) return EscAbortedResult();
-            InputController.SendInputs(inputs.ToArray());
+
+            bool restoreCursor = JsonUtil.GetBool(step, "restoreCursor", mouseMode == "courteous");
+            NativeMethods.POINT origCursor = new NativeMethods.POINT();
+            bool hasOrigCursor = restoreCursor && NativeMethods.GetCursorPos(out origCursor);
+
+            try
+            {
+                List<NativeMethods.INPUT> inputs = new List<NativeMethods.INPUT>();
+                inputs.Add(InputController.CreateMouseAbsMoveInput(px, py));
+                if (deltaY != 0)
+                {
+                    inputs.Add(InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_WHEEL, unchecked((uint)deltaY)));
+                }
+                if (deltaX != 0)
+                {
+                    inputs.Add(InputController.CreateMouseButtonInput(NativeMethods.MOUSEEVENTF_HWHEEL, unchecked((uint)deltaX)));
+                }
+                InputController.SendInputs(inputs.ToArray());
+                if (hasOrigCursor)
+                {
+                    Thread.Sleep(6);
+                }
+            }
+            finally
+            {
+                if (hasOrigCursor)
+                {
+                    NativeMethods.SetCursorPos(origCursor.X, origCursor.Y);
+                }
+            }
 
             Dictionary<string, object> res = new Dictionary<string, object>();
             res["ok"] = true;
             res["op"] = "scroll";
+            res["x"] = px;
+            res["y"] = py;
             res["deltaY"] = deltaY;
             res["deltaX"] = deltaX;
+            res["delivery"] = hasOrigCursor ? "courteous_physical_restore" : "physical_sendinput";
+            res["mouseMode"] = mouseMode;
+            res["physicalCursorMoved"] = true;
+            res["cursorRestored"] = hasOrigCursor;
+            return res;
+        }
+
+        private static Dictionary<string, object> ExecuteSelectOption(
+            IntPtr hwnd,
+            WindowInfo info,
+            Dictionary<string, object> step,
+            string mouseMode,
+            EscEmergencyGuard escGuard)
+        {
+            string refId = JsonUtil.GetString(step, "ref", string.Empty).Trim();
+            string wantVal = JsonUtil.GetString(step, "value", JsonUtil.GetString(step, "label", JsonUtil.GetString(step, "text", string.Empty))).Trim();
+            if (string.IsNullOrEmpty(refId))
+            {
+                return ErrorResult("MISSING_REF", "select_option 缺少控件引用 ref");
+            }
+            if (string.IsNullOrEmpty(wantVal))
+            {
+                return ErrorResult("MISSING_VALUE", "select_option 缺少目标选项文本 value");
+            }
+            if (info.IsElectron)
+            {
+                return ErrorResult("ELECTRON_UIA_DISABLED", "Electron 窗口请通过 Chrome CUA 桥执行 select_option");
+            }
+            if (escGuard.IsEscTriggered()) return EscAbortedResult();
+
+            bool selected = false;
+            int outX = 0;
+            int outY = 0;
+            string errCode = null;
+            string errMsg = null;
+
+            Thread mta = new Thread((ThreadStart)delegate
+            {
+                try
+                {
+                    string walkNote;
+                    List<UiaMtaItem> items = WalkUiaTreeMta(hwnd, info.Rect, true, out walkNote);
+                    UiaMtaItem target = null;
+                    for (int i = 0; i < items.Count; i++)
+                    {
+                        if (string.Equals(items[i].RefId, refId, StringComparison.OrdinalIgnoreCase))
+                        {
+                            target = items[i];
+                            break;
+                        }
+                    }
+                    if (target == null || target.LiveElement == null)
+                    {
+                        errCode = "REF_NOT_FOUND";
+                        errMsg = "未找到下拉控件引用: " + refId;
+                        return;
+                    }
+                    Dictionary<string, object> tb = target.Dict["bounds"] as Dictionary<string, object>;
+                    if (tb != null)
+                    {
+                        outX = Convert.ToInt32(tb["x"]) + Convert.ToInt32(tb["width"]) / 2;
+                        outY = Convert.ToInt32(tb["y"]) + Convert.ToInt32(tb["height"]) / 2;
+                    }
+
+                    ExpandCollapsePattern ecp = null;
+                    object pat;
+                    if (target.LiveElement.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out pat) && pat is ExpandCollapsePattern)
+                    {
+                        ecp = (ExpandCollapsePattern)pat;
+                        ecp.Expand();
+                        Thread.Sleep(40);
+                    }
+
+                    AutomationElementCollection subItems = target.LiveElement.FindAll(
+                        TreeScope.Descendants,
+                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ListItem));
+                    AutomationElement partialMatch = null;
+                    for (int i = 0; i < subItems.Count; i++)
+                    {
+                        AutomationElement sub = subItems[i];
+                        string nm = sub.Current.Name ?? string.Empty;
+                        if (string.Equals(nm.Trim(), wantVal, StringComparison.OrdinalIgnoreCase))
+                        {
+                            object sp;
+                            if (sub.TryGetCurrentPattern(SelectionItemPattern.Pattern, out sp) && sp is SelectionItemPattern)
+                            {
+                                ((SelectionItemPattern)sp).Select();
+                                selected = true;
+                                break;
+                            }
+                        }
+                        if (partialMatch == null && nm.IndexOf(wantVal, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            partialMatch = sub;
+                        }
+                    }
+                    if (!selected && partialMatch != null)
+                    {
+                        object sp2;
+                        if (partialMatch.TryGetCurrentPattern(SelectionItemPattern.Pattern, out sp2) && sp2 is SelectionItemPattern)
+                        {
+                            ((SelectionItemPattern)sp2).Select();
+                            selected = true;
+                        }
+                    }
+
+                    if (!selected && target.LiveElement.TryGetCurrentPattern(ValuePattern.Pattern, out pat) && pat is ValuePattern)
+                    {
+                        ValuePattern vp = (ValuePattern)pat;
+                        if (!vp.Current.IsReadOnly)
+                        {
+                            vp.SetValue(wantVal);
+                            selected = true;
+                        }
+                    }
+
+                    if (ecp != null)
+                    {
+                        try { ecp.Collapse(); } catch { }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    errMsg = ex.Message;
+                }
+            });
+            mta.IsBackground = true;
+            mta.SetApartmentState(ApartmentState.MTA);
+            mta.Start();
+            mta.Join(2400);
+
+            if (!string.IsNullOrEmpty(errCode))
+            {
+                return ErrorResult(errCode, errMsg);
+            }
+            if (!selected)
+            {
+                return ErrorResult("OPTION_NOT_FOUND", errMsg ?? ("未能选中目标选项: " + wantVal));
+            }
+
+            Dictionary<string, object> res = new Dictionary<string, object>();
+            res["ok"] = true;
+            res["op"] = "select_option";
+            res["ref"] = refId;
+            res["value"] = wantVal;
+            res["x"] = outX;
+            res["y"] = outY;
+            res["delivery"] = "uia_select";
+            res["mouseMode"] = mouseMode;
+            res["physicalCursorMoved"] = false;
+            res["focusStolen"] = false;
             return res;
         }
 
@@ -3198,6 +4464,290 @@ namespace AntiClaudePrismWinCua
         }
     }
 
+    internal sealed class VirtualCursorForm : Form
+    {
+        private const int CanvasSize = 64;
+        private const int HotspotX = 14;
+        private const int HotspotY = 14;
+
+        private readonly System.Windows.Forms.Timer _animTimer;
+        private double _startX;
+        private double _startY;
+        private double _curX;
+        private double _curY;
+        private double _targetX;
+        private double _targetY;
+        private bool _hasLastPos;
+        private int _stepIndex;
+        private string _currentOp = "click";
+
+        public VirtualCursorForm()
+        {
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            TopMost = true;
+            StartPosition = FormStartPosition.Manual;
+            Width = CanvasSize;
+            Height = CanvasSize;
+            Location = new Point(-32000, -32000);
+
+            _animTimer = new System.Windows.Forms.Timer();
+            _animTimer.Interval = 16;
+            _animTimer.Tick += OnAnimTick;
+        }
+
+        protected override bool ShowWithoutActivation
+        {
+            get { return true; }
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= NativeMethods.WS_EX_LAYERED
+                    | NativeMethods.WS_EX_TRANSPARENT
+                    | NativeMethods.WS_EX_NOACTIVATE
+                    | NativeMethods.WS_EX_TOOLWINDOW
+                    | NativeMethods.WS_EX_TOPMOST;
+                return cp;
+            }
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == NativeMethods.WM_MOUSEACTIVATE)
+            {
+                m.Result = new IntPtr(NativeMethods.MA_NOACTIVATE);
+                return;
+            }
+            base.WndProc(ref m);
+        }
+
+        public void TriggerPulse(int screenX, int screenY, string op)
+        {
+            if (IsDisposed) return;
+            int vx = NativeMethods.GetSystemMetrics(NativeMethods.SM_XVIRTUALSCREEN);
+            int vy = NativeMethods.GetSystemMetrics(NativeMethods.SM_YVIRTUALSCREEN);
+            int vw = Math.Max(1, NativeMethods.GetSystemMetrics(NativeMethods.SM_CXVIRTUALSCREEN));
+            int vh = Math.Max(1, NativeMethods.GetSystemMetrics(NativeMethods.SM_CYVIRTUALSCREEN));
+
+            int clampedX = Math.Max(vx, Math.Min(vx + vw - 1, screenX));
+            int clampedY = Math.Max(vy, Math.Min(vy + vh - 1, screenY));
+
+            if (!_hasLastPos || !Visible)
+            {
+                _startX = clampedX - 34;
+                _startY = clampedY + 26;
+                _curX = _startX;
+                _curY = _startY;
+                _hasLastPos = true;
+            }
+            else
+            {
+                _startX = _curX;
+                _startY = _curY;
+            }
+
+            _targetX = clampedX;
+            _targetY = clampedY;
+            _currentOp = (op ?? "click").Trim().ToLowerInvariant();
+            _stepIndex = 0;
+
+            if (!Visible)
+            {
+                Show();
+            }
+            RenderLayeredFrame(1.0f, 0.0f);
+            _animTimer.Start();
+        }
+
+        public void HideImmediate()
+        {
+            _animTimer.Stop();
+            _hasLastPos = false;
+            if (!IsDisposed && Visible)
+            {
+                Hide();
+            }
+        }
+
+        private void OnAnimTick(object sender, EventArgs e)
+        {
+            if (IsDisposed)
+            {
+                _animTimer.Stop();
+                return;
+            }
+
+            _stepIndex++;
+            if (_stepIndex <= 7)
+            {
+                double t = (double)_stepIndex / 7.0;
+                double ease = 1.0 - Math.Pow(1.0 - t, 3.0);
+                _curX = _startX + (_targetX - _startX) * ease;
+                _curY = _startY + (_targetY - _startY) * ease;
+                RenderLayeredFrame(1.0f, 0.0f);
+            }
+            else if (_stepIndex <= 17)
+            {
+                _curX = _targetX;
+                _curY = _targetY;
+                float ripple = (float)(_stepIndex - 7) / 10.0f;
+                RenderLayeredFrame(1.0f, ripple);
+            }
+            else if (_stepIndex <= 40)
+            {
+                RenderLayeredFrame(0.92f, 0.0f);
+            }
+            else if (_stepIndex <= 52)
+            {
+                float alpha = Math.Max(0.0f, 0.92f * (1.0f - (float)(_stepIndex - 40) / 12.0f));
+                RenderLayeredFrame(alpha, 0.0f);
+            }
+            else
+            {
+                _animTimer.Stop();
+                if (Visible) Hide();
+            }
+        }
+
+        private void RenderLayeredFrame(float masterAlpha, float rippleProgress)
+        {
+            if (IsDisposed || !IsHandleCreated) return;
+            int curAlpha = Math.Max(0, Math.Min(255, (int)Math.Round(255f * masterAlpha)));
+            if (curAlpha <= 1) return;
+
+            int accentR = 56;
+            int accentG = 189;
+            int accentB = 248;
+            int fillR = 37;
+            int fillG = 99;
+            int fillB = 235;
+            if (_currentOp == "type_text")
+            {
+                accentR = 167; accentG = 139; accentB = 250;
+                fillR = 124; fillG = 58; fillB = 237;
+            }
+            else if (_currentOp == "scroll")
+            {
+                accentR = 52; accentG = 211; accentB = 153;
+                fillR = 5; fillG = 150; fillB = 105;
+            }
+
+            using (Bitmap bmp = new Bitmap(CanvasSize, CanvasSize, PixelFormat.Format32bppArgb))
+            {
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    g.Clear(Color.Transparent);
+
+                    if (rippleProgress > 0.01f)
+                    {
+                        float r = 4f + rippleProgress * 18f;
+                        int ripAlpha = Math.Max(0, Math.Min(255, (int)Math.Round(220f * (1f - rippleProgress) * masterAlpha)));
+                        if (ripAlpha > 2)
+                        {
+                            using (Pen ripPen = new Pen(Color.FromArgb(ripAlpha, accentR, accentG, accentB), 2.2f))
+                            {
+                                g.DrawEllipse(ripPen, HotspotX - r, HotspotY - r, r * 2f, r * 2f);
+                            }
+                        }
+                    }
+
+                    int glowAlpha = Math.Max(0, Math.Min(255, (int)Math.Round(70f * masterAlpha)));
+                    using (Brush glowBrush = new SolidBrush(Color.FromArgb(glowAlpha, accentR, accentG, accentB)))
+                    {
+                        g.FillEllipse(glowBrush, HotspotX - 7, HotspotY - 7, 14, 14);
+                    }
+
+                    PointF[] arrow = new PointF[]
+                    {
+                        new PointF(HotspotX, HotspotY),
+                        new PointF(HotspotX, HotspotY + 21f),
+                        new PointF(HotspotX + 5.5f, HotspotY + 16.2f),
+                        new PointF(HotspotX + 9.5f, HotspotY + 24.5f),
+                        new PointF(HotspotX + 13.2f, HotspotY + 22.8f),
+                        new PointF(HotspotX + 9.2f, HotspotY + 14.5f),
+                        new PointF(HotspotX + 16.5f, HotspotY + 14.5f)
+                    };
+
+                    using (Brush fillBrush = new SolidBrush(Color.FromArgb(curAlpha, fillR, fillG, fillB)))
+                    using (Pen outlinePen = new Pen(Color.FromArgb(curAlpha, 248, 250, 252), 1.6f))
+                    {
+                        outlinePen.LineJoin = LineJoin.Round;
+                        g.FillPolygon(fillBrush, arrow);
+                        g.DrawPolygon(outlinePen, arrow);
+                    }
+
+                    Rectangle badgeRect = new Rectangle(HotspotX + 14, HotspotY + 21, 22, 13);
+                    using (Brush badgeBg = new SolidBrush(Color.FromArgb(Math.Min(235, curAlpha), 15, 23, 42)))
+                    using (Pen badgeBorder = new Pen(Color.FromArgb(curAlpha, accentR, accentG, accentB), 1f))
+                    using (Brush badgeFg = new SolidBrush(Color.FromArgb(curAlpha, 241, 245, 249)))
+                    using (Font badgeFont = new Font("Segoe UI", 6.5f, FontStyle.Bold))
+                    {
+                        g.FillRectangle(badgeBg, badgeRect);
+                        g.DrawRectangle(badgeBorder, badgeRect);
+                        g.DrawString("AI", badgeFont, badgeFg, badgeRect.X + 4f, badgeRect.Y + 0.5f);
+                    }
+                }
+
+                IntPtr screenDc = NativeMethods.GetDC(IntPtr.Zero);
+                if (screenDc == IntPtr.Zero) return;
+                IntPtr memDc = NativeMethods.CreateCompatibleDC(screenDc);
+                IntPtr hBitmap = IntPtr.Zero;
+                IntPtr oldBitmap = IntPtr.Zero;
+                try
+                {
+                    hBitmap = bmp.GetHbitmap(Color.FromArgb(0));
+                    oldBitmap = NativeMethods.SelectObject(memDc, hBitmap);
+                    NativeMethods.POINT dstPt = new NativeMethods.POINT();
+                    dstPt.X = (int)Math.Round(_curX) - HotspotX;
+                    dstPt.Y = (int)Math.Round(_curY) - HotspotY;
+                    NativeMethods.SIZE sz = new NativeMethods.SIZE();
+                    sz.cx = CanvasSize;
+                    sz.cy = CanvasSize;
+                    NativeMethods.POINT srcPt = new NativeMethods.POINT();
+                    srcPt.X = 0;
+                    srcPt.Y = 0;
+                    NativeMethods.BLENDFUNCTION blend = new NativeMethods.BLENDFUNCTION();
+                    blend.BlendOp = NativeMethods.AC_SRC_OVER;
+                    blend.BlendFlags = 0;
+                    blend.SourceConstantAlpha = 255;
+                    blend.AlphaFormat = NativeMethods.AC_SRC_ALPHA;
+                    NativeMethods.UpdateLayeredWindow(
+                        Handle,
+                        screenDc,
+                        ref dstPt,
+                        ref sz,
+                        memDc,
+                        ref srcPt,
+                        0,
+                        ref blend,
+                        NativeMethods.ULW_ALPHA);
+                }
+                finally
+                {
+                    if (oldBitmap != IntPtr.Zero) NativeMethods.SelectObject(memDc, oldBitmap);
+                    if (hBitmap != IntPtr.Zero) NativeMethods.DeleteObject(hBitmap);
+                    if (memDc != IntPtr.Zero) NativeMethods.DeleteDC(memDc);
+                    NativeMethods.ReleaseDC(IntPtr.Zero, screenDc);
+                }
+            }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _animTimer.Stop();
+                _animTimer.Dispose();
+            }
+            base.Dispose(disposing);
+        }
+    }
+
     internal static class Program
     {
         private static IntPtr _selfJobHandle = IntPtr.Zero;
@@ -3221,7 +4771,7 @@ namespace AntiClaudePrismWinCua
             {
                 Dictionary<string, object> ver = new Dictionary<string, object>();
                 ver["ok"] = true;
-                ver["version"] = "0.8.0";
+                ver["version"] = "0.8.1";
                 ver["platform"] = "win32";
                 WriteJsonLine(ver);
                 return 0;
@@ -3461,6 +5011,7 @@ namespace AntiClaudePrismWinCua
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             using (OverlayPillForm pill = new OverlayPillForm())
+            using (VirtualCursorForm vcursor = new VirtualCursorForm())
             {
                 Thread stdinThread = new Thread((ThreadStart)delegate
                 {
@@ -3478,6 +5029,9 @@ namespace AntiClaudePrismWinCua
                                     if (trimmed.Length == 0) continue;
 
                                     string nextState = trimmed;
+                                    int vx = -99999;
+                                    int vy = -99999;
+                                    string vop = "click";
                                     if (trimmed.StartsWith("{", StringComparison.Ordinal))
                                     {
                                         Dictionary<string, object> d = JsonUtil.DeserializeDict(trimmed);
@@ -3486,19 +5040,41 @@ namespace AntiClaudePrismWinCua
                                         {
                                             nextState = JsonUtil.GetString(d, "cmd", "ARMED");
                                         }
+                                        vx = JsonUtil.GetInt(d, "x", -99999);
+                                        vy = JsonUtil.GetInt(d, "y", -99999);
+                                        vop = JsonUtil.GetString(d, "op", "click");
                                     }
 
                                     string captured = nextState;
+                                    int capX = vx;
+                                    int capY = vy;
+                                    string capOp = vop;
                                     if (!pill.IsDisposed)
                                     {
                                         try
                                         {
                                             pill.BeginInvoke((MethodInvoker)delegate
                                             {
-                                                if (!pill.IsDisposed)
+                                                if (pill.IsDisposed) return;
+                                                string upper = (captured ?? string.Empty).Trim().ToUpperInvariant();
+                                                if (upper == "VIRTUAL_CURSOR" || upper == "VIRTUAL_MOVE")
                                                 {
-                                                    pill.ApplyStateUpdate(captured);
+                                                    if (!vcursor.IsDisposed && capX > -90000 && capY > -90000)
+                                                    {
+                                                        vcursor.TriggerPulse(capX, capY, capOp);
+                                                    }
+                                                    return;
                                                 }
+                                                if (upper == "HIDE_CURSOR")
+                                                {
+                                                    if (!vcursor.IsDisposed) vcursor.HideImmediate();
+                                                    return;
+                                                }
+                                                if (upper == "EXIT" || upper == "DISARMED" || upper == "PAUSED_HANDOFF")
+                                                {
+                                                    if (!vcursor.IsDisposed) vcursor.HideImmediate();
+                                                }
+                                                pill.ApplyStateUpdate(captured);
                                             });
                                         }
                                         catch
@@ -3523,6 +5099,7 @@ namespace AntiClaudePrismWinCua
                         {
                             pill.BeginInvoke((MethodInvoker)delegate
                             {
+                                if (!vcursor.IsDisposed) vcursor.HideImmediate();
                                 if (!pill.IsDisposed) pill.Close();
                             });
                         }
@@ -3532,7 +5109,20 @@ namespace AntiClaudePrismWinCua
                     }
                 });
                 stdinThread.IsBackground = true;
-                pill.Shown += delegate { stdinThread.Start(); };
+                pill.FormClosed += delegate
+                {
+                    if (!vcursor.IsDisposed)
+                    {
+                        vcursor.HideImmediate();
+                        vcursor.Close();
+                    }
+                };
+                pill.Shown += delegate
+                {
+                    IntPtr ensureHandle = vcursor.Handle;
+                    if (ensureHandle != IntPtr.Zero) { }
+                    stdinThread.Start();
+                };
                 Application.Run(pill);
             }
             return 0;
