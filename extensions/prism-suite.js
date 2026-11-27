@@ -12,7 +12,7 @@
     try { window.__agPrismSuiteDispose(); } catch {}
   }
 
-  const SUITE_VERSION = '0.9.1';
+  const SUITE_VERSION = '0.9.2';
   const REPO_RELEASES_API = 'https://api.github.com/repos/wushuai0802/anti-claude-prism-suite/releases/latest';
   const REPO_RELEASES_URL = 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/latest';
   const STORAGE_KEY = 'ag_prism_suite_prefs_v1';
@@ -82,6 +82,8 @@
     opticalFacets: boolValidator,
     semanticAfterglow: boolValidator,
     compactQuotaPill: boolValidator,
+    composerBorderFx: enumValidator(['off', 'smart', 'beam', 'static']),
+    outlineRailMode: enumValidator(['smart', 'right', 'off']),
     borderBeam: boolValidator,
     borderBeamMode: enumValidator(['always', 'busy']),
     borderBeamPalette: enumValidator(['theme', 'gemini', 'aurora', 'prism', 'neon', 'quota']),
@@ -215,7 +217,9 @@
     codeFontFamily: '',
     opticalFacets: true,
     semanticAfterglow: true,
-    compactQuotaPill: true
+    compactQuotaPill: true,
+    composerBorderFx: 'smart',
+    outlineRailMode: 'smart'
   };
 
   const registeredDefaults = Object.assign({}, DEFAULT_PREFS);
@@ -412,11 +416,44 @@
     return LIGHT_ACCENTS[prefs.lightPalette] || LIGHT_ACCENTS.default;
   }
 
+  const PRISM_PALETTE_TOKENS = {
+    light: {
+      default: { bg: '#FFFFFF', subtle: '#F9F9F8', hover: '#F1F0EC', active: '#E5E4DF', text: '#141413', textSec: '#4A4945', textMuted: '#73726C', border: 'rgba(20, 20, 19, 0.09)', borderStrong: 'rgba(20, 20, 19, 0.16)', accent: '#2F75C3', accentSoft: 'rgba(47, 117, 195, 0.11)', codeBg: '#F7F7F5' },
+      crystal: { bg: '#F4F7FB', subtle: '#E8EEF6', hover: '#DCE5F2', active: '#CFDCEB', text: '#0F172A', textSec: '#334155', textMuted: '#5B6B82', border: 'rgba(15, 23, 42, 0.09)', borderStrong: 'rgba(15, 23, 42, 0.16)', accent: '#2563EB', accentSoft: 'rgba(37, 99, 235, 0.12)', codeBg: '#EDF2F9' },
+      alabaster: { bg: '#F6F4EE', subtle: '#EBE6DC', hover: '#E0D9CC', active: '#D5CCB9', text: '#231F1A', textSec: '#574F45', textMuted: '#746B5E', border: 'rgba(35, 31, 26, 0.09)', borderStrong: 'rgba(35, 31, 26, 0.16)', accent: '#B45309', accentSoft: 'rgba(180, 83, 9, 0.12)', codeBg: '#EFEBE2' },
+      sage: { bg: '#F3F7F4', subtle: '#E6EFE9', hover: '#D9E6DD', active: '#CCE0D2', text: '#14221B', textSec: '#2F473B', textMuted: '#4C6356', border: 'rgba(20, 34, 27, 0.09)', borderStrong: 'rgba(20, 34, 27, 0.16)', accent: '#15803D', accentSoft: 'rgba(21, 128, 61, 0.12)', codeBg: '#ECF3EE' }
+    },
+    dark: {
+      default: { bg: '#212120', subtle: '#1B1B1A', hover: '#2A2A28', active: '#343432', text: '#ECECEA', textSec: '#C4C3BE', textMuted: '#8E8D87', border: 'rgba(255, 255, 255, 0.09)', borderStrong: 'rgba(255, 255, 255, 0.18)', accent: '#60A5FA', accentSoft: 'rgba(96, 165, 250, 0.16)', codeBg: '#191918' },
+      obsidian: { bg: '#0E0E11', subtle: '#09090B', hover: '#1B1B20', active: '#25252C', text: '#F4F4F5', textSec: '#D4D4D8', textMuted: '#8B8B95', border: 'rgba(255, 255, 255, 0.09)', borderStrong: 'rgba(255, 255, 255, 0.18)', accent: '#3B82F6', accentSoft: 'rgba(59, 130, 246, 0.18)', codeBg: '#141418' },
+      basalt: { bg: '#141312', subtle: '#100F0E', hover: '#22201D', active: '#2C2925', text: '#EFECE6', textSec: '#C8C2B8', textMuted: '#938C82', border: 'rgba(255, 244, 230, 0.09)', borderStrong: 'rgba(255, 244, 230, 0.18)', accent: '#D97706', accentSoft: 'rgba(217, 119, 6, 0.18)', codeBg: '#191816' },
+      marine: { bg: '#0B1220', subtle: '#080E19', hover: '#162238', active: '#1F2F4C', text: '#E8F0FA', textSec: '#C4D4EA', textMuted: '#8DA2BE', border: 'rgba(148, 197, 255, 0.11)', borderStrong: 'rgba(148, 197, 255, 0.20)', accent: '#38BDF8', accentSoft: 'rgba(56, 189, 248, 0.18)', codeBg: '#0E1728' }
+    }
+  };
+
+  function getCurrentThemeBridgePayload() {
+    const dark = isCurrentlyDark();
+    const mode = dark ? 'dark' : 'light';
+    const rawPal = dark ? (prefs.darkPalette || 'default') : (prefs.lightPalette || 'default');
+    const group = PRISM_PALETTE_TOKENS[mode] || PRISM_PALETTE_TOKENS.light;
+    const palette = Object.prototype.hasOwnProperty.call(group, rawPal) ? rawPal : 'default';
+    return {
+      mode,
+      palette,
+      lightPalette: prefs.lightPalette || 'default',
+      darkPalette: prefs.darkPalette || 'default',
+      tokens: group[palette]
+    };
+  }
+
   function applyPalettes() {
     const html = document.documentElement;
     if (!html) return;
     setAttrIfChanged(html, 'data-ag-ps-light', prefs.lightPalette && prefs.lightPalette !== 'default' ? prefs.lightPalette : null);
     setAttrIfChanged(html, 'data-ag-ps-dark', prefs.darkPalette && prefs.darkPalette !== 'default' ? prefs.darkPalette : null);
+    if (typeof broadcastThemeToFrames === 'function') {
+      try { broadcastThemeToFrames(); } catch {}
+    }
   }
   applyPalettes();
   onCleanup(() => {
@@ -505,6 +542,19 @@
       document.body.appendChild(el);
     }
     if (!el) return;
+    try {
+      const box = getActiveInputBox();
+      if (box) {
+        const r = box.getBoundingClientRect();
+        if (r.top > 120 && r.top < window.innerHeight) {
+          el.style.bottom = `${Math.max(96, Math.round(window.innerHeight - r.top + 38))}px`;
+        } else {
+          el.style.removeProperty('bottom');
+        }
+      } else {
+        el.style.removeProperty('bottom');
+      }
+    } catch {}
     el.textContent = text;
     el.setAttribute('data-show', '1');
     notifyOverlayChange();
@@ -920,12 +970,12 @@
       }
     }
     if (inserted) {
-      showJumpToast('已填入 /btw 支线提问前缀');
+      showJumpToast('已填入支线追问前缀');
       return;
     }
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
       navigator.clipboard.writeText(snippet).then(
-        () => showJumpToast('已复制 /btw 引用，按 Ctrl+V 粘贴'),
+        () => showJumpToast('已复制追问引用，按 Ctrl+V 粘贴'),
         () => showJumpToast('未能写入输入框，请手动输入 /btw')
       );
     } else {
@@ -1115,7 +1165,7 @@
               <span class="ag-ps-outline-txt" data-ag-ps-tip="${escapeHtml(it.txt)}">${escapeHtml(it.txt.slice(0, 60))}</span>
             </button>
             ${extraBtns(it.idx, it.hasDom)}
-            <button type="button" class="ag-ps-outline-btw" data-btw-idx="${it.idx}" data-ag-ps-tip="作为 /btw 支线提问">btw</button>
+            <button type="button" class="ag-ps-outline-btw" data-btw-idx="${it.idx}" data-ag-ps-tip="针对此轮内容发起支线追问">追问</button>
           </div>`
       )
       .join('');
@@ -1195,6 +1245,10 @@
     closePopoverAnimated(false);
     const open = typeof forceState === 'boolean' ? forceState : drawer.getAttribute('data-open') !== '1';
     if (open) {
+      hideCustomTooltip();
+      try {
+        window.dispatchEvent(new CustomEvent('ag-prism-close-popovers', { detail: { except: 'outline' } }));
+      } catch {}
       cancelOutlineClose(drawer);
       drawer.setAttribute('data-open', '1');
       positionFloatingPanel(drawer, document.getElementById('ag-ps-btn-outline'));
@@ -4025,11 +4079,21 @@
     }
   }
 
+  function broadcastThemeToFrames() {
+    const theme = getCurrentThemeBridgePayload();
+    const wins = collectCandidateFrameWindows();
+    for (let i = 0; i < wins.length; i++) {
+      postBridgeMessage(wins[i], { type: 'theme-sync', theme }, '*');
+    }
+  }
+
   function broadcastBridgePing() {
     const reqId = `ping-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const theme = getCurrentThemeBridgePayload();
     const wins = collectCandidateFrameWindows();
     for (let i = 0; i < wins.length; i++) {
       postBridgeMessage(wins[i], { type: 'bridge-ping', requestId: reqId }, '*');
+      postBridgeMessage(wins[i], { type: 'theme-sync', theme }, '*');
     }
   }
 
@@ -4214,7 +4278,8 @@
         switchTab: wantTab,
         intentId: wantTab ? (pendingIntentId || `init-${Date.now().toString(36)}`) : '',
         focus: Boolean(wantTab),
-        quota: liveNow
+        quota: liveNow,
+        theme: getCurrentThemeBridgePayload()
       }, replyOrigin);
       return;
     }
@@ -4272,6 +4337,9 @@
 
   function emitBus(type) {
     if (disposed) return;
+    if (type === 'theme') {
+      try { broadcastThemeToFrames(); } catch {}
+    }
     const payload = {
       type,
       prefs: Object.assign({}, prefs),
@@ -4296,6 +4364,8 @@
       const busy = isAgentGenerating();
       syncStreamObserver(busy);
       syncMascotDock(busy);
+    } else if (key === 'showWorkbenchBtn' || key === 'outline') {
+      syncToolbarButtons();
     }
     emitBus('prefs');
     const pop = document.getElementById('ag-ps-popover');
@@ -4305,9 +4375,130 @@
     return true;
   }
 
-  function buildBusHelpers() {
+  const EXPERIENCE_PRESETS = [
+    {
+      id: 'minimal',
+      label: '🕊 极简专注',
+      tip: '关闭粒子与桌面伙伴，仅保留静态卡片层次与三色完工提醒，安静无干扰',
+      patch: {
+        performanceMode: 'power-save',
+        composerBorderFx: 'static',
+        borderBeam: false,
+        semanticAfterglow: true,
+        thinkingOrb: false,
+        mascot: false,
+        inkStream: false,
+        opticalFacets: true
+      }
+    },
+    {
+      id: 'recommended',
+      label: '✦ 灵动推荐',
+      tip: '默认最佳平衡：回复时丝滑流光、完工三色微光、思考粒子球与闲置自动休眠',
+      patch: {
+        performanceMode: 'balanced',
+        composerBorderFx: 'smart',
+        borderBeam: true,
+        borderBeamMode: 'busy',
+        semanticAfterglow: true,
+        thinkingOrb: true,
+        mascot: true,
+        inkStream: true,
+        opticalFacets: true
+      }
+    },
+    {
+      id: 'vivid',
+      label: '🌈 炫彩满血',
+      tip: '开启常驻流光环、满血光晕、活泼伙伴漫游与消息气泡主题融合色',
+      patch: {
+        performanceMode: 'vivid',
+        composerBorderFx: 'beam',
+        borderBeam: true,
+        borderBeamMode: 'always',
+        semanticAfterglow: true,
+        thinkingOrb: true,
+        mascot: true,
+        mascotRoam: true,
+        inkStream: true,
+        opticalFacets: true,
+        bubbleTint: true
+      }
+    }
+  ];
+
+  function detectActiveExperiencePreset(p) {
+    for (let i = 0; i < EXPERIENCE_PRESETS.length; i++) {
+      const pr = EXPERIENCE_PRESETS[i];
+      const keys = Object.keys(pr.patch);
+      let match = true;
+      for (let j = 0; j < keys.length; j++) {
+        const k = keys[j];
+        if (k === 'opticalFacets') {
+          if ((p.opticalFacets !== false) !== Boolean(pr.patch[k])) { match = false; break; }
+        } else if (!Object.is(p[k], pr.patch[k])) {
+          match = false;
+          break;
+        }
+      }
+      if (match) return pr.id;
+    }
+    return 'custom';
+  }
+
+  function applyExperiencePreset(presetId) {
+    const pr = EXPERIENCE_PRESETS.find((x) => x.id === presetId);
+    if (!pr) return false;
+    for (const [k, v] of Object.entries(pr.patch)) {
+      const norm = normalizePrefValue(k, v);
+      if (norm !== undefined) prefs[k] = norm;
+    }
+    savePrefs();
+    const busy = isAgentGenerating();
+    syncStreamObserver(busy);
+    syncMascotDock(busy);
+    emitBus('prefs');
+    return true;
+  }
+
+  function openUnderlyingUxSettings() {
+    closePopoverAnimated(true);
+    syncToolbarActiveStates();
+    const clickUxNav = () => {
+      const navBtn = document.getElementById('ag-claude-ux-settings-nav');
+      if (navBtn) {
+        navBtn.click();
+        return true;
+      }
+      return false;
+    };
+    if (clickUxNav()) return;
+    const settingsBtn =
+      document.querySelector('[data-testid="settings-button"]') ||
+      document.querySelector('a[href="/settings"], button[aria-label*="设置"], button[aria-label*="Settings"]');
+    if (settingsBtn && typeof settingsBtn.click === 'function') {
+      settingsBtn.click();
+    }
+    let tries = 0;
+    const poll = () => {
+      if (disposed || clickUxNav() || ++tries > 12) return;
+      setTimeout(poll, 90);
+    };
+    setTimeout(poll, 70);
+  }
+
+  const POPOVER_TABS = [
+    { id: 'appearance', label: '🎨 外观' },
+    { id: 'motion', label: '✨ 动效' },
+    { id: 'nav', label: '🧭 导航' },
+    { id: 'tools', label: '⚡ 效率' }
+  ];
+  let activePopTab = 'appearance';
+
+  function buildBusHelpers(tabOverride) {
     return {
       prefs: Object.assign({}, prefs),
+      activeTab: tabOverride || activePopTab,
       getPrefs: () => Object.assign({}, prefs),
       setPref,
       refreshPopover: () => {
@@ -4460,20 +4651,27 @@
 
   function renderPopoverContent(pop) {
     const darkNow = isCurrentlyDark();
-    const helpers = buildBusHelpers();
-    const extraSectionsHtml = registeredPanelSections
-      .slice()
-      .sort((a, b) => (a.order || 50) - (b.order || 50))
-      .map((sec) => {
-        let body = '';
-        try { body = String(sec.render ? sec.render(helpers.prefs, helpers) : ''); } catch {}
-        if (!body) return '';
-        return `<div class="ag-ps-ext-section" data-ext-sec="${escapeHtml(sec.id)}">
-          ${sec.title ? `<div class="ag-ps-sec-lbl"><span>${escapeHtml(sec.title)}</span></div>` : ''}
-          ${body}
-        </div>`;
-      })
-      .join('');
+    const curTab = POPOVER_TABS.some((t) => t.id === activePopTab) ? activePopTab : 'appearance';
+    const helpers = buildBusHelpers(curTab);
+
+    const extRenderedById = Object.create(null);
+    const customExtList = [];
+    const sortedSecs = registeredPanelSections.slice().sort((a, b) => (a.order || 50) - (b.order || 50));
+    for (let i = 0; i < sortedSecs.length; i++) {
+      const sec = sortedSecs[i];
+      let body = '';
+      try { body = String(sec.render ? sec.render(helpers.prefs, helpers) : '').trim(); } catch {}
+      if (!body) continue;
+      const html = `<div class="ag-ps-ext-section"${sec.title ? ' data-titled="1"' : ''} data-ext-sec="${escapeHtml(sec.id)}">
+        ${sec.title ? `<div class="ag-ps-sec-lbl"><span>${escapeHtml(sec.title)}</span></div>` : ''}
+        ${body}
+      </div>`;
+      extRenderedById[sec.id] = html;
+      if (sec.id !== 'fx' && sec.id !== 'workflow') {
+        customExtList.push(html);
+      }
+    }
+
     const updateBtnText =
       updateState.status === 'checking'
         ? '检查中…'
@@ -4488,7 +4686,6 @@
     const rawAccSum = cachedAccountSummary;
     const sumEmail = String(rawAccSum?.activeEmail || '').trim().toLowerCase();
     const liveEmail = String(liveQ?.accountEmail || '').trim().toLowerCase();
-    // Ignore stale workbench summary if live quota cache proves a different account is currently signed in
     const accSum = (rawAccSum && sumEmail && liveEmail && sumEmail !== liveEmail) ? null : rawAccSum;
     const effectiveEmail = (accSum ? sumEmail : '') || liveEmail;
     const accTitle = accSum?.activeAlias
@@ -4513,12 +4710,148 @@
         ? quotaChips.join('')
         : `<span class="ag-ps-toggle-sub">${accSum?.accountCount ? `已捕获 ${accSum.accountCount} 个账号` : '打开工作台同步主备账号与额度'}</span>`);
 
+    const catTabsHtml = POPOVER_TABS.map(
+      (t) =>
+        `<button type="button" class="ag-ps-cat-tab" role="tab" aria-selected="${t.id === curTab ? 'true' : 'false'}" data-ps-tab="${t.id}" data-selected="${t.id === curTab ? '1' : '0'}">${t.label}</button>`
+    ).join('');
+
+    let tabBodyHtml = '';
+    if (curTab === 'appearance') {
+      tabBodyHtml = `
+        <div class="ag-ps-sec-lbl" style="margin-top:4px"><span>浅色配色</span><span class="ag-ps-sec-tag">${!darkNow ? '当前生效' : '浅色首选'}</span></div>
+        <div class="ag-ps-palette-row">
+          <button type="button" class="ag-ps-pal-btn" data-set-light="default" data-selected="${prefs.lightPalette === 'default' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#FFFFFF 52%,#2F75C3 52%)"></span>纯白默认</button>
+          <button type="button" class="ag-ps-pal-btn" data-set-light="crystal" data-selected="${prefs.lightPalette === 'crystal' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#E8EEF6 52%,#2563EB 52%)"></span>白昼冷晶</button>
+          <button type="button" class="ag-ps-pal-btn" data-set-light="alabaster" data-selected="${prefs.lightPalette === 'alabaster' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#F1ECE2 52%,#B45309 52%)"></span>暖白画册</button>
+          <button type="button" class="ag-ps-pal-btn" data-set-light="sage" data-selected="${prefs.lightPalette === 'sage' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#E6EFE9 52%,#15803D 52%)"></span>松雾青岚</button>
+        </div>
+
+        <div class="ag-ps-sec-lbl"><span>深色配色</span><span class="ag-ps-sec-tag">${darkNow ? '当前生效' : '深色首选'}</span></div>
+        <div class="ag-ps-palette-row">
+          <button type="button" class="ag-ps-pal-btn" data-set-dark="default" data-selected="${prefs.darkPalette === 'default' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#212120 52%,#60A5FA 52%)"></span>暖炭默认</button>
+          <button type="button" class="ag-ps-pal-btn" data-set-dark="obsidian" data-selected="${prefs.darkPalette === 'obsidian' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#09090B 52%,#3B82F6 52%)"></span>深空黑曜</button>
+          <button type="button" class="ag-ps-pal-btn" data-set-dark="basalt" data-selected="${prefs.darkPalette === 'basalt' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#141312 52%,#D97706 52%)"></span>暖炭玄岩</button>
+          <button type="button" class="ag-ps-pal-btn" data-set-dark="marine" data-selected="${prefs.darkPalette === 'marine' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#0B1220 52%,#38BDF8 52%)"></span>深海墨蓝</button>
+        </div>
+
+        <div class="ag-ps-sec-lbl"><span>质感与排版</span></div>
+        ${extRenderedById.fx || ''}
+      `;
+    } else if (curTab === 'motion') {
+      const mascotSectionHtml = `
+        <div class="ag-ps-toggle-list">
+          <div class="ag-ps-toggle-row">
+            <div class="ag-ps-toggle-label"><span>输入框像素小伙伴</span><span class="ag-ps-toggle-sub">空闲时自动安静休眠</span></div>
+            <button type="button" class="ag-ps-switch" data-toggle="mascot" data-on="${prefs.mascot ? '1' : '0'}"></button>
+          </div>
+          ${
+            prefs.mascot
+              ? `<div class="ag-ps-subpanel">
+                  <div class="ag-ps-toggle-row">
+                    <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">数量${prefs.mascotCountMode === 'agents' ? `（1 主控 + ${getLiveSubagents().length} 活跃）` : ''}</span></div>
+                    <div class="ag-ps-seg-group">
+                      <button type="button" class="ag-ps-seg-btn" data-mascot-count-mode="fixed" data-selected="${prefs.mascotCountMode === 'fixed' ? '1' : '0'}">固定</button>
+                      <button type="button" class="ag-ps-seg-btn" data-mascot-count-mode="agents" data-selected="${prefs.mascotCountMode === 'agents' ? '1' : '0'}">跟随 Agent</button>
+                    </div>
+                  </div>
+                  ${
+                    prefs.mascotCountMode === 'fixed'
+                      ? `<div class="ag-ps-toggle-row" style="align-items:flex-start;flex-direction:column;gap:5px">
+                          <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">样式预设（Shift+点精灵自由变装 · Alt+点集结）</span></div>
+                          <div class="ag-ps-seg-group ag-ps-mascot-style-grid">
+                            <button type="button" class="ag-ps-seg-btn" data-mascot-style="trio" data-selected="${prefs.mascotStyle === 'trio' ? '1' : '0'}">三萌</button>
+                            <button type="button" class="ag-ps-seg-btn" data-mascot-style="zoo" data-selected="${prefs.mascotStyle === 'zoo' ? '1' : '0'}">萌宠队</button>
+                            <button type="button" class="ag-ps-seg-btn" data-mascot-style="cyber" data-selected="${prefs.mascotStyle === 'cyber' ? '1' : '0'}">极客队</button>
+                            <button type="button" class="ag-ps-seg-btn" data-mascot-style="crab" data-selected="${prefs.mascotStyle === 'crab' ? '1' : '0'}">橘蟹</button>
+                            <button type="button" class="ag-ps-seg-btn" data-mascot-style="cat" data-selected="${prefs.mascotStyle === 'cat' ? '1' : '0'}">紫猫</button>
+                            <button type="button" class="ag-ps-seg-btn" data-mascot-style="penguin" data-selected="${prefs.mascotStyle === 'penguin' ? '1' : '0'}">企鹅</button>
+                            <button type="button" class="ag-ps-seg-btn" data-mascot-style="fox" data-selected="${prefs.mascotStyle === 'fox' ? '1' : '0'}">赤狐</button>
+                          </div>
+                        </div>`
+                      : `<div class="ag-ps-toggle-row">
+                          <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">保底数量</span></div>
+                          <div class="ag-ps-seg-group">
+                            <button type="button" class="ag-ps-seg-btn" data-mascot-min-count="1" data-selected="${clampMascotMinCount(prefs.mascotMinCount) === 1 ? '1' : '0'}">1只</button>
+                            <button type="button" class="ag-ps-seg-btn" data-mascot-min-count="2" data-selected="${clampMascotMinCount(prefs.mascotMinCount) === 2 ? '1' : '0'}">2只</button>
+                            <button type="button" class="ag-ps-seg-btn" data-mascot-min-count="3" data-selected="${clampMascotMinCount(prefs.mascotMinCount) === 3 ? '1' : '0'}">3只</button>
+                          </div>
+                        </div>`
+                  }
+                  <div class="ag-ps-toggle-row">
+                    <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">工作态漫游跑跳</span></div>
+                    <button type="button" class="ag-ps-switch" data-toggle="mascotRoam" data-on="${prefs.mascotRoam ? '1' : '0'}"></button>
+                  </div>
+                  <div class="ag-ps-toggle-row">
+                    <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">性格</span></div>
+                    <div class="ag-ps-seg-group">
+                      <button type="button" class="ag-ps-seg-btn" data-mascot-vibe="calm" data-selected="${prefs.mascotVibe === 'calm' ? '1' : '0'}">温顺</button>
+                      <button type="button" class="ag-ps-seg-btn" data-mascot-vibe="lively" data-selected="${prefs.mascotVibe !== 'calm' ? '1' : '0'}">活泼</button>
+                    </div>
+                  </div>
+                  <div class="ag-ps-toggle-row" title="全局生效：所有对话与账号共用同一大小，调节一次处处生效">
+                    <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">全局大小</span></div>
+                    <div class="ag-ps-range-wrap">
+                      <input type="range" class="ag-ps-range" data-mascot-size="1" min="${MASCOT_SIZE_MIN}" max="${MASCOT_SIZE_MAX}" step="2" value="${clampMascotSize(prefs.mascotSize)}" aria-label="像素伙伴全局大小" />
+                      <span class="ag-ps-range-val" data-mascot-size-val="1">${clampMascotSize(prefs.mascotSize)}px</span>
+                      <button type="button" class="ag-ps-mini-reset" data-mascot-size-reset="1" ${clampMascotSize(prefs.mascotSize) === MASCOT_SIZE_DEFAULT ? 'disabled' : ''}>复位</button>
+                    </div>
+                  </div>
+                </div>`
+              : ''
+          }
+          <div class="ag-ps-toggle-row">
+            <div class="ag-ps-toggle-label"><span>柔和流式文字淡入</span><span class="ag-ps-toggle-sub">生成文字自然浮现 · 打字零干扰</span></div>
+            <button type="button" class="ag-ps-switch" data-toggle="inkStream" data-on="${prefs.inkStream ? '1' : '0'}"></button>
+          </div>
+        </div>
+      `;
+      tabBodyHtml = `${extRenderedById.fx || ''}${mascotSectionHtml}`;
+    } else if (curTab === 'nav') {
+      const coreNavHtml = `
+        <div class="ag-ps-toggle-list">
+          <div class="ag-ps-toggle-row">
+            <div class="ag-ps-toggle-label"><span>会话大纲 &amp; 跳轮抽屉</span><span class="ag-ps-toggle-sub">Alt+↑/↓ 跳轮 · Alt+O 展开大纲</span></div>
+            <button type="button" class="ag-ps-switch" data-toggle="outline" data-on="${prefs.outline ? '1' : '0'}"></button>
+          </div>
+          <div class="ag-ps-toggle-row">
+            <div class="ag-ps-toggle-label"><span>顶栏「工作台」快捷入口</span><span class="ag-ps-toggle-sub">纯前端增强模式可隐藏顶栏按钮</span></div>
+            <button type="button" class="ag-ps-switch" data-toggle="showWorkbenchBtn" data-on="${prefs.showWorkbenchBtn !== false ? '1' : '0'}"></button>
+          </div>
+          <div class="ag-ps-toggle-row">
+            <div class="ag-ps-toggle-label"><span>思考过程实时中译</span><span class="ag-ps-toggle-sub">经 Google 翻译 · 沉浸可看原文</span></div>
+            <div class="ag-ps-seg-group">
+              <button type="button" class="ag-ps-seg-btn" data-thought-mode="off" data-selected="${prefs.thoughtMode === 'off' ? '1' : '0'}">关</button>
+              <button type="button" class="ag-ps-seg-btn" data-thought-mode="bilingual" data-selected="${prefs.thoughtMode === 'bilingual' ? '1' : '0'}">双语</button>
+              <button type="button" class="ag-ps-seg-btn" data-thought-mode="immersive" data-selected="${prefs.thoughtMode === 'immersive' ? '1' : '0'}">沉浸</button>
+            </div>
+          </div>
+        </div>
+      `;
+      tabBodyHtml = `${extRenderedById.fx || ''}${coreNavHtml}${extRenderedById.workflow || ''}`;
+    } else {
+      const coreToolsHtml = `
+        <div class="ag-ps-toggle-list">
+          <div class="ag-ps-toggle-row">
+            <div class="ag-ps-toggle-label"><span>名著换算 &amp; 12 周热力图</span><span class="ag-ps-toggle-sub">右侧「概览 → 用量统计」底部 <a href="#" data-jump-usage="1" style="color:var(--primary,#2F75C3);text-decoration:none;margin-left:4px">定位 ↗</a></span></div>
+            <button type="button" class="ag-ps-switch" data-toggle="usageExtra" data-on="${prefs.usageExtra ? '1' : '0'}"></button>
+          </div>
+        </div>
+      `;
+      tabBodyHtml = `${extRenderedById.fx || ''}${coreToolsHtml}${extRenderedById.workflow || ''}${customExtList.join('')}`;
+    }
+
+    const curPreset = detectActiveExperiencePreset(helpers.prefs);
+    const presetButtonsHtml = EXPERIENCE_PRESETS.map(
+      (pr) =>
+        `<button type="button" class="ag-ps-preset-btn" data-ps-preset="${pr.id}" data-selected="${curPreset === pr.id ? '1' : '0'}" data-ag-ps-tip="${escapeHtml(pr.tip)}">${pr.label}</button>`
+    ).join('');
+
     pop.innerHTML = `
       <div class="ag-ps-pop-hdr">
-        <span class="ag-ps-pop-title">✦ 棱镜扩展套件</span>
-        <span style="display:inline-flex;align-items:center;gap:6px;">
-          ${prefs.showWorkbenchBtn !== false ? '<button type="button" class="ag-ps-mini-reset" data-open-workbench="1" title="快捷打开右侧 Prism 工作台（文件 / 历史检索 / 账号接力）">工作台 ↗</button>' : ''}
-          <span class="ag-ps-pop-meta">${darkNow ? '深色模式' : '浅色模式'} · v${SUITE_VERSION}</span>
+        <span class="ag-ps-pop-title">✦ 棱镜控制中心</span>
+        <span style="display:inline-flex;align-items:center;gap:5px;">
+          ${prefs.showWorkbenchBtn !== false ? '<button type="button" class="ag-ps-mini-reset" data-open-workbench="1" title="打开右侧 Prism 工作台（文件 / 历史检索 / 账号接力）">工作台 ↗</button>' : ''}
+          <button type="button" class="ag-ps-mini-reset" data-open-ux-settings="1" title="前往「设置 → 界面增强」管理底层布局模块">全部设置 ⚙</button>
         </span>
       </div>
 
@@ -4533,111 +4866,13 @@
         <button type="button" class="ag-ps-account-cta" data-open-workbench-tab="accounts" title="打开 Prism 工作台并直达「账号接力」页签">⚡ 切号</button>
       </div>
 
-      <div class="ag-ps-sec-lbl"><span>浅色配色</span><span class="ag-ps-sec-tag">${!darkNow ? '当前生效' : '浅色首选'}</span></div>
-      <div class="ag-ps-palette-row">
-        <button type="button" class="ag-ps-pal-btn" data-set-light="default" data-selected="${prefs.lightPalette === 'default' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#FFFFFF 52%,#2F75C3 52%)"></span>纯白默认</button>
-        <button type="button" class="ag-ps-pal-btn" data-set-light="crystal" data-selected="${prefs.lightPalette === 'crystal' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#E8EEF6 52%,#2563EB 52%)"></span>白昼冷晶</button>
-        <button type="button" class="ag-ps-pal-btn" data-set-light="alabaster" data-selected="${prefs.lightPalette === 'alabaster' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#F1ECE2 52%,#B45309 52%)"></span>暖白画册</button>
-        <button type="button" class="ag-ps-pal-btn" data-set-light="sage" data-selected="${prefs.lightPalette === 'sage' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#E6EFE9 52%,#15803D 52%)"></span>松雾青岚</button>
-      </div>
+      <div class="ag-ps-preset-bar" role="group" aria-label="一键体验模式">${presetButtonsHtml}</div>
 
-      <div class="ag-ps-sec-lbl"><span>深色配色</span><span class="ag-ps-sec-tag">${darkNow ? '当前生效' : '深色首选'}</span></div>
-      <div class="ag-ps-palette-row">
-        <button type="button" class="ag-ps-pal-btn" data-set-dark="default" data-selected="${prefs.darkPalette === 'default' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#212120 52%,#60A5FA 52%)"></span>暖炭默认</button>
-        <button type="button" class="ag-ps-pal-btn" data-set-dark="obsidian" data-selected="${prefs.darkPalette === 'obsidian' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#09090B 52%,#3B82F6 52%)"></span>深空黑曜</button>
-        <button type="button" class="ag-ps-pal-btn" data-set-dark="basalt" data-selected="${prefs.darkPalette === 'basalt' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#141312 52%,#D97706 52%)"></span>暖炭玄岩</button>
-        <button type="button" class="ag-ps-pal-btn" data-set-dark="marine" data-selected="${prefs.darkPalette === 'marine' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#0B1220 52%,#38BDF8 52%)"></span>深海墨蓝</button>
-      </div>
+      <div class="ag-ps-cat-tabs" role="tablist" aria-label="棱镜功能分类">${catTabsHtml}</div>
+      <div class="ag-ps-tab-body">${tabBodyHtml}</div>
 
-      <div class="ag-ps-sec-lbl"><span>增强功能</span></div>
-      <div class="ag-ps-toggle-list">
-        <div class="ag-ps-toggle-row">
-          <div class="ag-ps-toggle-label"><span>顶栏「工作台」快捷入口</span><span class="ag-ps-toggle-sub">纯前端增强模式可关闭隐藏顶栏按钮</span></div>
-          <button type="button" class="ag-ps-switch" data-toggle="showWorkbenchBtn" data-on="${prefs.showWorkbenchBtn !== false ? '1' : '0'}"></button>
-        </div>
-        <div class="ag-ps-toggle-row">
-          <div class="ag-ps-toggle-label"><span>会话大纲 &amp; 跳轮</span><span class="ag-ps-toggle-sub">Alt+↑/↓ 跳轮 · Alt+O 大纲</span></div>
-          <button type="button" class="ag-ps-switch" data-toggle="outline" data-on="${prefs.outline ? '1' : '0'}"></button>
-        </div>
-        <div class="ag-ps-toggle-row">
-          <div class="ag-ps-toggle-label"><span>名著换算 &amp; 12 周热力图</span><span class="ag-ps-toggle-sub">右侧「概览 → 用量统计」底部 <a href="#" data-jump-usage="1" style="color:var(--primary,#2F75C3);text-decoration:none;margin-left:4px">定位 ↗</a></span></div>
-          <button type="button" class="ag-ps-switch" data-toggle="usageExtra" data-on="${prefs.usageExtra ? '1' : '0'}"></button>
-        </div>
-        <div class="ag-ps-toggle-row">
-          <div class="ag-ps-toggle-label"><span>五级水墨流式淡入</span><span class="ag-ps-toggle-sub">仅生成态生效 · 打字零开销</span></div>
-          <button type="button" class="ag-ps-switch" data-toggle="inkStream" data-on="${prefs.inkStream ? '1' : '0'}"></button>
-        </div>
-        <div class="ag-ps-toggle-row">
-          <div class="ag-ps-toggle-label"><span>输入框像素小伙伴</span><span class="ag-ps-toggle-sub">空闲 5s 自动 0fps 休眠</span></div>
-          <button type="button" class="ag-ps-switch" data-toggle="mascot" data-on="${prefs.mascot ? '1' : '0'}"></button>
-        </div>
-        ${
-          prefs.mascot
-            ? `<div class="ag-ps-subpanel">
-                <div class="ag-ps-toggle-row">
-                  <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">数量${prefs.mascotCountMode === 'agents' ? `（1 主控 + ${getLiveSubagents().length} 活跃）` : ''}</span></div>
-                  <div class="ag-ps-seg-group">
-                    <button type="button" class="ag-ps-seg-btn" data-mascot-count-mode="fixed" data-selected="${prefs.mascotCountMode === 'fixed' ? '1' : '0'}">固定</button>
-                    <button type="button" class="ag-ps-seg-btn" data-mascot-count-mode="agents" data-selected="${prefs.mascotCountMode === 'agents' ? '1' : '0'}">跟随 Agent</button>
-                  </div>
-                </div>
-                ${
-                  prefs.mascotCountMode === 'fixed'
-                    ? `<div class="ag-ps-toggle-row" style="align-items:flex-start;flex-direction:column;gap:5px">
-                        <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">样式预设（Shift+点精灵自由变装 · Alt+点集结）</span></div>
-                        <div class="ag-ps-seg-group ag-ps-mascot-style-grid">
-                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="trio" data-selected="${prefs.mascotStyle === 'trio' ? '1' : '0'}">三萌</button>
-                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="zoo" data-selected="${prefs.mascotStyle === 'zoo' ? '1' : '0'}">萌宠队</button>
-                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="cyber" data-selected="${prefs.mascotStyle === 'cyber' ? '1' : '0'}">极客队</button>
-                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="crab" data-selected="${prefs.mascotStyle === 'crab' ? '1' : '0'}">橘蟹</button>
-                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="cat" data-selected="${prefs.mascotStyle === 'cat' ? '1' : '0'}">紫猫</button>
-                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="penguin" data-selected="${prefs.mascotStyle === 'penguin' ? '1' : '0'}">企鹅</button>
-                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="fox" data-selected="${prefs.mascotStyle === 'fox' ? '1' : '0'}">赤狐</button>
-                        </div>
-                      </div>`
-                    : `<div class="ag-ps-toggle-row">
-                        <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">保底数量</span></div>
-                        <div class="ag-ps-seg-group">
-                          <button type="button" class="ag-ps-seg-btn" data-mascot-min-count="1" data-selected="${clampMascotMinCount(prefs.mascotMinCount) === 1 ? '1' : '0'}">1只</button>
-                          <button type="button" class="ag-ps-seg-btn" data-mascot-min-count="2" data-selected="${clampMascotMinCount(prefs.mascotMinCount) === 2 ? '1' : '0'}">2只</button>
-                          <button type="button" class="ag-ps-seg-btn" data-mascot-min-count="3" data-selected="${clampMascotMinCount(prefs.mascotMinCount) === 3 ? '1' : '0'}">3只</button>
-                        </div>
-                      </div>`
-                }
-                <div class="ag-ps-toggle-row">
-                  <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">工作态漫游跑跳</span></div>
-                  <button type="button" class="ag-ps-switch" data-toggle="mascotRoam" data-on="${prefs.mascotRoam ? '1' : '0'}"></button>
-                </div>
-                <div class="ag-ps-toggle-row">
-                  <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">性格</span></div>
-                  <div class="ag-ps-seg-group">
-                    <button type="button" class="ag-ps-seg-btn" data-mascot-vibe="calm" data-selected="${prefs.mascotVibe === 'calm' ? '1' : '0'}">温顺</button>
-                    <button type="button" class="ag-ps-seg-btn" data-mascot-vibe="lively" data-selected="${prefs.mascotVibe !== 'calm' ? '1' : '0'}">活泼</button>
-                  </div>
-                </div>
-                <div class="ag-ps-toggle-row" title="全局生效：所有对话与账号共用同一大小，调节一次处处生效">
-                  <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">全局大小</span></div>
-                  <div class="ag-ps-range-wrap">
-                    <input type="range" class="ag-ps-range" data-mascot-size="1" min="${MASCOT_SIZE_MIN}" max="${MASCOT_SIZE_MAX}" step="2" value="${clampMascotSize(prefs.mascotSize)}" aria-label="像素伙伴全局大小" />
-                    <span class="ag-ps-range-val" data-mascot-size-val="1">${clampMascotSize(prefs.mascotSize)}px</span>
-                    <button type="button" class="ag-ps-mini-reset" data-mascot-size-reset="1" ${clampMascotSize(prefs.mascotSize) === MASCOT_SIZE_DEFAULT ? 'disabled' : ''}>复位</button>
-                  </div>
-                </div>
-              </div>`
-            : ''
-        }
-        <div class="ag-ps-toggle-row">
-          <div class="ag-ps-toggle-label"><span>思考过程实时中译</span><span class="ag-ps-toggle-sub">经 Google 翻译 · 沉浸可看原文</span></div>
-          <div class="ag-ps-seg-group">
-            <button type="button" class="ag-ps-seg-btn" data-thought-mode="off" data-selected="${prefs.thoughtMode === 'off' ? '1' : '0'}">关</button>
-            <button type="button" class="ag-ps-seg-btn" data-thought-mode="bilingual" data-selected="${prefs.thoughtMode === 'bilingual' ? '1' : '0'}">双语</button>
-            <button type="button" class="ag-ps-seg-btn" data-thought-mode="immersive" data-selected="${prefs.thoughtMode === 'immersive' ? '1' : '0'}">沉浸</button>
-          </div>
-        </div>
-      </div>
-      ${extraSectionsHtml}
       <div class="ag-ps-about-bar">
-        <span class="ag-ps-about-ver">Prism Suite v${SUITE_VERSION}</span>
+        <span class="ag-ps-about-ver">${darkNow ? '深色' : '浅色'} · Prism v${SUITE_VERSION}${curPreset === 'custom' ? ' · 已自定义' : ''}</span>
         ${
           updateState.status === 'available'
             ? `<a class="ag-ps-update-pill" data-update-link="1" href="${escapeHtml(updateState.url)}" target="_blank" rel="noopener noreferrer">${updateBtnText}</a>`
@@ -4655,6 +4890,34 @@
     pop.setAttribute('data-ag-i18n-ignore', '1');
     pop.addEventListener('click', (e) => {
       e.stopPropagation();
+      const catTabBtn = e.target.closest('[data-ps-tab]');
+      if (catTabBtn) {
+        const nextTab = catTabBtn.getAttribute('data-ps-tab');
+        if (POPOVER_TABS.some((t) => t.id === nextTab) && nextTab !== activePopTab) {
+          activePopTab = nextTab;
+          hideCustomTooltip();
+          renderPopoverContent(pop);
+          pop.scrollTop = 0;
+        }
+        return;
+      }
+      const presetBtn = e.target.closest('[data-ps-preset]');
+      if (presetBtn) {
+        const pid = presetBtn.getAttribute('data-ps-preset');
+        if (applyExperiencePreset(pid)) {
+          hideCustomTooltip();
+          renderPopoverContent(pop);
+          const prObj = EXPERIENCE_PRESETS.find((x) => x.id === pid);
+          if (prObj) showJumpToast(`已切换体验模式：${prObj.label}`);
+        }
+        return;
+      }
+      const uxSettingsBtn = e.target.closest('[data-open-ux-settings]');
+      if (uxSettingsBtn) {
+        e.preventDefault();
+        openUnderlyingUxSettings();
+        return;
+      }
       const chkUpd = e.target.closest('[data-check-update]');
       if (chkUpd) {
         e.preventDefault();
@@ -4876,6 +5139,10 @@
     closeOutlineAnimated(false);
     const open = typeof forceState === 'boolean' ? forceState : pop.getAttribute('data-open') !== '1';
     if (open) {
+      hideCustomTooltip();
+      try {
+        window.dispatchEvent(new CustomEvent('ag-prism-close-popovers', { detail: { except: 'suite' } }));
+      } catch {}
       cancelPopoverClose(pop);
       renderPopoverContent(pop);
       pop.setAttribute('data-open', '1');
@@ -4886,6 +5153,33 @@
     syncToolbarActiveStates();
     notifyOverlayChange();
   }
+
+  function onPeerPopoverCloseSignal(e) {
+    if (disposed) return;
+    const ex = e && e.detail && e.detail.except ? String(e.detail.except) : '';
+    let changed = false;
+    if (ex !== 'suite') {
+      const pop = document.getElementById('ag-ps-popover');
+      if (pop && pop.getAttribute('data-open') === '1') {
+        closePopoverAnimated(false);
+        changed = true;
+      }
+    }
+    if (ex !== 'outline') {
+      const drawer = document.getElementById('ag-ps-outline');
+      if (drawer && drawer.getAttribute('data-open') === '1') {
+        closeOutlineAnimated(false);
+        changed = true;
+      }
+    }
+    hideCustomTooltip();
+    if (changed) {
+      syncToolbarActiveStates();
+      notifyOverlayChange();
+    }
+  }
+  window.addEventListener('ag-prism-close-popovers', onPeerPopoverCloseSignal);
+  onCleanup(() => window.removeEventListener('ag-prism-close-popovers', onPeerPopoverCloseSignal));
 
   function syncToolbarActiveStates() {
     const popOpen = document.getElementById('ag-ps-popover')?.getAttribute('data-open') === '1';

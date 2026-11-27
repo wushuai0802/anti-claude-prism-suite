@@ -1528,11 +1528,11 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.9.1');
-    assert.equal(pluginJson.version, '0.9.1');
+    assert.equal(pkgJson.version, '0.9.2');
+    assert.equal(pluginJson.version, '0.9.2');
     assert.ok(Array.isArray(pluginJson.suggested_prompts) && pluginJson.suggested_prompts.length <= 3);
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
-    assert.match(jsSrc, /SUITE_VERSION = '0\.9\.1'/);
+    assert.match(jsSrc, /SUITE_VERSION = '0\.9\.2'/);
     assert.match(jsSrc, /COOKIE_PREFS_KEY = 'ag_prism_prefs_v1'/);
     assert.match(jsSrc, /getActiveInputBox/);
     assert.match(jsSrc, /getInputBoxEl: getActiveInputBox/);
@@ -1560,7 +1560,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(wfSrc, /composerFileDrop/);
     assert.match(jsSrc, /ag_claude_ux_quota_cache_v1/);
     assert.match(jsSrc, /readAntiClaudeQuotaCache/);
-    assert.match(inlineHtml, /version: '0\.9\.1'/);
+    assert.match(inlineHtml, /version: '0\.9\.2'/);
     assert.match(jsSrc, /__agPrismBridge/);
     assert.match(jsSrc, /bridge-ping/);
     assert.match(jsSrc, /bridge-pong/);
@@ -1592,7 +1592,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(csSrc, /EnsureDebugPortOnUserShortcuts/);
     assert.match(csSrc, /InstallKernel/);
     assert.match(csSrc, /prism-suite-00-prefs\.js/);
-    assert.match(csSrc, /v0\.9\.1/);
+    assert.match(csSrc, /v0\.9\.2/);
     const installPluginSlice = csSrc.slice(csSrc.indexOf('public static int InstallPlugin('), csSrc.indexOf('private static bool IsReparsePoint('));
     assert.doesNotMatch(installPluginSlice, /Directory\.Delete\(targetDir,\s*true\)/, 'InstallPlugin must update in-place without deleting prism-files root');
   } finally {
@@ -2802,7 +2802,7 @@ test('v0.8.0 prism-cua end-to-end broker/MCP roundtrip, batch_actions, safety/CA
     // 1. Strict 3-tool model visibility & default-disabled plugin manifest
     const cuaPluginJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'plugin-cua', 'plugin.json'), 'utf8'));
     assert.equal(cuaPluginJson.name, 'prism-cua');
-    assert.equal(cuaPluginJson.version, '0.9.1');
+    assert.equal(cuaPluginJson.version, '0.9.2');
     assert.equal(cuaPluginJson.disabled, true, 'prism-cua must ship disabled by default');
     assert.deepEqual(CUA_TOOLS.map((t) => t.name), ['cua_status', 'cua_observe', 'cua_act']);
 
@@ -3042,7 +3042,7 @@ test('v0.8.1 visual virtual cursor overlay, 4-tier non-intrusive mouse routing (
     assert.match(winCuaCs, /NativeMethods\.SetCursorPos\(origCursor\.X,\s*origCursor\.Y\)/);
 
     // 2. Browser Shadow DOM virtual cursor & Workbench toggle UI invariants
-    assert.match(contentAgentJs, /AGENT_VERSION = '0\.9\.1'/);
+    assert.match(contentAgentJs, /AGENT_VERSION = '0\.9\.2'/);
     assert.match(contentAgentJs, /function pulseVirtualCursor\(/);
     assert.match(contentAgentJs, /__prism_cua_vcursor_host/);
     assert.match(contentAgentJs, /delivery:\s*'dom_virtual'/);
@@ -4135,6 +4135,57 @@ test('v0.9.0 mini-dom runtime execution, [MS-SHLLINK] binary codec, AV-hygiene g
     assert.equal(jumpedTurnIdx, 1, 'Clicking unmounted dot must invoke hostNav.jumpTo(1)');
     assert.equal(railEl.children[1].getAttribute('aria-current'), 'true');
 
+    // v0.9.2: Opening bottom-left #ag-claude-quota-popover must NEVER push right #ag-ps-outline-rail into chat center
+    const rightBeforeQuota = railEl.style.right;
+    const mockQuotaPop = new MiniElement('div');
+    mockQuotaPop.setAttribute('id', 'ag-claude-quota-popover');
+    mockQuotaPop.setAttribute('data-open', 'true');
+    mockQuotaPop._rect = { left: 380, top: 360, right: 720, bottom: 640, width: 340, height: 280 };
+    bodyEl.appendChild(mockQuotaPop);
+    windowMock.dispatchEvent(new windowMock.CustomEvent('ag-prism-overlay-change'));
+    assert.equal(railEl.style.right, rightBeforeQuota, 'Bottom-left quota popover must not displace right outline rail');
+
+    // v0.9.2: When host native left navigator [data-testid="conversation-navigator"] is present, smart mode deduplicates right rail & enhances left hover preview
+    const hostLeftNav = new MiniElement('nav');
+    hostLeftNav.setAttribute('data-testid', 'conversation-navigator');
+    hostLeftNav._rect = { left: 224, top: 240, right: 238, bottom: 560, width: 14, height: 320 };
+    const hostTurnBtn = new MiniElement('button');
+    hostTurnBtn.setAttribute('data-testid', 'conversation-navigator-turn');
+    hostTurnBtn.setAttribute('data-turn-index', '4');
+    hostTurnBtn._rect = { left: 226, top: 520, right: 236, bottom: 536, width: 10, height: 16 };
+    hostLeftNav.appendChild(hostTurnBtn);
+    bodyEl.appendChild(hostLeftNav);
+    bus.setPref('outlineRailMode', 'right');
+    assert.ok(documentMock.getElementById('ag-ps-outline-rail'), 'Forced right mode renders right rail');
+    bus.setPref('outlineRailMode', 'smart');
+    assert.equal(documentMock.getElementById('ag-ps-outline-rail'), null, 'Smart mode removes duplicate right rail when host left navigator is visible');
+    hostLeftNav.dispatchEvent({ type: 'pointerover', target: hostTurnBtn });
+    const leftTip = documentMock.getElementById('ag-ps-rail-tip');
+    assert.ok(leftTip && leftTip.getAttribute('data-show') === '1', 'Hovering host left navigator dot shows Prism prompt preview tooltip');
+    assert.equal(leftTip.getAttribute('data-side'), 'left');
+
+    // v0.9.2: GPU compositor border beam (.ag-ps-beam-ring) & 4-tab popover navigation
+    bus.setPref('performanceMode', 'balanced');
+    bus.setPref('composerBorderFx', 'beam');
+    const beamRing = composerEl.querySelector('.ag-ps-beam-ring');
+    assert.ok(beamRing, 'GPU compositor .ag-ps-beam-ring must mount without main-thread Canvas');
+    assert.equal(beamRing.getAttribute('data-running'), '1');
+
+    const titleToolbar = new MiniElement('div');
+    titleToolbar.setAttribute('data-testid', 'pane-titlebar-toolbar');
+    bodyEl.appendChild(titleToolbar);
+    bus.setPref('showWorkbenchBtn', false);
+    bus.setPref('showWorkbenchBtn', true);
+    const suiteBtn = documentMock.getElementById('ag-ps-btn-suite');
+    assert.ok(suiteBtn, 'Titlebar ✦ 棱镜 button must mount');
+    suiteBtn.click();
+    const popEl = documentMock.getElementById('ag-ps-popover');
+    assert.ok(popEl && popEl.getAttribute('data-open') === '1', 'Popover opens on click');
+    assert.match(popEl.innerHTML, /data-ps-tab="appearance"/);
+    assert.match(popEl.innerHTML, /data-ps-tab="motion"/);
+    assert.match(popEl.innerHTML, /data-ps-tab="nav"/);
+    assert.match(popEl.innerHTML, /data-ps-tab="tools"/);
+
     // Double dispose() must leave zero orphaned DOM nodes, zero root attributes, and zero active intervals
     windowMock.__agPrismSuiteDispose();
     windowMock.__agPrismSuiteDispose();
@@ -4290,7 +4341,7 @@ test('v0.9.0 mini-dom runtime execution, [MS-SHLLINK] binary codec, AV-hygiene g
     agentSandbox.window.document = agentSandbox.document;
     vm.runInContext(contentAgentSrc, agentSandbox);
     const cuaAgent = agentSandbox.window.__prismCuaContentAgent;
-    assert.ok(cuaAgent && cuaAgent.version === '0.9.1');
+    assert.ok(cuaAgent && cuaAgent.version === '0.9.2');
 
     const pasteAttempt = await cuaAgent.act({ op: 'press_key', key: 'Ctrl+V' });
     assert.equal(pasteAttempt.ok, false);
@@ -4423,4 +4474,56 @@ test('v0.9.1 multi-size optical prism .ico binary integrity, /win32icon embeddin
   assert.match(installerCs, /SetProcessDpiAwarenessContext/);
   assert.match(installerCs, /SyncResponsiveWrapWidths/);
   assert.match(installerCs, /PaintPrismEmblem/);
+});
+
+test('v0.9.2 4-category popover tabs, GPU compositor border beam, 5x-ID semantic afterglow, smart left-rail deduplication, and unified floating card coordination', async () => {
+  const { sanitizePrismUiPrefs } = await import(
+    pathToFileURL(path.join(REPO, 'plugin', 'server', 'account-manager.mjs')).href
+  );
+  const prefsOut = sanitizePrismUiPrefs({
+    composerBorderFx: 'smart',
+    outlineRailMode: 'smart'
+  });
+  assert.equal(prefsOut.composerBorderFx, 'smart');
+  assert.equal(prefsOut.outlineRailMode, 'smart');
+  assert.equal(sanitizePrismUiPrefs({ composerBorderFx: 'invalid' }), null);
+
+  const fxCss = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite-fx.css'), 'utf8');
+  const fxJs = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite-fx.js'), 'utf8');
+  const suiteJs = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite.js'), 'utf8');
+  const customJs = fs.readFileSync(path.join(REPO, 'vendor', 'anti-claude', 'user', 'custom.js'), 'utf8');
+  const customCss = fs.readFileSync(path.join(REPO, 'vendor', 'anti-claude', 'user', 'custom.css'), 'utf8');
+  const runtimeJs = fs.readFileSync(path.join(REPO, 'vendor', 'anti-claude', 'core', 'runtime.js'), 'utf8');
+
+  // 1. Pure GPU compositor-thread border beam (conic-gradient + mask-composite + pure rotate(360deg))
+  assert.match(fxCss, /@keyframes agPsBeamSpin[\s\S]{0,120}transform:\s*rotate\(360deg\)/);
+  assert.match(fxCss, /\.ag-ps-beam-ring\s*\{[\s\S]{0,520}mask-composite:\s*exclude/);
+  assert.doesNotMatch(fxJs, /drawCometTrail/, 'Legacy 84-stroke main-thread Canvas comet loop must be removed');
+
+  // 2. 5x-ID specificity on semantic afterglow & non-focus-wiping dismissal
+  assert.match(fxCss, /(?:#antigravity\\\.agentSidePanelInputBox){5}\[data-ag-ps-afterglow="done"\]/);
+  assert.match(fxJs, /function dismissAfterglowOnNewInteraction\(/);
+  assert.doesNotMatch(fxJs, /setAttr\(chip,\s*'data-ag-ps-tip'/, 'Quota chip must not attach redundant hover tooltip');
+
+  // 3. Global floating card mutual exclusion & theme-adaptive surfaces
+  assert.match(customJs, /ag-prism-close-popovers/);
+  assert.match(suiteJs, /ag-prism-close-popovers/);
+  assert.match(runtimeJs, /ag-claude-quota-popover/);
+  assert.match(customCss, /body:has\(#ag-claude-quota-popover\[data-open="true"\]\)\s*#ag-live-metrics-tooltip/);
+  assert.doesNotMatch(customCss, /#ag-claude-quota-popover\s*\{[^}]*background-color:\s*#252523/i);
+
+  // 4. Cross-surface 8-palette theme sync, 1-click experience presets, dual-settings bridge & beginner-clean installer
+  assert.match(suiteJs, /PRISM_PALETTE_TOKENS/);
+  assert.match(suiteJs, /EXPERIENCE_PRESETS/);
+  assert.match(suiteJs, /type:\s*'theme-sync'/);
+  assert.match(customJs, /data-ag-open-prism-suite/);
+  const appHtml = fs.readFileSync(path.join(REPO, 'plugin', 'ui', 'app.html'), 'utf8');
+  const inlineHtml = fs.readFileSync(path.join(REPO, 'plugin', 'ui', 'inline.html'), 'utf8');
+  const popupHtml = fs.readFileSync(path.join(REPO, 'extensions', 'chrome-cua-bridge', 'popup.html'), 'utf8');
+  const installerCs = fs.readFileSync(path.join(REPO, 'installer', 'win', 'PrismSuiteInstaller.cs'), 'utf8');
+  assert.match(appHtml, /applyPrismThemePayload/);
+  assert.match(inlineHtml, /applyPrismThemePayload/);
+  assert.match(popupHtml, /icons\/icon48\.png/);
+  assert.match(popupHtml, /Prism 网页协作助手/);
+  assert.match(installerCs, /btnTogglePaths/);
 });

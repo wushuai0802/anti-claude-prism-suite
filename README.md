@@ -1,7 +1,7 @@
 # Anti-Claude Prism Suite
 
 <p align="left">
-  <img src="https://img.shields.io/badge/version-v0.9.1-2563eb?style=flat-square" alt="Version v0.9.1" />
+  <img src="https://img.shields.io/badge/version-v0.9.2-2563eb?style=flat-square" alt="Version v0.9.2" />
   <img src="https://img.shields.io/badge/edition-All--in--One%20Standalone-059669?style=flat-square" alt="Standalone Edition" />
   <img src="https://img.shields.io/badge/kernel-Anti--Claude%20v3.1.9%20Bundled-7c3aed?style=flat-square" alt="Bundled Anti-Claude v3.1.9" />
   <img src="https://img.shields.io/badge/dependencies-0%20npm%20packages-d97706?style=flat-square" alt="Zero Runtime Dependencies" />
@@ -10,7 +10,7 @@
 
 **面向 Google Antigravity Desktop（Windows / WSL2 / macOS / Linux）的一体化独立完整版体验增强、跨厂商模型会诊、受控电脑操控（CUA）与多账号工程工作台套件。**
 
-自 **v0.6.0+** 起，本项目已**原生内嵌继承增强版 [Anti-Claude](https://github.com/hongqi7/Anti-Claude) `v3.1.9` 运行时内核（`vendor/anti-claude/`）**，并在 **v0.9.0** 全面升级为涵盖 **「免预装 Node.js 一键运行内核 + 棱镜光学微交互与自定义字体扩展 + 七合一响应式工作台 + 默认关闭零开销受控电脑操控桥（独立可视化虚拟指针 + 四级防抢鼠路由 + Chrome/Edge MV3）+ 双模 SQLite FTS5 记忆 + 零依赖 SSE 模型会诊中枢 + 3 项内置工程 Skill」** 的全栈自包含套件：
+自 **v0.6.0+** 起，本项目已**原生内嵌继承增强版 [Anti-Claude](https://github.com/hongqi7/Anti-Claude) `v3.1.9` 运行时内核（`vendor/anti-claude/`）**，并在 **v0.9.2** 全面升级为涵盖 **「全界面 8 套主题同源联动 + 一键体验预设与四分类控制中心 + 120Hz/240Hz 纯 GPU 合成器流光与三态余晖 + 智能左栏导航去重 + 免预装 Node.js 一键安装器 + 七合一响应式工作台 + 默认关闭零开销电脑/网页协作助手」** 的全栈自包含套件：
 - **真正零前置依赖（免装系统 Node.js 亦可运行）**：Windows 用户双击运行单个安装包，即使电脑未安装 Node.js 也会自动复用本机 `Antigravity.exe` 内置 Electron 运行时（`ELECTRON_RUN_AS_NODE=1`）一次性完成「底层 CDP 守护内核 + 棱镜视觉交互扩展 + Prism 七合一工作台 + 默认关闭的 `prism-cua` + Chrome/Edge 浏览器受控桥 + 内置规则与技能」全栈部署；
 - **默认关闭零上下文损耗 · 可视化虚拟指针防抢鼠 · 全局 `Esc` 急刹**：受控电脑与浏览器操控工具独立封装在同级插件 `prism-cua` 中并默认关闭，日常写代码聊天时 `0` 额外工具 Token 开销；操控期间渲染独立鼠标穿透 **AI 虚拟指针**，对已授权网页与标准桌面 UIA / Win32 控件实现 **`0px` 物理鼠标位移、零焦点抢占**，全链路硬拦截密码/验证码/支付框（含 `Ctrl+V` 剪贴板粘贴防护），并在系统任意窗口按下物理 **`Esc`** 键毫秒级中断急刹；
 - **老用户无感平滑升级 · 全链路杀软零误报卫生**：完整保留本地 `ui-prefs.json` 与已隐藏说明偏好，支持运行中进程免停机 `.old` 原子热替换，采用纯二进制 `[MS-SHLLINK]` `.lnk` 编解码与标准 `[ComImport] IShellLinkW` 彻底告别 `WScript.Shell` 误报特征；
@@ -115,7 +115,7 @@
 
 ```mermaid
 flowchart TB
-  subgraph PKG["Anti-Claude Prism Suite v0.9.1（单包独立完整版 · 零外部 npm 依赖）"]
+  subgraph PKG["Anti-Claude Prism Suite v0.9.2（单包独立完整版 · 零外部 npm 依赖）"]
     K["第 1 层 · 内置增强内核与本地 CUA Broker<br/>vendor/anti-claude/ + native/win-cua/ (v3.1.9 + 四级防抢鼠执行器 + 全局 Esc 急刹)"]
     E["第 2 层 · 棱镜前端扩展 & Chrome/Edge MV3 扩展桥<br/>extensions/prism-suite*.{css,js} + extensions/chrome-cua-bridge/"]
     P["第 3 层 · Prism 七合一工作台 & 双插件 MCP/Skills<br/>plugin/ (8 常驻工具) + plugin-cua/ (默认关闭 3 操控工具)"]

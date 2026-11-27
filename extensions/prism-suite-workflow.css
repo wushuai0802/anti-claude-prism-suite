@@ -25,14 +25,14 @@
   min-width: 178px;
   max-width: 248px;
   padding: 5px;
-  border-radius: 10px;
-  background-color: var(--background, #FFFFFF);
-  background-color: color-mix(in srgb, var(--background, #FFFFFF) 92%, transparent);
-  backdrop-filter: blur(14px) saturate(1.15);
-  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+  border-radius: 12px;
+  background-color: var(--card, var(--background, #FFFFFF));
+  background-color: color-mix(in srgb, var(--card, var(--background, #FFFFFF)) 96%, transparent);
+  backdrop-filter: blur(16px) saturate(1.12);
+  -webkit-backdrop-filter: blur(16px) saturate(1.12);
   color: var(--foreground, #141413);
-  border: 1px solid var(--sidebar-border, rgba(15, 23, 42, 0.12));
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(0, 0, 0, 0.06);
+  border: 1px solid color-mix(in srgb, var(--foreground, #141413) 10%, transparent);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.85) inset, 0 12px 32px -4px rgba(15, 23, 42, 0.14), 0 2px 6px rgba(15, 23, 42, 0.05);
   font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
   font-size: 12px;
   line-height: 1.4;
@@ -45,7 +45,7 @@
 
 html[data-ag-theme-mode="dark"] #ag-ps-img-menu,
 body.dark #ag-ps-img-menu {
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset, 0 14px 36px -4px rgba(0, 0, 0, 0.46), 0 2px 8px rgba(0, 0, 0, 0.28);
 }
 
 .ag-ps-img-menu-meta {

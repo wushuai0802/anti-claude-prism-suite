@@ -653,12 +653,20 @@
       pill.id = 'ag-live-metrics-pill';
       pill.innerHTML = '<span id="ag-live-metrics-text"></span>';
       pill.addEventListener('mouseenter', () => {
+        const qPop = document.getElementById('ag-claude-quota-popover');
+        const mPop = document.getElementById('ag-claude-model-popover');
+        if (
+          (qPop && qPop.getAttribute('data-open') === 'true') ||
+          (mPop && mPop.getAttribute('data-open') === 'true')
+        ) {
+          return;
+        }
         const tt = ensureMetricsTooltip();
         if (!tt || !tt.innerHTML) return;
         const r = pill.getBoundingClientRect();
-        const ttWidth = Math.min(440, Math.max(370, tt.offsetWidth || 400));
+        const ttWidth = Math.min(440, Math.max(272, tt.offsetWidth || 272));
         const left = Math.max(12, Math.min(r.left, window.innerWidth - ttWidth - 16));
-        const bottomPx = Math.min(window.innerHeight - r.top + 8, window.innerHeight - (tt.offsetHeight || 220) - 12);
+        const bottomPx = Math.min(window.innerHeight - r.top + 10, window.innerHeight - (tt.offsetHeight || 220) - 12);
         tt.style.left = left + 'px';
         tt.style.bottom = Math.max(8, bottomPx) + 'px';
         tt.setAttribute('data-visible', '1');

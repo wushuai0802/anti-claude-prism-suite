@@ -37,6 +37,8 @@
     opticalFacets: true,
     semanticAfterglow: true,
     compactQuotaPill: true,
+    composerBorderFx: 'smart',    // 'off' | 'smart' | 'beam' | 'static'
+    outlineRailMode: 'smart',     // 'smart' | 'right' | 'off'
     borderBeam: false,
     borderBeamMode: 'always',     // 'always' | 'busy'
     borderBeamPalette: 'theme',   // 'theme' | 'gemini' | 'aurora' | 'prism' | 'neon' | 'quota'
@@ -57,6 +59,27 @@
     autoDismissOnboarding: true,
     quotaHandoffAlert: true
   };
+
+  function resolveComposerBorderFx(prefs) {
+    const raw = prefs && prefs.composerBorderFx;
+    if (raw === 'off' || raw === 'beam' || raw === 'static') return raw;
+    if (prefs && prefs.borderBeam === true && (prefs.borderBeamMode || 'always') === 'always') {
+      return 'beam';
+    }
+    if (prefs && prefs.semanticAfterglow === false && !prefs.borderBeam && !prefs.quotaRing) {
+      return 'off';
+    }
+    return 'smart';
+  }
+
+  function resolveOutlineRailMode(prefs) {
+    if (prefs && prefs.alwaysOutlineRail === false && prefs.outlineRailMode !== 'right') {
+      return 'off';
+    }
+    const raw = prefs && prefs.outlineRailMode;
+    if (raw === 'right' || raw === 'off') return raw;
+    return 'smart';
+  }
 
   const CHAT_FONT_PRESETS = [
     { label: '默认', value: '' },
@@ -236,8 +259,12 @@
 
     function safeGetComposerEl() {
       try {
-        const el = bus.getComposerEl && bus.getComposerEl();
-        if (el && el.isConnected && el.getBoundingClientRect().width > 0) return el;
+        const fromBus = (bus.getInputBoxEl && bus.getInputBoxEl()) || (bus.getComposerEl && bus.getComposerEl());
+        if (fromBus && fromBus.isConnected && fromBus.getBoundingClientRect().width > 0) return fromBus;
+      } catch {}
+      try {
+        const byId = document.getElementById('antigravity.agentSidePanelInputBox');
+        if (byId && byId.isConnected && byId.getBoundingClientRect().width > 0) return byId;
       } catch {}
       const boxes = Array.from(document.querySelectorAll('[id="antigravity.agentSidePanelInputBox"]'));
       const vis = boxes.filter((b) => b.isConnected && b.getBoundingClientRect().width > 0);
@@ -300,9 +327,9 @@
         if (disposed) return;
         const p = getPrefs();
         applyPerfAndCustomFonts(p);
+        syncBorderBeamDom(Date.now(), p);
         if (isEffectivelyReducedMotion(p)) {
           stopScheduler();
-          clearBeamCanvas();
           if (orbCanvas && p.thinkingOrb) renderThinkingOrbFrame(0, performance.now(), true);
         } else {
           ensureScheduler();
@@ -416,7 +443,7 @@
       recomputePerimeterSegments();
 
       if (changed) {
-        applyBeamCanvasSize();
+        applyBeamRingSize();
         applyQuotaRingGeometry();
         if (quotaNudgeEl) positionQuotaNudge();
       }
@@ -460,76 +487,33 @@
     }
 
     /* ========================================================================
-     * 2. Border Beam (Canvas 2D Rounded-Rect Perimeter Comet)
+     * 2. GPU Compositor-Thread Border Beam (.ag-ps-beam-ring > .ag-ps-beam-rotor)
+     *    Zero main-thread rAF strokes; locked 120Hz/240Hz even under 135 tok/s load
      * ======================================================================== */
-    let beamCanvas = null;
-    let beamCtx = null;
-    let beamPhase = 0;
-    let beamAlpha = 0;
-    let beamPreviewUntil = 0;
-    let beamPreviewTimer = 0;
+    let beamRingEl = null;
+    let beamRotorEl = null;
+    let composerPreviewStartAt = 0;
+    let composerPreviewUntil = 0;
+    const composerPreviewTimers = [];
     let beamPaletteCacheKey = '';
     let beamPaletteStops = [[66, 133, 244], [123, 97, 255], [56, 189, 248]];
 
-    // Pre-allocated scratch buffers (zero per-frame allocations)
-    const ptA = { x: 0, y: 0 };
-    const ptB = { x: 0, y: 0 };
-    const rgbScratch = [0, 0, 0];
-
-    function samplePerimeter(dist, out) {
-      const perim = geo.perim;
-      if (perim <= 0) {
-        out.x = 0;
-        out.y = 0;
-        return;
+    function clearComposerPreviewTimers() {
+      while (composerPreviewTimers.length) {
+        clearTimeout(composerPreviewTimers.pop());
       }
-      let s = dist % perim;
-      if (s < 0) s += perim;
+    }
 
-      const x0 = geo.pad;
-      const y0 = geo.pad;
-      const x1 = x0 + geo.rw;
-      const y1 = y0 + geo.rh;
-      const r = geo.rad;
-      const cum = geo.cum;
+    function getComposerPreviewStage(nowMs) {
+      if (nowMs >= composerPreviewUntil || composerPreviewUntil <= 0) return '';
+      const elapsed = Math.max(0, nowMs - composerPreviewStartAt);
+      if (elapsed < 1250) return 'beam';
+      if (elapsed < 2450) return 'decision';
+      return 'done';
+    }
 
-      if (s <= cum[1]) {
-        // Top straight: left -> right
-        out.x = x0 + r + (s - cum[0]);
-        out.y = y0;
-      } else if (s <= cum[2]) {
-        // Top-right arc: -PI/2 -> 0
-        const a = -Math.PI * 0.5 + (s - cum[1]) / r;
-        out.x = x1 - r + Math.cos(a) * r;
-        out.y = y0 + r + Math.sin(a) * r;
-      } else if (s <= cum[3]) {
-        // Right straight: top -> bottom
-        out.x = x1;
-        out.y = y0 + r + (s - cum[2]);
-      } else if (s <= cum[4]) {
-        // Bottom-right arc: 0 -> PI/2
-        const a = (s - cum[3]) / r;
-        out.x = x1 - r + Math.cos(a) * r;
-        out.y = y1 - r + Math.sin(a) * r;
-      } else if (s <= cum[5]) {
-        // Bottom straight: right -> left
-        out.x = x1 - r - (s - cum[4]);
-        out.y = y1;
-      } else if (s <= cum[6]) {
-        // Bottom-left arc: PI/2 -> PI
-        const a = Math.PI * 0.5 + (s - cum[5]) / r;
-        out.x = x0 + r + Math.cos(a) * r;
-        out.y = y1 - r + Math.sin(a) * r;
-      } else if (s <= cum[7]) {
-        // Left straight: bottom -> top
-        out.x = x0;
-        out.y = y1 - r - (s - cum[6]);
-      } else {
-        // Top-left arc: PI -> 3PI/2
-        const a = Math.PI + (s - cum[7]) / r;
-        out.x = x0 + r + Math.cos(a) * r;
-        out.y = y0 + r + Math.sin(a) * r;
-      }
+    function isBeamPreviewActive(nowMs) {
+      return nowMs < composerPreviewUntil;
     }
 
     function resolveBeamPaletteStops(prefs) {
@@ -551,13 +535,13 @@
       beamPaletteCacheKey = key;
 
       if (pal === 'gemini') {
-        beamPaletteStops = [[66, 133, 244], [123, 97, 255], [192, 132, 252], [56, 189, 248]];
+        beamPaletteStops = [[66, 133, 244], [139, 92, 246], [56, 189, 248]];
       } else if (pal === 'aurora') {
-        beamPaletteStops = [[16, 185, 129], [6, 182, 212], [59, 130, 246], [139, 92, 246]];
+        beamPaletteStops = [[16, 185, 129], [6, 182, 212], [59, 130, 246]];
       } else if (pal === 'prism') {
-        beamPaletteStops = [[244, 63, 94], [245, 158, 11], [16, 185, 129], [59, 130, 246], [139, 92, 246]];
+        beamPaletteStops = [[244, 63, 94], [245, 158, 11], [59, 130, 246]];
       } else if (pal === 'neon') {
-        beamPaletteStops = [[34, 211, 238], [232, 121, 249], [244, 114, 182], [56, 189, 248]];
+        beamPaletteStops = [[34, 211, 238], [232, 121, 249], [244, 114, 182]];
       } else if (pal === 'quota') {
         if (qTier === 'danger') {
           beamPaletteStops = [[239, 68, 68], [248, 113, 113], [251, 146, 60]];
@@ -569,188 +553,124 @@
       } else {
         const base = parseCssColorToRgb(accent);
         beamPaletteStops = [
-          shiftRgb(base, -28),
+          shiftRgb(base, -24),
           base,
-          shiftRgb(base, 46),
-          [255, 255, 255]
+          shiftRgb(base, 52)
         ];
       }
       return beamPaletteStops;
     }
 
-    function applyBeamCanvasSize() {
-      if (!beamCanvas || geo.pxW <= 0 || geo.pxH <= 0) return;
-      if (beamCanvas.width !== geo.pxW) beamCanvas.width = geo.pxW;
-      if (beamCanvas.height !== geo.pxH) beamCanvas.height = geo.pxH;
+    function applyBeamRingSize() {
+      if (!beamRingEl) return;
+      const diag = Math.max(880, Math.min(1800, Math.round(Math.hypot(geo.w || 680, geo.h || 120) * 1.48)));
+      setStyleVar(beamRingEl, '--ag-ps-beam-diag', `${diag}px`);
     }
 
-    function ensureBeamCanvas() {
+    function ensureBeamRingEl() {
       if (!composerHost || !composerHost.isConnected) return null;
-      if (beamCanvas && beamCanvas.parentElement === composerHost) return beamCanvas;
-      if (beamCanvas) beamCanvas.remove();
-      beamCanvas = document.createElement('canvas');
-      beamCanvas.className = 'ag-ps-beam-canvas';
-      beamCanvas.setAttribute('aria-hidden', 'true');
-      beamCanvas.setAttribute('data-ag-i18n-ignore', '1');
-      beamCtx = beamCanvas.getContext('2d', { alpha: true });
-      composerHost.appendChild(beamCanvas);
-      applyBeamCanvasSize();
-      return beamCanvas;
+      if (beamRingEl && beamRingEl.parentElement === composerHost) return beamRingEl;
+      if (beamRingEl) beamRingEl.remove();
+      beamRingEl = document.createElement('div');
+      beamRingEl.className = 'ag-ps-beam-ring';
+      beamRingEl.setAttribute('aria-hidden', 'true');
+      beamRingEl.setAttribute('data-ag-i18n-ignore', '1');
+      beamRotorEl = document.createElement('div');
+      beamRotorEl.className = 'ag-ps-beam-rotor';
+      beamRingEl.appendChild(beamRotorEl);
+      composerHost.appendChild(beamRingEl);
+      applyBeamRingSize();
+      return beamRingEl;
     }
 
-    function clearBeamCanvas() {
-      if (beamCtx && beamCanvas) {
-        beamCtx.setTransform(1, 0, 0, 1, 0, 0);
-        beamCtx.clearRect(0, 0, beamCanvas.width, beamCanvas.height);
+    function removeBeamRingEl() {
+      if (beamRingEl) {
+        beamRingEl.remove();
+        beamRingEl = null;
+        beamRotorEl = null;
       }
-      if (beamCanvas) setAttr(beamCanvas, 'data-active', '');
-    }
-
-    function drawRoundedRectPath(ctx, x, y, w, h, r) {
-      ctx.beginPath();
-      ctx.moveTo(x + r, y);
-      ctx.lineTo(x + w - r, y);
-      ctx.arcTo(x + w, y, x + w, y + r, r);
-      ctx.lineTo(x + w, y + h - r);
-      ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
-      ctx.lineTo(x + r, y + h);
-      ctx.arcTo(x, y + h, x, y + h - r, r);
-      ctx.lineTo(x, y + r);
-      ctx.arcTo(x, y, x + r, y, r);
-      ctx.closePath();
-    }
-
-    function drawCometTrail(ctx, stops, headDist, tailLen, alphaScale, widthScale, segCount) {
-      const step = tailLen / segCount;
-      ctx.lineCap = 'round';
-      for (let i = 0; i < segCount; i++) {
-        const frac0 = i / segCount;
-        const frac1 = (i + 1) / segCount;
-        const d0 = headDist - tailLen + i * step;
-        const d1 = d0 + step;
-        samplePerimeter(d0, ptA);
-        samplePerimeter(d1, ptB);
-
-        // Smooth cubic ease-in opacity from tail tip to bright comet head
-        const fade = frac1 * frac1;
-        lerpRgb(stops, frac1, rgbScratch);
-        const r = rgbScratch[0];
-        const g = rgbScratch[1];
-        const b = rgbScratch[2];
-
-        // Soft outer halo stroke
-        ctx.strokeStyle = `rgba(${r},${g},${b},${(fade * 0.28 * alphaScale).toFixed(3)})`;
-        ctx.lineWidth = (1.6 + frac1 * 3.8) * widthScale;
-        ctx.beginPath();
-        ctx.moveTo(ptA.x, ptA.y);
-        ctx.lineTo(ptB.x, ptB.y);
-        ctx.stroke();
-
-        // Crisp luminous core stroke
-        ctx.strokeStyle = `rgba(${r},${g},${b},${(fade * 0.92 * alphaScale).toFixed(3)})`;
-        ctx.lineWidth = (0.7 + frac1 * 1.75) * widthScale;
-        ctx.beginPath();
-        ctx.moveTo(ptA.x, ptA.y);
-        ctx.lineTo(ptB.x, ptB.y);
-        ctx.stroke();
-      }
-
-      // Specular comet head glint
-      samplePerimeter(headDist, ptB);
-      lerpRgb(stops, 1, rgbScratch);
-      ctx.fillStyle = `rgba(255,255,255,${(0.72 * alphaScale).toFixed(3)})`;
-      ctx.beginPath();
-      ctx.arc(ptB.x, ptB.y, 1.55 * widthScale, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    function isBeamPreviewActive(nowMs) {
-      return nowMs < beamPreviewUntil;
     }
 
     function isBeamTargetActive(prefs, nowMs) {
-      const preview = isBeamPreviewActive(nowMs);
-      if (preview) return windowFocused;
-      if (!prefs.borderBeam) return false;
-      if ((prefs.borderBeamMode || 'always') === 'always') {
-        return windowFocused;
-      }
-      return lastBusy;
+      const stage = getComposerPreviewStage(nowMs);
+      if (stage === 'beam') return true;
+      if (stage) return false;
+      const fxMode = resolveComposerBorderFx(prefs);
+      if (fxMode === 'beam') return windowFocused;
+      if (fxMode === 'smart') return lastBusy;
+      return false;
     }
 
-    function renderBorderBeamFrame(dt, nowMs, prefs) {
-      const targetActive = isBeamTargetActive(prefs, nowMs);
-      const rate = targetActive ? 5.5 : 4.5;
-      const isAmbientIdle = targetActive && !lastBusy && !isBeamPreviewActive(nowMs) && (prefs.borderBeamMode || 'always') === 'always';
-      const targetAlpha = targetActive ? (isAmbientIdle ? 0.78 : 1) : 0;
-      beamAlpha += (targetAlpha - beamAlpha) * Math.min(1, dt * rate);
-      if (Math.abs(targetAlpha - beamAlpha) < 0.004) beamAlpha = targetAlpha;
-
-      if (beamAlpha <= 0.004) {
-        clearBeamCanvas();
+    function syncBorderBeamDom(nowMs, prefs = getPrefs()) {
+      const wantActive = !document.hidden && !isEffectivelyReducedMotion(prefs) && isBeamTargetActive(prefs, nowMs);
+      if (!wantActive) {
+        if (beamRingEl) {
+          setAttr(beamRingEl, 'data-running', '');
+          setAttr(beamRingEl, 'data-ambient', '');
+        }
         return false;
       }
-
-      if (!beamCanvas || !beamCtx || geo.perim <= 0) return false;
-
-      setAttr(beamCanvas, 'data-active', '1');
-      const vividScale = prefs.performanceMode === 'vivid' ? 1.18 : 1;
-      beamPhase = (beamPhase + dt * (isAmbientIdle ? 0.16 : 0.27) * vividScale) % 1;
-
-      const ctx = beamCtx;
-      const scaleX = beamCanvas.width / Math.max(1, geo.cssW);
-      const scaleY = beamCanvas.height / Math.max(1, geo.cssH);
-
-      ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
-      ctx.clearRect(0, 0, geo.cssW, geo.cssH);
+      const host = safeGetComposerEl();
+      if (!host) return false;
+      attachComposerHost(host);
+      const ring = ensureBeamRingEl();
+      if (!ring) return false;
 
       const stops = resolveBeamPaletteStops(prefs);
+      const c1 = stops[0] || [47, 117, 195];
+      const c2 = stops[1] || c1;
+      const c3 = stops[2] || c2;
+      setStyleVar(ring, '--ag-ps-beam-c1', `rgb(${c1[0]}, ${c1[1]}, ${c1[2]})`);
+      setStyleVar(ring, '--ag-ps-beam-c2', `rgb(${c2[0]}, ${c2[1]}, ${c2[2]})`);
+      setStyleVar(ring, '--ag-ps-beam-c3', `rgb(${c3[0]}, ${c3[1]}, ${c3[2]})`);
 
-      // Subtle soft inner perimeter glow
-      lerpRgb(stops, 0.5, rgbScratch);
-      ctx.strokeStyle = `rgba(${rgbScratch[0]},${rgbScratch[1]},${rgbScratch[2]},${(0.14 * beamAlpha).toFixed(3)})`;
-      ctx.lineWidth = 1.25;
-      drawRoundedRectPath(ctx, geo.pad, geo.pad, geo.rw, geo.rh, geo.rad);
-      ctx.stroke();
-
-      // Primary luminous comet
-      const head1 = beamPhase * geo.perim;
-      drawCometTrail(ctx, stops, head1, geo.perim * 0.30, beamAlpha, 1.0, 26);
-
-      // Counter-balanced secondary comet on opposite perimeter
-      const head2 = ((beamPhase + 0.5) % 1) * geo.perim;
-      drawCometTrail(ctx, stops, head2, geo.perim * 0.17, beamAlpha * 0.46, 0.85, 16);
-
+      const fxMode = resolveComposerBorderFx(prefs);
+      const stage = getComposerPreviewStage(nowMs);
+      const isAmbient = !lastBusy && stage !== 'beam' && fxMode === 'beam';
+      const dur = isAmbient ? '4.4s' : prefs.performanceMode === 'vivid' ? '2.3s' : '2.9s';
+      setStyleVar(ring, '--ag-ps-beam-dur', dur);
+      setAttr(ring, 'data-ambient', isAmbient ? '1' : '');
+      setAttr(ring, 'data-running', '1');
       return true;
     }
 
     function triggerBeamPreview() {
+      clearComposerPreviewTimers();
       const nowMs = Date.now();
-      beamPreviewUntil = nowMs + 3000;
+      composerPreviewStartAt = nowMs;
+      composerPreviewUntil = nowMs + 3650;
+      const curPrefs = getPrefs();
       const host = safeGetComposerEl();
       if (host) {
         attachComposerHost(host);
-        ensureBeamCanvas();
       }
+      syncComposerOverlays();
+      syncSemanticAfterglow(nowMs);
       syncQuotaRingSuppression(nowMs);
-      const curPrefs = getPrefs();
+
       if (isEffectivelyReducedMotion(curPrefs)) {
-        safeToast(
-          curPrefs.performanceMode === 'power-save'
-            ? '当前为省电模式，流光动画已跳过'
-            : '系统已开启减少动态效果，流光动画已跳过'
-        );
+        // Jump straight to static semantic afterglow preview when motion is disabled
+        composerPreviewStartAt = nowMs - 1300;
+        syncComposerOverlays();
+        syncSemanticAfterglow(nowMs);
+        safeToast('静态余晖预览：琥珀待确认 → 翡翠完成 ✨');
       } else {
-        ensureScheduler();
-        safeToast('流光边框预览 3 秒 ✨');
+        safeToast('正在预览：GPU 生成流光 → 琥珀待确认余晖 → 翡翠完成余晖 ✨');
       }
-      if (beamPreviewTimer) clearTimeout(beamPreviewTimer);
-      beamPreviewTimer = setTimeout(() => {
-        beamPreviewTimer = 0;
-        if (disposed) return;
-        syncQuotaRingSuppression(Date.now());
-        safeRefreshPopover();
-      }, 3060);
+
+      for (const stepMs of [1260, 2460, 3680]) {
+        const tid = setTimeout(() => {
+          const idx = composerPreviewTimers.indexOf(tid);
+          if (idx >= 0) composerPreviewTimers.splice(idx, 1);
+          if (disposed) return;
+          const t = Date.now();
+          syncComposerOverlays();
+          syncSemanticAfterglow(t);
+          syncQuotaRingSuppression(t);
+          if (stepMs >= 3600) safeRefreshPopover();
+        }, stepMs);
+        composerPreviewTimers.push(tid);
+      }
       safeRefreshPopover();
     }
 
@@ -834,16 +754,19 @@
     function syncQuotaRingSuppression(nowMs) {
       if (!qRingWrap) return;
       const prefs = getPrefs();
+      const fxMode = resolveComposerBorderFx(prefs);
       const preview = isBeamPreviewActive(nowMs);
-      const suppressHard = preview || (Boolean(prefs.borderBeam) && lastBusy);
-      const coexistAmbient = !suppressHard && Boolean(prefs.borderBeam) && (prefs.borderBeamMode || 'always') === 'always' && windowFocused;
+      const afterglowOn = Boolean(afterglowHost && afterglowHost.getAttribute('data-ag-ps-afterglow'));
+      const suppressHard = preview || afterglowOn || (fxMode !== 'off' && fxMode !== 'static' && lastBusy);
+      const coexistAmbient = !suppressHard && fxMode === 'beam' && windowFocused;
       setAttr(qRingWrap, 'data-suppressed', suppressHard ? '1' : '');
       setAttr(qRingWrap, 'data-coexist', coexistAmbient ? '1' : '');
     }
 
     function syncQuotaRing() {
       const prefs = getPrefs();
-      if (!prefs.quotaRing) {
+      const fxMode = resolveComposerBorderFx(prefs);
+      if (!prefs.quotaRing || fxMode === 'off') {
         if (qRingWrap) {
           qRingWrap.remove();
           qRingWrap = null;
@@ -1360,33 +1283,38 @@
       ctx.arc(cx, cy, baseR * 1.35, 0, Math.PI * 2);
       ctx.fill();
 
-      // Render 128 depth-sorted particles
-      for (let i = 0; i < ORB_COUNT; i++) {
-        const p = ORB_PARTICLES[ORB_ORDER[i]];
-        const persp = 2.55 / (2.55 - p.pz * 0.85);
-        const sx = cx + p.px * baseR * persp;
-        const sy = cy + p.py * baseR * persp;
-        const depth01 = (p.pz + 1.2) / 2.4; // ~0 (back) .. ~1 (front)
-        const clampedD = depth01 < 0 ? 0 : depth01 > 1 ? 1 : depth01;
-        const dotR = 0.58 + clampedD * 0.82;
-        const baseAlpha = dark ? 0.24 : 0.28;
-        const alpha = (baseAlpha + clampedD * (0.58 + orbMorphEnergy * 0.14));
-
-        // Brighter specular tint on frontmost particles
-        const lift = clampedD > 0.72 ? (clampedD - 0.72) * (dark ? 220 : 120) : 0;
+      // Render 128 depth-sorted particles in 4 depth-bucketed batches (cuts Canvas draw calls 32x)
+      const BUCKETS = 4;
+      const perBucket = ORB_COUNT / BUCKETS;
+      const baseAlpha = dark ? 0.24 : 0.28;
+      for (let b = 0; b < BUCKETS; b++) {
+        const midD = (b + 0.5) / BUCKETS;
+        const alpha = Math.min(1, baseAlpha + midD * (0.58 + orbMorphEnergy * 0.14));
+        const lift = midD > 0.68 ? (midD - 0.68) * (dark ? 220 : 120) : 0;
         const pr = Math.min(255, (cr + lift) | 0);
         const pg = Math.min(255, (cg + lift) | 0);
         const pb = Math.min(255, (cb + lift) | 0);
-
-        ctx.fillStyle = `rgba(${pr},${pg},${pb},${Math.min(1, alpha).toFixed(3)})`;
+        ctx.fillStyle = `rgba(${pr},${pg},${pb},${alpha.toFixed(3)})`;
         ctx.beginPath();
-        ctx.arc(sx, sy, dotR, 0, Math.PI * 2);
+        const iStart = b * perBucket;
+        const iEnd = b === BUCKETS - 1 ? ORB_COUNT : iStart + perBucket;
+        for (let i = iStart; i < iEnd; i++) {
+          const p = ORB_PARTICLES[ORB_ORDER[i]];
+          const persp = 2.55 / (2.55 - p.pz * 0.85);
+          const sx = cx + p.px * baseR * persp;
+          const sy = cy + p.py * baseR * persp;
+          const depth01 = (p.pz + 1.2) / 2.4;
+          const clampedD = depth01 < 0 ? 0 : depth01 > 1 ? 1 : depth01;
+          const dotR = 0.58 + clampedD * 0.82;
+          ctx.moveTo(sx + dotR, sy);
+          ctx.arc(sx, sy, dotR, 0, Math.PI * 2);
+        }
         ctx.fill();
       }
     }
 
     /* ========================================================================
-     * 5. Single Shared rAF Scheduler (Drives Border Beam + ThinkingOrb -> 0fps Idle)
+     * 5. Single Shared rAF Scheduler (Drives ThinkingOrb -> 0fps Idle)
      * ======================================================================== */
     let sharedRafId = 0;
     let lastRafTs = 0;
@@ -1404,10 +1332,7 @@
       if (disposed || document.hidden) return false;
       const prefs = getPrefs();
       if (isEffectivelyReducedMotion(prefs)) return false;
-      const beamActive = isBeamTargetActive(prefs, nowMs);
-      const beamNeed = Boolean(beamCanvas && beamCanvas.isConnected) && (beamActive || beamAlpha > 0.004);
-      const orbNeed = orbNeedsRaf(prefs, nowMs);
-      return beamNeed || orbNeed;
+      return orbNeedsRaf(prefs, nowMs);
     }
 
     function ensureScheduler() {
@@ -1429,13 +1354,7 @@
       lastRafTs = ts;
 
       const nowMs = Date.now();
-
       let keepRunning = false;
-
-      if (beamCanvas && beamCanvas.isConnected) {
-        const beamStillDrawing = renderBorderBeamFrame(dt, nowMs, prefs);
-        if (beamStillDrawing) keepRunning = true;
-      }
 
       if (prefs.thinkingOrb && orbCanvas && orbCanvas.isConnected) {
         updateOrbStageLabel(nowMs);
@@ -2073,30 +1992,120 @@
       };
     }
 
+    let hostNavBoundEl = null;
+    let hostNavAc = null;
+
+    function ensureRailTipOnly() {
+      if (!railTipEl && document.body) {
+        railTipEl = document.createElement('div');
+        railTipEl.id = 'ag-ps-rail-tip';
+        railTipEl.setAttribute('data-ag-i18n-ignore', '1');
+        document.body.appendChild(railTipEl);
+      }
+      return railTipEl;
+    }
+
     function hideRailTip() {
       railHoveredDot = null;
       railHoveredIdx = -1;
       if (railTipEl) setAttr(railTipEl, 'data-show', '');
     }
 
-    function showRailTip(dotBtn, idx, text) {
-      if (!railTipEl || !dotBtn) return;
+    function showRailTip(dotBtn, idx, text, side = 'right') {
+      const tip = ensureRailTipOnly();
+      if (!tip || !dotBtn) return;
       railHoveredDot = dotBtn;
       railHoveredIdx = idx;
-      railTipEl.textContent = '';
+      tip.textContent = '';
       const badge = document.createElement('span');
       badge.className = 'ag-ps-rail-tip-idx';
       badge.textContent = `#${idx + 1}`;
-      railTipEl.appendChild(badge);
-      railTipEl.appendChild(document.createTextNode((text || '当前对话轮次').slice(0, 48)));
+      const txtSpan = document.createElement('span');
+      txtSpan.textContent = (text || '当前对话轮次').slice(0, 52);
+      tip.appendChild(badge);
+      tip.appendChild(txtSpan);
 
       const rect = dotBtn.getBoundingClientRect();
-      const tipRight = Math.max(16, window.innerWidth - rect.left + 10);
       const tipTop = Math.max(12, Math.min(window.innerHeight - 40, Math.round(rect.top + rect.height * 0.5 - 14)));
-      railTipEl.style.right = `${tipRight}px`;
-      railTipEl.style.left = 'auto';
-      railTipEl.style.top = `${tipTop}px`;
-      setAttr(railTipEl, 'data-show', '1');
+      setAttr(tip, 'data-side', side === 'left' ? 'left' : 'right');
+      if (side === 'left') {
+        const leftPx = Math.max(12, Math.min(window.innerWidth - 290, Math.round(rect.right + 10)));
+        tip.style.left = `${leftPx}px`;
+        tip.style.right = 'auto';
+      } else {
+        const tipRight = Math.max(16, Math.round(window.innerWidth - rect.left + 10));
+        tip.style.right = `${tipRight}px`;
+        tip.style.left = 'auto';
+      }
+      tip.style.top = `${tipTop}px`;
+      setAttr(tip, 'data-show', '1');
+    }
+
+    function getVisibleHostConversationNavigator() {
+      const navEl = document.querySelector('[data-testid="conversation-navigator"]');
+      if (!navEl || !navEl.isConnected) return null;
+      const r = navEl.getBoundingClientRect();
+      if (r.width < 4 || r.height < 20) return null;
+      try {
+        const cs = getComputedStyle(navEl);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return null;
+      } catch {}
+      return navEl;
+    }
+
+    function detachHostNavEnhancer() {
+      if (hostNavAc) {
+        try { hostNavAc.abort(); } catch {}
+        hostNavAc = null;
+      }
+      hostNavBoundEl = null;
+    }
+
+    function attachHostNavEnhancer(navEl) {
+      if (!navEl || !navEl.isConnected) {
+        detachHostNavEnhancer();
+        return;
+      }
+      if (hostNavBoundEl === navEl && hostNavAc) return;
+      detachHostNavEnhancer();
+      hostNavBoundEl = navEl;
+      hostNavAc = new AbortController();
+      const sig = hostNavAc.signal;
+
+      navEl.addEventListener('pointerover', (e) => {
+        if (disposed) return;
+        const turnEl = e.target && e.target.closest && e.target.closest('[data-testid="conversation-navigator-turn"]');
+        if (!turnEl) return;
+        let idx = Number(turnEl.getAttribute('data-turn-index'));
+        if (!Number.isFinite(idx) || idx < 0) {
+          const allTurns = navEl.querySelectorAll('[data-testid="conversation-navigator-turn"]');
+          idx = Array.prototype.indexOf.call(allTurns, turnEl);
+        }
+        if (idx < 0) return;
+        const nav = safeGetConversationNav();
+        let txt = nav && nav.total > idx ? nav.getPreview(idx) : '';
+        if (!txt) {
+          const domTurns = (nav && nav.domTurns) || getUserTurns();
+          if (domTurns[idx]) txt = getTurnPreviewText(domTurns[idx]);
+        }
+        showRailTip(turnEl, idx, txt || `第 ${idx + 1} 轮提问`, 'left');
+        if (!txt && nav && typeof nav.ensurePreviews === 'function') {
+          nav.ensurePreviews(idx, 16, () => {
+            if (!disposed && railHoveredDot === turnEl && railHoveredIdx === idx) {
+              const refreshed = safeGetConversationNav().getPreview(idx);
+              if (refreshed) showRailTip(turnEl, idx, refreshed, 'left');
+            }
+          });
+        }
+      }, { signal, passive: true });
+
+      navEl.addEventListener('pointerout', (e) => {
+        if (!railHoveredDot) return;
+        const rel = e.relatedTarget;
+        if (!rel || !railHoveredDot.contains(rel)) hideRailTip();
+      }, { signal, passive: true });
+
+      navEl.addEventListener('pointerleave', hideRailTip, { signal, passive: true });
     }
 
     function updateRailActiveDot(navOverride = null) {
@@ -2132,6 +2141,7 @@
     function collectRightFloatingPanelRects(vpRect, bandTop, bandBottom) {
       const rects = [];
       const seen = new Set();
+      const minRightHalfX = vpRect.left + Math.max(180, vpRect.width * 0.56);
       const pushIfOverlappingRight = (el) => {
         if (!el || seen.has(el) || !isElementActuallyVisible(el, 28)) return;
         seen.add(el);
@@ -2139,8 +2149,8 @@
         if (
           r.bottom > bandTop &&
           r.top < bandBottom &&
-          r.left > vpRect.left + 80 &&
-          r.right > vpRect.left + 120 &&
+          r.left >= minRightHalfX &&
+          r.right > vpRect.left + 180 &&
           r.left < vpRect.right + 40
         ) {
           rects.push(r);
@@ -2148,7 +2158,7 @@
       };
       pushIfOverlappingRight(getVisibleOverviewPanel());
       const floaters = document.querySelectorAll(
-        '#ag-ps-popover[data-open="1"], #ag-ps-outline[data-open="1"], #ag-ps-img-menu, #ag-recent-row-menu, #ag-claude-quota-popover, #ag-claude-model-popover'
+        '#ag-ps-popover[data-open="1"], #ag-ps-outline[data-open="1"], #ag-ps-img-menu'
       );
       for (let i = 0; i < floaters.length; i++) {
         pushIfOverlappingRight(floaters[i]);
@@ -2168,9 +2178,9 @@
       if (vp) {
         const rect = vp.getBoundingClientRect();
         if (rect.width > 120) {
-          // Leave clear gutter to the left of scrollbar, split-pane dividers, and any open right-floating panels (e.g. Overview)
-          const scrollbarW = Math.max(14, Math.round((vp.offsetWidth || 0) - (vp.clientWidth || 0)));
-          const gutter = rect.width < 420 ? 10 : 16;
+          // Clear gutter to the left of scrollbar so clicks never collide with scrollbar thumb
+          const scrollbarW = Math.max(16, Math.round((vp.offsetWidth || 0) - (vp.clientWidth || 0)));
+          const gutter = rect.width < 420 ? 12 : 20;
           let targetRightX = rect.right - scrollbarW - gutter;
 
           const winH = window.innerHeight || 800;
@@ -2181,19 +2191,19 @@
           for (let i = 0; i < floatingRects.length; i++) {
             const fr = floatingRects[i];
             if (fr.left < targetRightX + 24) {
-              targetRightX = Math.min(targetRightX, fr.left - 14);
+              targetRightX = Math.min(targetRightX, fr.left - 16);
             }
           }
 
-          if (targetRightX - rect.left < 120) {
+          if (targetRightX - rect.left < 160) {
             setAttr(railEl, 'data-occluded', '1');
             hideRailTip();
             return;
           }
 
           setAttr(railEl, 'data-occluded', '');
-          const minRight = scrollbarW + gutter;
-          const maxRight = Math.max(minRight, Math.round(window.innerWidth - rect.left - 48));
+          const minRight = Math.max(22, scrollbarW + gutter);
+          const maxRight = Math.max(minRight, Math.round(window.innerWidth - rect.left - 64));
           const desired = Math.round(window.innerWidth - targetRightX);
           const rightPx = Math.max(minRight, Math.min(maxRight, desired));
           railEl.style.right = `${rightPx}px`;
@@ -2264,15 +2274,17 @@
       }
     }
 
-    function removeOutlineRail() {
+    function removeOutlineRail(keepTip = false) {
       detachRailScroll();
       if (railEl) {
         railEl.remove();
         railEl = null;
       }
-      if (railTipEl) {
+      if (!keepTip && railTipEl) {
         railTipEl.remove();
         railTipEl = null;
+      } else if (keepTip) {
+        hideRailTip();
       }
       railTurnSig = '';
       railTurnNodes = [];
@@ -2338,12 +2350,12 @@
           const nav = safeGetConversationNav();
           let txt = nav && nav.total > idx ? nav.getPreview(idx) : '';
           if (!txt && railTurnNodes[idx]) txt = getTurnPreviewText(railTurnNodes[idx]);
-          showRailTip(dot, idx, txt || '加载提问摘要…');
+          showRailTip(dot, idx, txt || '加载提问摘要…', 'right');
           if (!txt && nav && typeof nav.ensurePreviews === 'function') {
             nav.ensurePreviews(idx, 16, () => {
               if (!disposed && railHoveredDot === dot && railHoveredIdx === idx) {
                 const refreshed = safeGetConversationNav().getPreview(idx);
-                if (refreshed) showRailTip(dot, idx, refreshed);
+                if (refreshed) showRailTip(dot, idx, refreshed, 'right');
               }
             });
           }
@@ -2353,20 +2365,32 @@
         document.body.appendChild(railEl);
       }
 
-      if (!railTipEl && document.body) {
-        railTipEl = document.createElement('div');
-        railTipEl.id = 'ag-ps-rail-tip';
-        railTipEl.setAttribute('data-ag-i18n-ignore', '1');
-        document.body.appendChild(railTipEl);
-      }
+      ensureRailTipOnly();
     }
 
     function syncOutlineRail() {
       const prefs = getPrefs();
-      if (!prefs.alwaysOutlineRail) {
-        removeOutlineRail();
+      const railMode = resolveOutlineRailMode(prefs);
+      const html = document.documentElement;
+      if (html) {
+        setAttr(html, 'data-ag-ps-nav-off', railMode === 'off' ? '1' : '');
+      }
+
+      if (railMode === 'off') {
+        detachHostNavEnhancer();
+        removeOutlineRail(false);
         return;
       }
+
+      if (railMode === 'smart') {
+        const hostNavEl = getVisibleHostConversationNavigator();
+        if (hostNavEl) {
+          removeOutlineRail(true);
+          attachHostNavEnhancer(hostNavEl);
+          return;
+        }
+      }
+      detachHostNavEnhancer();
 
       const vp = safeGetViewportEl();
       const nav = safeGetConversationNav();
@@ -3306,11 +3330,8 @@
 
     function syncSemanticAfterglow(nowMs) {
       const prefs = getPrefs();
-      if (prefs.semanticAfterglow === false) {
-        afterglowDoneUntil = 0;
-        clearAfterglowHost();
-        return;
-      }
+      const fxMode = resolveComposerBorderFx(prefs);
+      const previewStage = getComposerPreviewStage(nowMs);
       const host = safeGetComposerEl() || safeGetOrbHostEl();
       if (!host || !host.isConnected) {
         clearAfterglowHost();
@@ -3321,20 +3342,24 @@
       }
       afterglowHost = host;
 
-      // If user is actively focused inside the composer or typing, clear immediately (0 distraction)
-      const activeEl = document.activeElement;
-      if (safeIsTyping() || (activeEl && host.contains(activeEl))) {
-        afterglowDoneUntil = 0;
-        if (afterglowClearTimer) {
-          clearTimeout(afterglowClearTimer);
-          afterglowClearTimer = 0;
-        }
+      if (previewStage === 'decision' || previewStage === 'done') {
+        setAttr(host, 'data-ag-ps-afterglow', previewStage);
+        return;
+      }
+      if (previewStage === 'beam') {
         setAttr(host, 'data-ag-ps-afterglow', '');
         return;
       }
 
-      if (lastBusy) {
+      if (fxMode === 'off' || prefs.semanticAfterglow === false) {
+        afterglowDoneUntil = 0;
+        clearAfterglowHost();
+        return;
+      }
+
+      if (lastBusy || safeIsTyping()) {
         afterglowDismissedTurnSig = '';
+        afterglowDoneUntil = 0;
         setAttr(host, 'data-ag-ps-afterglow', '');
         return;
       }
@@ -3342,6 +3367,10 @@
       const attn = detectViewportAttentionState();
       let wantState = '';
       if (attn.state && attn.sig !== afterglowDismissedTurnSig) {
+        if (attn.sig !== afterglowLastAttnSig) {
+          afterglowLastAttnSig = attn.sig;
+          afterglowTriggeredAt = nowMs;
+        }
         wantState = attn.state;
       } else if (nowMs < afterglowDoneUntil) {
         wantState = 'done';
@@ -3350,25 +3379,35 @@
       setAttr(host, 'data-ag-ps-afterglow', wantState);
     }
 
+    let afterglowTriggeredAt = 0;
+    let afterglowLastAttnSig = '';
+
+    function dismissAfterglowOnNewInteraction() {
+      if (disposed || !afterglowHost) return;
+      const now = Date.now();
+      if (now < composerPreviewUntil) return;
+      if (now - afterglowTriggeredAt < 120) return;
+      const attn = detectViewportAttentionState();
+      if (attn.sig) afterglowDismissedTurnSig = attn.sig;
+      afterglowDoneUntil = 0;
+      clearAfterglowHost();
+      syncQuotaRingSuppression(now);
+    }
+
     document.addEventListener('pointerdown', (e) => {
       if (disposed || !afterglowHost) return;
       const t = e && e.target;
       if (t && typeof t.closest === 'function' && afterglowHost.contains(t)) {
-        const attn = detectViewportAttentionState();
-        if (attn.sig) afterglowDismissedTurnSig = attn.sig;
-        afterglowDoneUntil = 0;
-        clearAfterglowHost();
+        dismissAfterglowOnNewInteraction();
       }
     }, { signal, passive: true });
 
-    document.addEventListener('focusin', (e) => {
-      if (disposed || !afterglowHost) return;
-      const t = e && e.target;
+    document.addEventListener('keydown', (e) => {
+      if (disposed || !afterglowHost || !e) return;
+      if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') return;
+      const t = e.target;
       if (t && afterglowHost.contains(t)) {
-        const attn = detectViewportAttentionState();
-        if (attn.sig) afterglowDismissedTurnSig = attn.sig;
-        afterglowDoneUntil = 0;
-        clearAfterglowHost();
+        dismissAfterglowOnNewInteraction();
       }
     }, { signal, passive: true });
 
@@ -3488,7 +3527,7 @@
         setAttr(chip, 'data-visible', '1');
       }
 
-      // Build rich tooltip at coarse minute granularity so typing/IME never sees needless attribute churn
+      // Keep aria-label concise without hover tooltip so clicking opens unified quota popover cleanly without overlapping black tip
       const r5Rel = formatRelativeResetShort(q.reset5hAt, nowMs);
       const r7Rel = formatRelativeResetShort(q.reset7dAt, nowMs);
       const tipSegs = [];
@@ -3498,7 +3537,8 @@
       const nextTip = tipSegs.join(' ｜ ');
       if (nextTip !== lastQuotaChipTip) {
         lastQuotaChipTip = nextTip;
-        setAttr(chip, 'data-ag-ps-tip', nextTip);
+        setAttr(chip, 'aria-label', nextTip);
+        if (chip.hasAttribute('data-ag-ps-tip')) chip.removeAttribute('data-ag-ps-tip');
       }
     }
 
@@ -3508,33 +3548,26 @@
     function syncComposerOverlays() {
       const prefs = getPrefs();
       const nowMs = Date.now();
-      const needComposerOverlay = Boolean(
-        prefs.borderBeam ||
-        prefs.quotaRing ||
-        isBeamPreviewActive(nowMs)
-      );
+      const fxMode = resolveComposerBorderFx(prefs);
+      const needBeam = fxMode === 'beam' || fxMode === 'smart' || getComposerPreviewStage(nowMs) === 'beam';
+      const needRing = Boolean(prefs.quotaRing && fxMode !== 'off');
+      const needComposerOverlay = needBeam || needRing;
 
       if (!needComposerOverlay) {
-        beamAlpha = 0;
-        if (beamCanvas) {
-          beamCanvas.remove();
-          beamCanvas = null;
-          beamCtx = null;
-        }
+        removeBeamRingEl();
         syncQuotaRing();
         detachComposerHost();
       } else {
         const host = safeGetComposerEl();
         if (!host) {
+          removeBeamRingEl();
           detachComposerHost();
         } else {
           attachComposerHost(host);
-          if (prefs.borderBeam || isBeamPreviewActive(nowMs)) {
-            ensureBeamCanvas();
-          } else if (beamCanvas && beamAlpha <= 0.004) {
-            beamCanvas.remove();
-            beamCanvas = null;
-            beamCtx = null;
+          if (needBeam) {
+            syncBorderBeamDom(nowMs, prefs);
+          } else {
+            removeBeamRingEl();
           }
           syncQuotaRing();
         }
@@ -3542,7 +3575,7 @@
 
       syncThinkingOrbMount();
 
-      if (!needComposerOverlay && !prefs.thinkingOrb) {
+      if (!prefs.thinkingOrb) {
         stopScheduler();
       }
     }
@@ -3558,10 +3591,15 @@
       if (prevBusy && !busy) {
         orbDoneUntil = nowMs + ORB_CONVERGE_MS;
         afterglowDoneUntil = nowMs + 9500;
+        afterglowTriggeredAt = nowMs;
         if (afterglowClearTimer) clearTimeout(afterglowClearTimer);
         afterglowClearTimer = setTimeout(() => {
           afterglowClearTimer = 0;
-          if (!disposed) syncSemanticAfterglow(Date.now());
+          if (!disposed) {
+            const t = Date.now();
+            syncSemanticAfterglow(t);
+            syncQuotaRingSuppression(t);
+          }
         }, 9600);
       }
 
@@ -3619,7 +3657,7 @@
       const curPrefs = getPrefs();
       if (isEffectivelyReducedMotion(curPrefs)) {
         stopScheduler();
-        clearBeamCanvas();
+        syncBorderBeamDom(nowMs, curPrefs);
         if (orbCanvas && curPrefs.thinkingOrb) {
           const staticSig = `${orbStage}|${safeIsDark() ? 1 : 0}|${safeGetThemeAccent()}|${orbCanvas.width}`;
           if (orbCanvas._lastStaticSig !== staticSig) {
@@ -3708,13 +3746,19 @@
       windowFocused = true;
       if (fxRestoreRaf1 || fxRestoreRaf2 || fxRestoreTimer) return;
       clearUnreadBadge();
-      if (shouldRunScheduler(Date.now())) ensureScheduler();
+      const now = Date.now();
+      syncBorderBeamDom(now);
+      syncQuotaRingSuppression(now);
+      if (shouldRunScheduler(now)) ensureScheduler();
     }, { signal });
 
     window.addEventListener('blur', () => {
       if (disposed) return;
       windowFocused = false;
-      if (!shouldRunScheduler(Date.now())) stopScheduler();
+      const now = Date.now();
+      syncBorderBeamDom(now);
+      syncQuotaRingSuppression(now);
+      if (!shouldRunScheduler(now)) stopScheduler();
     }, { signal });
 
     window.addEventListener('resize', () => {
@@ -3747,6 +3791,7 @@
       if (type === 'theme') {
         beamPaletteCacheKey = '';
         applyBubbleTintAndCompact();
+        syncBorderBeamDom(Date.now());
         if (orbCanvas && getPrefs().thinkingOrb && !sharedRafId) {
           renderThinkingOrbFrame(0, Date.now(), true);
         }
@@ -3782,263 +3827,297 @@
     }
 
     /* ========================================================================
-     * 12. Popover Panel Section Registration (id: 'fx', order: 10)
+     * 12. Popover Panel Section Registration (id: 'fx', order: 10, 4-Tab Aware)
      * ======================================================================== */
     bus.registerPanelSection({
       id: 'fx',
       order: 10,
-      title: '视觉特效与排版',
-      render(rawPrefs) {
+      title: '',
+      render(rawPrefs, helpers) {
         const p = Object.assign({}, FX_DEFAULTS, rawPrefs || {});
+        const activeTab = (helpers && helpers.activeTab) || 'appearance';
         const previewing = isBeamPreviewActive(Date.now());
         const strength = clampInt(p.bubbleTintStrength, 10, 100, 22);
         const perfMode = p.performanceMode || 'balanced';
+        const edgeMode = resolveComposerBorderFx(p);
+        const railMode = resolveOutlineRailMode(p);
         const curChatFont = sanitizeFontFamilyPref(p.chatFontFamily || '') || '';
         const curCodeFont = sanitizeFontFamilyPref(p.codeFontFamily || '') || '';
 
-        const chatFontChips = CHAT_FONT_PRESETS.map((item) => {
-          const sel = curChatFont === item.value ? '1' : '0';
-          return `<button type="button" class="ag-ps-fx-chip" data-fx-chat-font-preset="${escapeHtml(item.value)}" data-selected="${sel}">${escapeHtml(item.label)}</button>`;
-        }).join('');
+        if (activeTab === 'appearance') {
+          const chatFontChips = CHAT_FONT_PRESETS.map((item) => {
+            const sel = curChatFont === item.value ? '1' : '0';
+            return `<button type="button" class="ag-ps-fx-chip" data-fx-chat-font-preset="${escapeHtml(item.value)}" data-selected="${sel}">${escapeHtml(item.label)}</button>`;
+          }).join('');
 
-        const codeFontChips = CODE_FONT_PRESETS.map((item) => {
-          const sel = curCodeFont === item.value ? '1' : '0';
-          return `<button type="button" class="ag-ps-fx-chip" data-fx-code-font-preset="${escapeHtml(item.value)}" data-selected="${sel}">${escapeHtml(item.label)}</button>`;
-        }).join('');
+          const codeFontChips = CODE_FONT_PRESETS.map((item) => {
+            const sel = curCodeFont === item.value ? '1' : '0';
+            return `<button type="button" class="ag-ps-fx-chip" data-fx-code-font-preset="${escapeHtml(item.value)}" data-selected="${sel}">${escapeHtml(item.label)}</button>`;
+          }).join('');
 
-        const beamChips = BEAM_PALETTE_LABELS.map((item) => {
-          const sel = (p.borderBeamPalette || 'theme') === item.id ? '1' : '0';
-          return `<button type="button" class="ag-ps-fx-chip" data-fx-beam-palette="${escapeHtml(item.id)}" data-selected="${sel}"><span class="ag-ps-fx-dot" style="background:${escapeHtml(item.dot)}"></span>${escapeHtml(item.label)}</button>`;
-        }).join('');
+          const bubbleSwatches = BUBBLE_PRESETS.map((item) => {
+            const sel = (p.bubbleTintPreset || 'accent') === item.id ? '1' : '0';
+            return `<button type="button" class="ag-ps-fx-swatch-btn" data-fx-bubble-preset="${escapeHtml(item.id)}" data-selected="${sel}" style="background:${escapeHtml(item.swatch)}" data-ag-ps-tip="${escapeHtml(item.label)}" aria-label="${escapeHtml(item.label)}"></button>`;
+          }).join('');
 
-        const bubbleSwatches = BUBBLE_PRESETS.map((item) => {
-          const sel = (p.bubbleTintPreset || 'accent') === item.id ? '1' : '0';
-          return `<button type="button" class="ag-ps-fx-swatch-btn" data-fx-bubble-preset="${escapeHtml(item.id)}" data-selected="${sel}" style="background:${escapeHtml(item.swatch)}" data-ag-ps-tip="${escapeHtml(item.label)}" aria-label="${escapeHtml(item.label)}"></button>`;
-        }).join('');
+          return `
+            <div class="ag-ps-toggle-list">
+              <div class="ag-ps-toggle-row">
+                <div class="ag-ps-toggle-label" data-ag-ps-tip="在浅色与深色全主题下为代码块、工具/变更卡片、提问气泡与 kbd 键帽赋予立体微切面高光，并将分屏条化为 1px 棱镜微光线">
+                  <span>光学立体切面与分割线</span>
+                  <span class="ag-ps-toggle-sub">全主题卡片层次 · 气泡微边 · 1px 分屏光丝</span>
+                </div>
+                <button type="button" class="ag-ps-switch" data-fx-toggle="opticalFacets" data-on="${p.opticalFacets !== false ? '1' : '0'}" aria-label="光学立体切面与分割线"></button>
+              </div>
+
+              <div class="ag-ps-toggle-row">
+                <div class="ag-ps-toggle-label" data-ag-ps-tip="为用户提问气泡添加主题融合色调，浓度 ≥70% 自动反白保证可读性">
+                  <span>用户消息气泡着色</span>
+                  <span class="ag-ps-toggle-sub">柔和融合 · 高浓度自动对比字色</span>
+                </div>
+                <button type="button" class="ag-ps-switch" data-fx-toggle="bubbleTint" data-on="${p.bubbleTint ? '1' : '0'}" aria-label="用户消息气泡着色"></button>
+              </div>
+              ${
+                p.bubbleTint
+                  ? `<div class="ag-ps-subpanel">
+                      <div class="ag-ps-toggle-row">
+                        <span class="ag-ps-toggle-sub">色调</span>
+                        <div class="ag-ps-fx-swatch-row">${bubbleSwatches}</div>
+                      </div>
+                      <div class="ag-ps-toggle-row">
+                        <span class="ag-ps-toggle-sub">浓度</span>
+                        <div class="ag-ps-range-wrap">
+                          <input type="range" class="ag-ps-range" data-fx-bubble-strength="1" min="10" max="100" step="2" value="${strength}" aria-label="气泡着色浓度" />
+                          <span class="ag-ps-range-val" data-fx-bubble-strength-val="1">${strength}%</span>
+                          <button type="button" class="ag-ps-mini-reset" data-fx-bubble-reset="1" ${strength === 22 ? 'disabled' : ''}>复位</button>
+                        </div>
+                      </div>
+                    </div>`
+                  : ''
+              }
+
+              <div class="ag-ps-toggle-row">
+                <div class="ag-ps-toggle-label" data-ag-ps-tip="收紧正文行高至 1.42 与段落间距，完整保留你偏好的字号">
+                  <span>紧凑排版</span>
+                  <span class="ag-ps-toggle-sub">行高 1.42 · 同屏信息密度更高</span>
+                </div>
+                <button type="button" class="ag-ps-switch" data-fx-toggle="compactLayout" data-on="${p.compactLayout ? '1' : '0'}" aria-label="紧凑排版"></button>
+              </div>
+
+              <div class="ag-ps-subpanel ag-ps-font-subpanel">
+                <div class="ag-ps-toggle-sub" style="font-weight:600;color:var(--foreground,#141413)">自定义对话与代码字体</div>
+                <div class="ag-ps-toggle-sub">正文字体</div>
+                <div class="ag-ps-fx-chip-grid ag-ps-fx-chip-grid-4">${chatFontChips}</div>
+                <input type="text" class="ag-ps-font-input" data-fx-font-input="chatFontFamily" maxlength="160" value="${escapeHtml(curChatFont)}" placeholder="输入正文字体名称，按回车生效" aria-label="自定义对话正文字体" />
+                <div class="ag-ps-toggle-sub" style="margin-top:3px">代码字体</div>
+                <div class="ag-ps-fx-chip-grid ag-ps-fx-chip-grid-4">${codeFontChips}</div>
+                <input type="text" class="ag-ps-font-input" data-fx-font-input="codeFontFamily" maxlength="160" value="${escapeHtml(curCodeFont)}" placeholder="输入代码字体名称，按回车生效" aria-label="自定义代码字体" />
+              </div>
+            </div>
+          `;
+        }
+
+        if (activeTab === 'motion') {
+          const beamChips = BEAM_PALETTE_LABELS.map((item) => {
+            const sel = (p.borderBeamPalette || 'theme') === item.id ? '1' : '0';
+            return `<button type="button" class="ag-ps-fx-chip" data-fx-beam-palette="${escapeHtml(item.id)}" data-selected="${sel}"><span class="ag-ps-fx-dot" style="background:${escapeHtml(item.dot)}"></span>${escapeHtml(item.label)}</button>`;
+          }).join('');
+
+          const edgeSubDesc =
+            edgeMode === 'off'
+              ? '已关闭边缘光效'
+              : edgeMode === 'beam'
+                ? '聚焦时常驻丝滑流光 · 完工或待确认亮余晖'
+                : edgeMode === 'static'
+                  ? '无旋转动画 · 思考黄 / 待确认红 / 完成绿三色微光'
+                  : '回复时亮丝滑流光 · 完工或待确认亮三色微光';
+
+          return `
+            <div class="ag-ps-toggle-list">
+              <div class="ag-ps-toggle-row">
+                <div class="ag-ps-toggle-label" data-ag-ps-tip="省电：暂停常驻动效更省电量；均衡：日常推荐，闲置自动休眠；满血：增强光晕与活力表现">
+                  <span>动效强度</span>
+                  <span class="ag-ps-toggle-sub">${perfMode === 'power-save' ? '省电 · 静态安静更省电' : perfMode === 'vivid' ? '满血 · 灵动光晕增强' : '均衡 · 日常流畅闲置休眠'}</span>
+                </div>
+                <div class="ag-ps-seg-group">
+                  <button type="button" class="ag-ps-seg-btn" data-fx-perf-mode="power-save" data-selected="${perfMode === 'power-save' ? '1' : '0'}">省电</button>
+                  <button type="button" class="ag-ps-seg-btn" data-fx-perf-mode="balanced" data-selected="${perfMode === 'balanced' ? '1' : '0'}">均衡</button>
+                  <button type="button" class="ag-ps-seg-btn" data-fx-perf-mode="vivid" data-selected="${perfMode === 'vivid' ? '1' : '0'}">满血</button>
+                </div>
+              </div>
+
+              <div class="ag-ps-toggle-row" style="align-items:flex-start;flex-direction:column;gap:6px">
+                <div style="display:flex;align-items:center;justify-content:space-between;width:100%;gap:8px">
+                  <div class="ag-ps-toggle-label" data-ag-ps-tip="统一管理输入框流光、三色状态余晖与剩余额度弧线；点击右侧预览可立即在底部输入框体验三段式效果">
+                    <span>输入框边缘光效</span>
+                    <span class="ag-ps-toggle-sub">${edgeSubDesc}</span>
+                  </div>
+                  <button type="button" class="ag-ps-fx-preview-btn" data-fx-beam-preview="1" data-active="${previewing ? '1' : '0'}">预览光效</button>
+                </div>
+                <div class="ag-ps-seg-group" style="width:100%;display:grid;grid-template-columns:repeat(4,minmax(0,1fr))">
+                  <button type="button" class="ag-ps-seg-btn" data-fx-composer-edge="off" data-selected="${edgeMode === 'off' ? '1' : '0'}">关</button>
+                  <button type="button" class="ag-ps-seg-btn" data-fx-composer-edge="smart" data-selected="${edgeMode === 'smart' ? '1' : '0'}">智能</button>
+                  <button type="button" class="ag-ps-seg-btn" data-fx-composer-edge="beam" data-selected="${edgeMode === 'beam' ? '1' : '0'}">常驻流光</button>
+                  <button type="button" class="ag-ps-seg-btn" data-fx-composer-edge="static" data-selected="${edgeMode === 'static' ? '1' : '0'}">纯静余晖</button>
+                </div>
+              </div>
+              ${
+                edgeMode !== 'off'
+                  ? `<div class="ag-ps-subpanel">
+                      ${
+                        edgeMode === 'smart' || edgeMode === 'beam'
+                          ? `<div class="ag-ps-toggle-sub">流光配色</div>
+                             <div class="ag-ps-fx-chip-grid">${beamChips}</div>`
+                          : ''
+                      }
+                      <div class="ag-ps-toggle-row">
+                        <span class="ag-ps-toggle-sub" data-ag-ps-tip="空闲时在输入框边缘显示剩余额度色弧（绿 / 黄 / 红），AI 回复或亮起余晖时自动让位">空闲显示剩余额度环</span>
+                        <button type="button" class="ag-ps-switch" data-fx-toggle="quotaRing" data-on="${p.quotaRing ? '1' : '0'}" aria-label="空闲显示剩余额度环"></button>
+                      </div>
+                      ${
+                        p.quotaRing
+                          ? `<div class="ag-ps-toggle-row">
+                              <span class="ag-ps-toggle-sub">追踪周期</span>
+                              <div class="ag-ps-seg-group">
+                                <button type="button" class="ag-ps-seg-btn" data-fx-qring-period="auto" data-selected="${p.quotaRingPeriod === 'auto' ? '1' : '0'}">自动</button>
+                                <button type="button" class="ag-ps-seg-btn" data-fx-qring-period="weekly" data-selected="${p.quotaRingPeriod === 'weekly' ? '1' : '0'}">周额度</button>
+                                <button type="button" class="ag-ps-seg-btn" data-fx-qring-period="5h" data-selected="${p.quotaRingPeriod === '5h' ? '1' : '0'}">5h</button>
+                              </div>
+                            </div>`
+                          : ''
+                      }
+                    </div>`
+                  : ''
+              }
+
+              <div class="ag-ps-toggle-row">
+                <div class="ag-ps-toggle-label" data-ag-ps-tip="输入框左上方立体粒子球随思考、调用工具与输出实时变化形态，回复结束后自动静止">
+                  <span>思考粒子球</span>
+                  <span class="ag-ps-toggle-sub">随 AI 思考与输出灵动变形</span>
+                </div>
+                <button type="button" class="ag-ps-switch" data-fx-toggle="thinkingOrb" data-on="${p.thinkingOrb ? '1' : '0'}" aria-label="思考粒子球"></button>
+              </div>
+              ${
+                p.thinkingOrb
+                  ? `<div class="ag-ps-subpanel">
+                      <div class="ag-ps-toggle-row">
+                        <span class="ag-ps-toggle-sub">与像素伙伴</span>
+                        <div class="ag-ps-seg-group">
+                          <button type="button" class="ag-ps-seg-btn" data-fx-orb-mode="both" data-selected="${p.thinkingOrbMode !== 'replace' ? '1' : '0'}">左右共存</button>
+                          <button type="button" class="ag-ps-seg-btn" data-fx-orb-mode="replace" data-selected="${p.thinkingOrbMode === 'replace' ? '1' : '0'}">替换伙伴</button>
+                        </div>
+                      </div>
+                    </div>`
+                  : ''
+              }
+
+              <details class="ag-ps-adv-fold">
+                <summary>系统动画兼容选项</summary>
+                <div class="ag-ps-toggle-list">
+                  <div class="ag-ps-toggle-row">
+                    <div class="ag-ps-toggle-label" data-ag-ps-tip="当 Windows 系统开启了「减少动画」导致特效不动时，开启此项可继续保留思考球、流光与像素伙伴动画">
+                      <span>系统关动画时仍保留动效</span>
+                      <span class="ag-ps-toggle-sub">不受系统「减少动态效果」限制</span>
+                    </div>
+                    <button type="button" class="ag-ps-switch" data-fx-toggle="ignoreReducedMotion" data-on="${p.ignoreReducedMotion ? '1' : '0'}" aria-label="系统关动画时仍保留动效"></button>
+                  </div>
+                </div>
+              </details>
+            </div>
+          `;
+        }
+
+        if (activeTab === 'nav') {
+          const railSubDesc =
+            railMode === 'smart'
+              ? '优先赋能左栏提问预览 · 自动收起右侧防冲突'
+              : railMode === 'right'
+                ? '轮次圆点目录（右侧常驻） · 自动避让右侧面板'
+                : '已隐藏左右轮次点阵导航';
+
+          return `
+            <div class="ag-ps-toggle-list">
+              <div class="ag-ps-toggle-row">
+                <div class="ag-ps-toggle-label" data-ag-ps-tip="智能左栏：有原生左侧导航时自动收起右侧圆点（彻底避免遮挡滚动条）并为左栏补上中文提问预览；右侧：强制显示轮次圆点目录（右侧常驻）">
+                  <span>侧边轮次点阵导航</span>
+                  <span class="ag-ps-toggle-sub">${railSubDesc}</span>
+                </div>
+                <div class="ag-ps-seg-group">
+                  <button type="button" class="ag-ps-seg-btn" data-fx-rail-mode="smart" data-selected="${railMode === 'smart' ? '1' : '0'}">智能左栏</button>
+                  <button type="button" class="ag-ps-seg-btn" data-fx-rail-mode="right" data-selected="${railMode === 'right' ? '1' : '0'}">右侧</button>
+                  <button type="button" class="ag-ps-seg-btn" data-fx-rail-mode="off" data-selected="${railMode === 'off' ? '1' : '0'}">关</button>
+                </div>
+              </div>
+
+              <div class="ag-ps-toggle-row">
+                <div class="ag-ps-toggle-label" data-ag-ps-tip="记住你打开右侧「概览」面板的状态，切换对话或关闭工作台时不自动收起">
+                  <span>保持右侧概览常开</span>
+                  <span class="ag-ps-toggle-sub">切换对话时不自动收起右侧概览</span>
+                </div>
+                <button type="button" class="ag-ps-switch" data-fx-toggle="keepOverviewOpen" data-on="${p.keepOverviewOpen ? '1' : '0'}" aria-label="保持右侧概览常开"></button>
+              </div>
+
+              <div class="ag-ps-toggle-row">
+                <div class="ag-ps-toggle-label" data-ag-ps-tip="调整左侧边栏默认展示的历史对话条数">
+                  <span>左侧历史对话显示数</span>
+                  <span class="ag-ps-toggle-sub">一键展开更多历史记录</span>
+                </div>
+                <div class="ag-ps-seg-group">
+                  <button type="button" class="ag-ps-seg-btn" data-fx-sidebar-sessions="default" data-selected="${p.sidebarSessions === 'default' ? '1' : '0'}">默认</button>
+                  <button type="button" class="ag-ps-seg-btn" data-fx-sidebar-sessions="10" data-selected="${p.sidebarSessions === '10' ? '1' : '0'}">10条</button>
+                  <button type="button" class="ag-ps-seg-btn" data-fx-sidebar-sessions="all" data-selected="${p.sidebarSessions === 'all' ? '1' : '0'}">全部</button>
+                </div>
+              </div>
+            </div>
+          `;
+        }
 
         return `
           <div class="ag-ps-toggle-list">
             <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="省电：0fps 静态画面并暂停常驻动效；均衡：标准流畅节奏；满血：增强光晕与活力动效">
-                <span>性能模式</span>
-                <span class="ag-ps-toggle-sub">${perfMode === 'power-save' ? '省电 · 0fps 静态节能' : perfMode === 'vivid' ? '满血 · 灵动光晕增强' : '均衡 · 标准流畅闲置休眠'}</span>
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="在输入框下方实时显示 5h 与每周剩余额度百分比，点击查看详情，按住 Shift 点击直达切号">
+                <span>底栏实时额度百分比</span>
+                <span class="ag-ps-toggle-sub">输入框底部显示 5h · 7d 剩余比例</span>
               </div>
-              <div class="ag-ps-seg-group">
-                <button type="button" class="ag-ps-seg-btn" data-fx-perf-mode="power-save" data-selected="${perfMode === 'power-save' ? '1' : '0'}">省电</button>
-                <button type="button" class="ag-ps-seg-btn" data-fx-perf-mode="balanced" data-selected="${perfMode === 'balanced' ? '1' : '0'}">均衡</button>
-                <button type="button" class="ag-ps-seg-btn" data-fx-perf-mode="vivid" data-selected="${perfMode === 'vivid' ? '1' : '0'}">满血</button>
-              </div>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="compactQuotaPill" data-on="${p.compactQuotaPill !== false ? '1' : '0'}" aria-label="底栏实时额度百分比"></button>
             </div>
 
             <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="Windows 或系统开启「减少动态效果」时，依然允许 ThinkingOrb、流光边框与像素伙伴播放丝滑动效（省电模式下仍以省电优先）">
-                <span>忽略系统「减少动画」</span>
-                <span class="ag-ps-toggle-sub">系统关动画时仍保留思考球与伙伴动效</span>
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="当周额度低于 5% 或 5h 额度低于 10% 时温和提醒切换模型或备用账号">
+                <span>额度见底温和提醒</span>
+                <span class="ag-ps-toggle-sub">7d≤5% 提示切号 · 5h≤10% 提示换模型</span>
               </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="ignoreReducedMotion" data-on="${p.ignoreReducedMotion ? '1' : '0'}" aria-label="忽略系统「减少动画」"></button>
-            </div>
-
-            <div class="ag-ps-subpanel ag-ps-font-subpanel">
-              <div class="ag-ps-toggle-sub" style="font-weight:600;color:var(--foreground,#141413)">自定义对话与代码字体</div>
-              <div class="ag-ps-toggle-sub">正文字体</div>
-              <div class="ag-ps-fx-chip-grid ag-ps-fx-chip-grid-4">${chatFontChips}</div>
-              <input type="text" class="ag-ps-font-input" data-fx-font-input="chatFontFamily" maxlength="160" value="${escapeHtml(curChatFont)}" placeholder="自定义正文字体族，回车生效" aria-label="自定义对话正文字体族" />
-              <div class="ag-ps-toggle-sub" style="margin-top:3px">代码字体</div>
-              <div class="ag-ps-fx-chip-grid ag-ps-fx-chip-grid-4">${codeFontChips}</div>
-              <input type="text" class="ag-ps-font-input" data-fx-font-input="codeFontFamily" maxlength="160" value="${escapeHtml(curCodeFont)}" placeholder="自定义等宽字体族，回车生效" aria-label="自定义代码等宽字体族" />
+              <button type="button" class="ag-ps-switch" data-fx-toggle="quotaHandoffAlert" data-on="${p.quotaHandoffAlert ? '1' : '0'}" aria-label="额度见底温和提醒"></button>
             </div>
 
             <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="为快捷键 kbd 赋予立体键帽质感、变更与文档卡片增加顶边光学切面高光，并将分屏拖拽线精炼为 1px 悬停微光极细线">
-                <span>光学微切面与极细分割线</span>
-                <span class="ag-ps-toggle-sub">立体键帽 · 卡片高光 · 1px 分屏微光</span>
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="去设置页切换账号后，在页面顶部提供「返回刚才的对话」快捷横幅">
+                <span>设置页切号后一键回原对话</span>
+                <span class="ag-ps-toggle-sub">进入设置页时顶部显示返回按钮</span>
               </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="opticalFacets" data-on="${p.opticalFacets !== false ? '1' : '0'}" aria-label="光学微切面与极细分割线"></button>
-            </div>
-
-            <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="0fps 静态边缘语义余晖：待确认亮琥珀金、异常亮珊瑚红、回复完成亮翡翠微光，聚焦或点击输入框立即消退">
-                <span>输入框语义边缘余晖</span>
-                <span class="ag-ps-toggle-sub">0fps 三态微光 · 聚焦输入框即消退</span>
-              </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="semanticAfterglow" data-on="${p.semanticAfterglow !== false ? '1' : '0'}" aria-label="输入框语义边缘余晖"></button>
-            </div>
-
-            <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="在输入框底栏上下文圆环旁展示紧凑 5h · 7d 剩余额度胶囊，点击展开限额面板，Shift+点击打开账号接力">
-                <span>底栏紧凑双池额度胶囊</span>
-                <span class="ag-ps-toggle-sub">5h · 7d 实时余量 · 零输入法闪烁</span>
-              </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="compactQuotaPill" data-on="${p.compactQuotaPill !== false ? '1' : '0'}" aria-label="底栏紧凑双池额度胶囊"></button>
-            </div>
-
-            <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="在输入框边缘流动彗星光带；支持常驻流光（失焦自动 0fps 休眠）或仅生成时激活">
-                <span>输入框流光边框</span>
-                <span class="ag-ps-toggle-sub">${(p.borderBeamMode || 'always') === 'always' ? '常驻流光 · 失焦自动 0fps' : '仅生成态流光 · 闲置 0fps'}</span>
-              </div>
-              <div class="ag-ps-fx-inline">
-                <button type="button" class="ag-ps-fx-preview-btn" data-fx-beam-preview="1" data-active="${previewing ? '1' : '0'}">试用 3s</button>
-                <button type="button" class="ag-ps-switch" data-fx-toggle="borderBeam" data-on="${p.borderBeam ? '1' : '0'}" aria-label="输入框流光边框"></button>
-              </div>
-            </div>
-            ${
-              p.borderBeam
-                ? `<div class="ag-ps-subpanel">
-                    <div class="ag-ps-toggle-row">
-                      <span class="ag-ps-toggle-sub">显示模式</span>
-                      <div class="ag-ps-seg-group">
-                        <button type="button" class="ag-ps-seg-btn" data-fx-beam-mode="always" data-selected="${(p.borderBeamMode || 'always') === 'always' ? '1' : '0'}">常驻流光</button>
-                        <button type="button" class="ag-ps-seg-btn" data-fx-beam-mode="busy" data-selected="${p.borderBeamMode === 'busy' ? '1' : '0'}">仅生成时</button>
-                      </div>
-                    </div>
-                    <div class="ag-ps-toggle-sub">流光色系</div>
-                    <div class="ag-ps-fx-chip-grid">${beamChips}</div>
-                  </div>`
-                : ''
-            }
-
-            <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="静态 SVG 描边显示剩余额度，流光激活时自动优雅让位">
-                <span>输入框额度光环</span>
-                <span class="ag-ps-toggle-sub">静态 0fps · 绿 / 琥珀 / 红三阶</span>
-              </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="quotaRing" data-on="${p.quotaRing ? '1' : '0'}" aria-label="输入框额度光环"></button>
-            </div>
-            ${
-              p.quotaRing
-                ? `<div class="ag-ps-subpanel">
-                    <div class="ag-ps-toggle-row">
-                      <span class="ag-ps-toggle-sub">追踪周期</span>
-                      <div class="ag-ps-seg-group">
-                        <button type="button" class="ag-ps-seg-btn" data-fx-qring-period="auto" data-selected="${p.quotaRingPeriod === 'auto' ? '1' : '0'}">自动</button>
-                        <button type="button" class="ag-ps-seg-btn" data-fx-qring-period="weekly" data-selected="${p.quotaRingPeriod === 'weekly' ? '1' : '0'}">周额度</button>
-                        <button type="button" class="ag-ps-seg-btn" data-fx-qring-period="5h" data-selected="${p.quotaRingPeriod === '5h' ? '1' : '0'}">5h</button>
-                      </div>
-                    </div>
-                  </div>`
-                : ''
-            }
-
-            <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="128 粒子 3D 球体随思考/工具/输出实时变形，结束后 1.2s 自动停帧">
-                <span>ThinkingOrb 粒子球</span>
-                <span class="ag-ps-toggle-sub">3D 实时态变形 · 悬停视差</span>
-              </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="thinkingOrb" data-on="${p.thinkingOrb ? '1' : '0'}" aria-label="ThinkingOrb 粒子球"></button>
-            </div>
-            ${
-              p.thinkingOrb
-                ? `<div class="ag-ps-subpanel">
-                    <div class="ag-ps-toggle-row">
-                      <span class="ag-ps-toggle-sub">与像素伙伴</span>
-                      <div class="ag-ps-seg-group">
-                        <button type="button" class="ag-ps-seg-btn" data-fx-orb-mode="both" data-selected="${p.thinkingOrbMode !== 'replace' ? '1' : '0'}">左右共存</button>
-                        <button type="button" class="ag-ps-seg-btn" data-fx-orb-mode="replace" data-selected="${p.thinkingOrbMode === 'replace' ? '1' : '0'}">替换伙伴</button>
-                      </div>
-                    </div>
-                  </div>`
-                : ''
-            }
-
-            <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="为用户提问气泡添加主题融合色调，浓度 ≥70% 自动反白保证可读性">
-                <span>用户消息气泡着色</span>
-                <span class="ag-ps-toggle-sub">柔和融合 · 高浓度自动对比字色</span>
-              </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="bubbleTint" data-on="${p.bubbleTint ? '1' : '0'}" aria-label="用户消息气泡着色"></button>
-            </div>
-            ${
-              p.bubbleTint
-                ? `<div class="ag-ps-subpanel">
-                    <div class="ag-ps-toggle-row">
-                      <span class="ag-ps-toggle-sub">色调</span>
-                      <div class="ag-ps-fx-swatch-row">${bubbleSwatches}</div>
-                    </div>
-                    <div class="ag-ps-toggle-row">
-                      <span class="ag-ps-toggle-sub">浓度</span>
-                      <div class="ag-ps-range-wrap">
-                        <input type="range" class="ag-ps-range" data-fx-bubble-strength="1" min="10" max="100" step="2" value="${strength}" aria-label="气泡着色浓度" />
-                        <span class="ag-ps-range-val" data-fx-bubble-strength-val="1">${strength}%</span>
-                        <button type="button" class="ag-ps-mini-reset" data-fx-bubble-reset="1" ${strength === 22 ? 'disabled' : ''}>复位</button>
-                      </div>
-                    </div>
-                  </div>`
-                : ''
-            }
-
-            <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="收紧正文行高至 1.42 与段落间距，完整保留你偏好的字号">
-                <span>紧凑排版</span>
-                <span class="ag-ps-toggle-sub">行高 1.42 · 同屏信息密度更高</span>
-              </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="compactLayout" data-on="${p.compactLayout ? '1' : '0'}" aria-label="紧凑排版"></button>
-            </div>
-
-            <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="开启时在对话视口右侧常驻显示轮次圆点目录，关闭即彻底隐藏；展开概览或侧边面板时自动左移避让">
-                <span>轮次圆点目录（右侧常驻）</span>
-                <span class="ag-ps-toggle-sub">开启时右侧常驻，关闭即隐藏 · 面板自动避让</span>
-              </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="alwaysOutlineRail" data-on="${p.alwaysOutlineRail ? '1' : '0'}" aria-label="轮次圆点目录（右侧常驻）"></button>
-            </div>
-
-            <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="标签页在后台完成回复时，自动在窗口标题显示 (N) 未读计数">
-                <span>后台完成标题提醒</span>
-                <span class="ag-ps-toggle-sub">切回窗口自动清零标题角标</span>
-              </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="unreadBadge" data-on="${p.unreadBadge ? '1' : '0'}" aria-label="后台完成标题提醒"></button>
-            </div>
-
-            <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="记住你展开右侧概览面板的状态，切换会话或收起侧边分屏面板时自动保持展开">
-                <span>保持概览面板展开</span>
-                <span class="ag-ps-toggle-sub">切会话 / 收起侧边栏不连带消失</span>
-              </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="keepOverviewOpen" data-on="${p.keepOverviewOpen ? '1' : '0'}" aria-label="保持概览面板展开"></button>
-            </div>
-
-            <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="控制左侧会话列表展示数量或自动展开全部历史会话">
-                <span>侧边栏会话数</span>
-                <span class="ag-ps-toggle-sub">轻量同步 · 无全局监听开销</span>
-              </div>
-              <div class="ag-ps-seg-group">
-                <button type="button" class="ag-ps-seg-btn" data-fx-sidebar-sessions="default" data-selected="${p.sidebarSessions === 'default' ? '1' : '0'}">默认</button>
-                <button type="button" class="ag-ps-seg-btn" data-fx-sidebar-sessions="10" data-selected="${p.sidebarSessions === '10' ? '1' : '0'}">10条</button>
-                <button type="button" class="ag-ps-seg-btn" data-fx-sidebar-sessions="all" data-selected="${p.sidebarSessions === 'all' ? '1' : '0'}">全部</button>
-              </div>
-            </div>
-
-            <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="记住最近会话路由，手动前往设置页切换账号后在顶部提供一键返回，绝不触碰凭据或自动点击弹窗">
-                <span>设置页快速返回会话</span>
-                <span class="ag-ps-toggle-sub">切号后一键回原会话 · 零盲点</span>
-              </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="switchReturnHelper" data-on="${p.switchReturnHelper ? '1' : '0'}" aria-label="设置页快速返回会话"></button>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="switchReturnHelper" data-on="${p.switchReturnHelper ? '1' : '0'}" aria-label="设置页切号后一键回原对话"></button>
             </div>
             ${
               p.switchReturnHelper
                 ? `<div class="ag-ps-subpanel">
                     <div class="ag-ps-toggle-row">
-                      <span class="ag-ps-toggle-sub" data-ag-ps-tip="仅在设置页且当前无任何弹窗时启动 3 秒可取消倒计时自动返回">无弹窗 3s 倒计时返回</span>
-                      <button type="button" class="ag-ps-switch" data-fx-toggle="switchAutoReturn" data-on="${p.switchAutoReturn ? '1' : '0'}" aria-label="无弹窗 3s 倒计时返回"></button>
+                      <span class="ag-ps-toggle-sub" data-ag-ps-tip="在设置页无弹窗操作时启动 3 秒可取消倒计时，自动回到原对话">无弹窗 3s 自动返回</span>
+                      <button type="button" class="ag-ps-switch" data-fx-toggle="switchAutoReturn" data-on="${p.switchAutoReturn ? '1' : '0'}" aria-label="无弹窗 3s 自动返回"></button>
                     </div>
                     <div class="ag-ps-toggle-row">
-                      <span class="ag-ps-toggle-sub" data-ag-ps-tip="仅精确匹配官方 One last thing... 欢迎框并点 Continue，不改隐私勾选">自动确认登录欢迎弹窗</span>
-                      <button type="button" class="ag-ps-switch" data-fx-toggle="autoDismissOnboarding" data-on="${p.autoDismissOnboarding ? '1' : '0'}" aria-label="自动确认登录欢迎弹窗"></button>
+                      <span class="ag-ps-toggle-sub" data-ag-ps-tip="切换新账号弹出首次欢迎提示框时自动点继续，不改动任何隐私选项">自动跳过新号欢迎弹窗</span>
+                      <button type="button" class="ag-ps-switch" data-fx-toggle="autoDismissOnboarding" data-on="${p.autoDismissOnboarding ? '1' : '0'}" aria-label="自动跳过新号欢迎弹窗"></button>
                     </div>
                   </div>`
                 : ''
             }
 
             <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="实时读取可见额度：7d ≤ 5% 提示保存交接并支持复制指令，5h ≤ 10% 提示切换另一模型家族（30 分钟防重）">
-                <span>5h / 7d 低额度交接提醒</span>
-                <span class="ag-ps-toggle-sub">7d≤5% 切号提示 · 5h≤10% 换模型</span>
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="窗口切到后台等 AI 回复时，完成后在任务栏标题显示 (1) 未读提示">
+                <span>后台回复完成标题提醒</span>
+                <span class="ag-ps-toggle-sub">切回窗口自动清除未读数字</span>
               </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="quotaHandoffAlert" data-on="${p.quotaHandoffAlert ? '1' : '0'}" aria-label="5h / 7d 低额度交接提醒"></button>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="unreadBadge" data-on="${p.unreadBadge ? '1' : '0'}" aria-label="后台回复完成标题提醒"></button>
             </div>
           </div>
         `;
@@ -4054,6 +4133,43 @@
           const val = perfModeBtn.getAttribute('data-fx-perf-mode');
           if (val === 'power-save' || val === 'balanced' || val === 'vivid') {
             bus.setPref('performanceMode', val);
+            return true;
+          }
+          return false;
+        }
+
+        const edgeBtn = target.closest('[data-fx-composer-edge]');
+        if (edgeBtn) {
+          const val = edgeBtn.getAttribute('data-fx-composer-edge');
+          if (val === 'off' || val === 'smart' || val === 'beam' || val === 'static') {
+            if (val === 'off') {
+              bus.setPref('borderBeam', false);
+              bus.setPref('semanticAfterglow', false);
+              bus.setPref('quotaRing', false);
+            } else if (val === 'smart') {
+              bus.setPref('borderBeam', true);
+              bus.setPref('borderBeamMode', 'busy');
+              bus.setPref('semanticAfterglow', true);
+            } else if (val === 'beam') {
+              bus.setPref('borderBeam', true);
+              bus.setPref('borderBeamMode', 'always');
+              bus.setPref('semanticAfterglow', true);
+            } else if (val === 'static') {
+              bus.setPref('borderBeam', false);
+              bus.setPref('semanticAfterglow', true);
+            }
+            bus.setPref('composerBorderFx', val);
+            return true;
+          }
+          return false;
+        }
+
+        const railModeBtn = target.closest('[data-fx-rail-mode]');
+        if (railModeBtn) {
+          const val = railModeBtn.getAttribute('data-fx-rail-mode');
+          if (val === 'smart' || val === 'right' || val === 'off') {
+            bus.setPref('alwaysOutlineRail', val !== 'off');
+            bus.setPref('outlineRailMode', val);
             return true;
           }
           return false;
@@ -4094,6 +4210,7 @@
         if (beamModeBtn) {
           const val = beamModeBtn.getAttribute('data-fx-beam-mode') === 'busy' ? 'busy' : 'always';
           bus.setPref('borderBeamMode', val);
+          bus.setPref('composerBorderFx', val === 'busy' ? 'smart' : 'beam');
           return true;
         }
 
@@ -4204,10 +4321,7 @@
       stopHiddenUnreadPoll();
       ac.abort();
 
-      if (beamPreviewTimer) {
-        clearTimeout(beamPreviewTimer);
-        beamPreviewTimer = 0;
-      }
+      clearComposerPreviewTimers();
       clearOverviewRestoreTimers();
       clearRailBurstTimers();
       if (returnNavFallbackTimer) {
@@ -4232,16 +4346,13 @@
       detachDprWatcher();
       clearAfterglowHost();
       removeCompactQuotaChip();
-      removeOutlineRail();
+      detachHostNavEnhancer();
+      removeOutlineRail(false);
       removeOrbDock();
       removeReturnBar(true);
       removeQuotaNudge(true);
+      removeBeamRingEl();
 
-      if (beamCanvas) {
-        beamCanvas.remove();
-        beamCanvas = null;
-        beamCtx = null;
-      }
       if (qRingWrap) {
         qRingWrap.remove();
         qRingWrap = null;
@@ -4258,6 +4369,7 @@
         html.removeAttribute('data-ag-ps-force-motion');
         html.removeAttribute('data-ag-ps-reduced-motion');
         html.removeAttribute('data-ag-ps-facets');
+        html.removeAttribute('data-ag-ps-nav-off');
         html.removeAttribute('data-ag-ps-custom-chat-font');
         html.removeAttribute('data-ag-ps-custom-code-font');
         html.removeAttribute('data-ag-ps-orb-replace');

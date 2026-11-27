@@ -16,8 +16,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("Anti-Claude Prism Suite 一键安装器")]
 [assembly: AssemblyDescription("Anti-Claude Prism Suite Standalone All-in-One Installer (Kernel + Extensions + prism-files + prism-cua + chrome-bridge)")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.9.1.0")]
-[assembly: AssemblyFileVersion("0.9.1.0")]
+[assembly: AssemblyVersion("0.9.2.0")]
+[assembly: AssemblyFileVersion("0.9.2.0")]
 
 namespace AntiClaudePrismSuiteInstaller
 {
@@ -2237,7 +2237,7 @@ namespace AntiClaudePrismSuiteInstaller
             // Explicit DPI-exact scaling (prevents WinForms AutoScaleMode.Dpi 96-vs-192 mismatch on 150%/200%/250% displays)
             AutoScaleMode = AutoScaleMode.None;
             DoubleBuffered = true;
-            Text = "Anti-Claude Prism Suite 一键安装器 v0.9.1（独立完整版）";
+            Text = "Anti-Claude Prism Suite 一键安装器 v0.9.2（独立完整版）";
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = Color.FromArgb(248, 250, 252);
             ForeColor = Color.FromArgb(15, 23, 42);
@@ -2309,7 +2309,7 @@ namespace AntiClaudePrismSuiteInstaller
             headerTextCol.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             lblTitle = new Label();
-            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.9.1";
+            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.9.2";
             lblTitle.ForeColor = Color.White;
             lblTitle.Font = MakeFont(13f, FontStyle.Bold);
             lblTitle.AutoSize = true;
@@ -2354,43 +2354,67 @@ namespace AntiClaudePrismSuiteInstaller
             compLayout.ColumnCount = 1;
             compLayout.Padding = SPad(14, 12, 14, 12);
 
-            Label lblCompHeader = CreateSectionTitle("1. 选择安装 / 卸载组件");
+            Label lblCompHeader = CreateSectionTitle("1. 选择要安装的组件（推荐保持全选）");
             chkExtensions = new CheckBox();
-            chkExtensions.Text = "内置 Anti-Claude v3.1.9 内核 + 棱镜扩展套件（8套主题 / 全量轮次大纲 / 12周热力图 / 像素伙伴 / 思考中译）";
+            chkExtensions.Text = "界面主题与对话体验增强（8 套配色 / 流光余晖 / 轮次大纲 / 像素伙伴 / 思考中译）";
             chkExtensions.Checked = true;
             chkExtensions.AutoSize = true;
             chkExtensions.Margin = SPad(2, 6, 2, 5);
 
             chkWinPlugin = new CheckBox();
-            chkWinPlugin.Text = "安装 Prism 工作台与受控电脑操控插件（prism-files + 默认关闭零开销的 prism-cua）";
+            chkWinPlugin.Text = "Prism 工作台与网页/桌面协作助手（文件管理 / 历史检索 / 多账号切换 / 网页协助）";
             chkWinPlugin.Checked = true;
             chkWinPlugin.AutoSize = true;
             chkWinPlugin.Margin = SPad(2, 4, 2, 5);
 
             chkWslPlugin = new CheckBox();
-            chkWslPlugin.Text = "同步安装至检测到的 WSL Antigravity 环境";
+            chkWslPlugin.Text = "同步安装至本机 WSL 子系统环境";
             chkWslPlugin.Checked = false;
             chkWslPlugin.Enabled = false;
             chkWslPlugin.AutoSize = true;
             chkWslPlugin.Margin = SPad(2, 4, 2, 3);
 
             lblWslStatus = new Label();
-            lblWslStatus.Text = "正在后台检测 WSL Antigravity 环境...";
+            lblWslStatus.Text = "正在自动检测本机 WSL 环境...";
             lblWslStatus.ForeColor = Color.FromArgb(100, 116, 139);
             lblWslStatus.Font = MakeFont(8.5f, FontStyle.Regular);
             lblWslStatus.AutoSize = true;
-            lblWslStatus.Margin = SPad(22, 0, 2, 2);
+            lblWslStatus.Margin = SPad(22, 0, 2, 4);
+
+            Button btnTogglePaths = new Button();
+            btnTogglePaths.Text = "⚙ 自定义安装位置 ▾";
+            btnTogglePaths.AutoSize = true;
+            btnTogglePaths.FlatStyle = FlatStyle.Flat;
+            btnTogglePaths.FlatAppearance.BorderColor = Color.FromArgb(226, 232, 240);
+            btnTogglePaths.FlatAppearance.BorderSize = Math.Max(1, S(1));
+            btnTogglePaths.BackColor = Color.FromArgb(248, 250, 252);
+            btnTogglePaths.ForeColor = Color.FromArgb(71, 85, 105);
+            btnTogglePaths.Font = MakeFont(8.5f, FontStyle.Regular);
+            btnTogglePaths.Padding = SPad(6, 2, 6, 2);
+            btnTogglePaths.Margin = SPad(2, 4, 2, 0);
+            btnTogglePaths.Cursor = Cursors.Hand;
+            btnTogglePaths.Click += delegate
+            {
+                if (cardPaths != null)
+                {
+                    cardPaths.Visible = !cardPaths.Visible;
+                    btnTogglePaths.Text = cardPaths.Visible ? "⚙ 收起自定义位置 ▴" : "⚙ 自定义安装位置 ▾";
+                    SyncResponsiveWrapWidths();
+                }
+            };
 
             compLayout.Controls.Add(lblCompHeader);
             compLayout.Controls.Add(chkExtensions);
             compLayout.Controls.Add(chkWinPlugin);
             compLayout.Controls.Add(chkWslPlugin);
             compLayout.Controls.Add(lblWslStatus);
+            compLayout.Controls.Add(btnTogglePaths);
             cardComponents.Controls.Add(compLayout);
             cardComponents.Margin = SPad(0, 0, 0, 10);
 
-            // Card 2: Paths
+            // Card 2: Paths (Collapsed by default so beginners see a clean 1-click screen)
             cardPaths = CreateCardPanel();
+            cardPaths.Visible = false;
             pathLayout = new TableLayoutPanel();
             pathLayout.Dock = DockStyle.Top;
             pathLayout.AutoSize = true;
@@ -2511,7 +2535,7 @@ namespace AntiClaudePrismSuiteInstaller
             logCard.MinimumSize = new Size(0, S(120));
             logCard.Padding = SPad(12, 10, 12, 12);
 
-            Label lblLogTitle = CreateSectionTitle("执行日志");
+            Label lblLogTitle = CreateSectionTitle("安装进度明细");
             lblLogTitle.Dock = DockStyle.Top;
             lblLogTitle.Padding = SPad(0, 0, 0, 6);
 
@@ -2890,7 +2914,7 @@ namespace AntiClaudePrismSuiteInstaller
                         MessageBox.Show(
                             this,
                             isInstall
-                                ? "Anti-Claude Prism Suite v0.9.1（独立完整版）安装成功！\n\n已一并部署内置 Anti-Claude v3.1.9 增强内核、棱镜扩展套件、Chrome/Edge 扩展桥与双插件（prism-files + 默认关闭零开销的 prism-cua）。若 Antigravity 正在运行，重启一次应用即可全面生效。"
+                                ? "Anti-Claude Prism Suite v0.9.2 安装成功！\n\n快速上手三步指引：\n1. 若 Antigravity 正在打开，请先关闭并重新启动一次；\n2. 点击窗口右上角「✦ 棱镜」，一键选择喜欢的主题配色与体验模式；\n3. 点击顶栏「工作台」，即可使用文件浏览、历史检索与多账号一键切换！"
                                 : "已干净卸载选中的 Anti-Claude Prism Suite 组件。",
                             isInstall ? "安装成功" : "卸载完成",
                             MessageBoxButtons.OK,

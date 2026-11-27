@@ -16,13 +16,13 @@
       --p-border: rgba(15, 23, 42, 0.1);
       --p-border-strong: rgba(15, 23, 42, 0.18);
       --p-accent: #2563eb;
-      --p-accent-soft: rgba(37, 99, 235, 0.1);
+      --p-accent-soft: color-mix(in srgb, var(--p-accent) 11%, transparent);
       --p-danger: #dc2626;
       --p-danger-soft: rgba(220, 38, 38, 0.1);
       --p-success: #059669;
       --p-success-soft: rgba(5, 150, 105, 0.11);
       --p-success-border: rgba(5, 150, 105, 0.32);
-      --p-row-hover-glow: rgba(37, 99, 235, 0.04);
+      --p-row-hover-glow: color-mix(in srgb, var(--p-accent) 6%, transparent);
       --p-toast-bg: #0f172a;
       --p-toast-text: #f8fafc;
       --p-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
@@ -625,6 +625,45 @@
         '--muted-foreground': '--p-text-muted',
         '--sidebar-border': '--p-border'
       };
+      let activePrismTheme = null;
+
+      function applyPrismThemePayload(theme) {
+        if (!theme || typeof theme !== 'object') return;
+        activePrismTheme = theme;
+        const root = document.documentElement;
+        if (theme.mode === 'dark' || theme.mode === 'light') {
+          root.dataset.theme = theme.mode;
+          root.style.colorScheme = theme.mode;
+        }
+        const t = theme.tokens;
+        if (t && typeof t === 'object') {
+          const pairs = [
+            ['--p-bg', t.bg],
+            ['--p-bg-subtle', t.subtle],
+            ['--p-bg-hover', t.hover],
+            ['--p-bg-active', t.active],
+            ['--p-text', t.text],
+            ['--p-text-secondary', t.textSec],
+            ['--p-text-muted', t.textMuted],
+            ['--p-border', t.border],
+            ['--p-border-strong', t.borderStrong],
+            ['--p-accent', t.accent],
+            ['--p-accent-soft', t.accentSoft],
+            ['--color-background-primary', t.bg],
+            ['--color-background-secondary', t.subtle],
+            ['--color-background-tertiary', t.hover],
+            ['--color-text-primary', t.text],
+            ['--color-text-secondary', t.textSec],
+            ['--color-text-tertiary', t.textMuted],
+            ['--color-border-primary', t.borderStrong || t.border],
+            ['--color-border-secondary', t.border],
+            ['--color-accent', t.accent]
+          ];
+          for (const [k, v] of pairs) {
+            if (typeof v === 'string' && v) root.style.setProperty(k, v);
+          }
+        }
+      }
 
       function applyHostContext(ctx) {
         if (!ctx || typeof ctx !== 'object') return;
@@ -643,6 +682,9 @@
               if (mapped) document.documentElement.style.setProperty(mapped, v);
             }
           }
+        }
+        if (activePrismTheme) {
+          applyPrismThemePayload(activePrismTheme);
         }
       }
 
@@ -1003,9 +1045,17 @@
 
       // Register message handler BEFORE calling ui/initialize
       window.addEventListener('message', (event) => {
-        if (window.parent !== window && event.source && event.source !== window.parent) return;
         const msg = event.data;
-        if (!msg || typeof msg !== 'object' || msg.jsonrpc !== '2.0') return;
+        if (!msg || typeof msg !== 'object') return;
+        if (msg.__agPrismBridge === 'v1') {
+          if (event.source && event.source !== window.parent && event.source !== window.top) return;
+          if ((msg.type === 'theme-sync' || msg.type === 'init-sync') && msg.theme) {
+            applyPrismThemePayload(msg.theme);
+          }
+          return;
+        }
+        if (window.parent !== window && event.source && event.source !== window.parent) return;
+        if (msg.jsonrpc !== '2.0') return;
 
         // Response to our outgoing request
         if (msg.id !== undefined && msg.id !== null && !msg.method) {
@@ -1182,7 +1232,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.9.1' },
+            appInfo: { name: 'prism-files', version: '0.9.2' },
             appCapabilities: {}
           }, 12000);
           state.hostCapabilities = initRes?.hostCapabilities || {};

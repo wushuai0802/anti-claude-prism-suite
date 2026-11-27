@@ -38,11 +38,11 @@
     const nh = st.nativeHost || {};
     if (nh.hostRegistered) {
       nmBadge.className = 'status-badge is-ok';
-      nmBadge.innerHTML = '<span class="dot"></span><span>已连接 Prism 守护进程</span>';
+      nmBadge.innerHTML = '<span class="dot"></span><span>已连接 Antigravity</span>';
     } else {
       nmBadge.className = 'status-badge is-warn';
-      nmBadge.innerHTML = '<span class="dot"></span><span>未注册宿主</span>';
-      nmBadge.title = nh.error || '请在 Prism 工作台「电脑操控」页点击第 1 步「一键注册 Native Messaging 宿主」';
+      nmBadge.innerHTML = '<span class="dot"></span><span>待首次启用</span>';
+      nmBadge.title = nh.error || '请在 Prism 工作台「电脑操控」页完成第 1 步连接配对';
     }
 
     const tab = st.activeTab;
@@ -52,27 +52,27 @@
     stateCard.classList.toggle('is-armed', isArmed);
     if (isArmed) {
       armBadge.className = 'status-badge is-ok';
-      armBadge.textContent = `已授权受控 (ARMED · 共 ${armedCount} 页)`;
+      armBadge.textContent = `已允许 AI 协助（共 ${armedCount} 页）`;
     } else {
       armBadge.className = 'status-badge is-muted';
-      armBadge.textContent = armedCount > 0 ? `当前未授权（其他已授 ${armedCount} 页）` : '未授权隔离';
+      armBadge.textContent = armedCount > 0 ? `本页未开启（其他 ${armedCount} 页协助中）` : '未允许 AI 操作';
     }
 
     if (!tab) {
-      originBox.textContent = '未检测到活跃标签页';
+      originBox.textContent = '未检测到当前网页';
       blockNotice.hidden = true;
       btnToggleArm.disabled = true;
     } else if (tab.blockReason && !isArmed) {
-      originBox.textContent = tab.url ? tab.url.slice(0, 96) : '系统受保护页面';
+      originBox.textContent = tab.url ? tab.url.slice(0, 96) : '浏览器系统页面';
       blockNotice.textContent = tab.blockReason;
       blockNotice.hidden = false;
       btnToggleArm.disabled = true;
       btnToggleArm.classList.remove('is-disarm');
-      btnToggleArm.textContent = '授权操控当前标签页 (ARMED)';
+      btnToggleArm.textContent = '允许 AI 协助此网页';
     } else {
-      originBox.textContent = `同源域：${tab.origin || tab.armedOrigin || '-'}`;
+      originBox.textContent = `当前网站：${tab.origin || tab.armedOrigin || '-'}`;
       if (!nh.hostRegistered) {
-        blockNotice.textContent = '尚未注册 Native Messaging 宿主：请先打开 Prism 工作台 →「电脑操控」点击「1. 一键注册 Native Messaging 宿主」。';
+        blockNotice.textContent = '首次使用请先在 Antigravity 打开「工作台 → 电脑操控」，点击第 1 步「一键连接浏览器助手」。';
         blockNotice.hidden = false;
       } else {
         blockNotice.hidden = true;
@@ -80,17 +80,17 @@
       btnToggleArm.disabled = false;
       if (isArmed) {
         btnToggleArm.classList.add('is-disarm');
-        btnToggleArm.textContent = '解除当前页授权';
+        btnToggleArm.textContent = '停止协助此网页';
       } else {
         btnToggleArm.classList.remove('is-disarm');
-        btnToggleArm.textContent = '授权操控当前标签页 (ARMED)';
+        btnToggleArm.textContent = '允许 AI 协助此网页';
       }
     }
 
     btnDisarmAll.disabled = armedCount <= 0;
     btnDisarmAll.textContent = armedCount > 0
-      ? `一键解除全部标签页 (${armedCount})`
-      : '一键解除全部标签页';
+      ? `停止全部网页协助 (${armedCount})`
+      : '停止全部网页协助';
   }
 
   async function refresh() {

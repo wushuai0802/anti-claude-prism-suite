@@ -4175,6 +4175,8 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
           mascotStyle: ['trio', 'zoo', 'cyber', 'crab', 'cat', 'penguin', 'fox', 'shiba', 'robot', 'owlet', 'axolotl', 'bunny', 'frog', 'chick', 'slime'],
           mascotVibe: ['calm', 'lively'],
           thoughtMode: ['off', 'bilingual', 'immersive'],
+          composerBorderFx: ['off', 'smart', 'beam', 'static'],
+          outlineRailMode: ['smart', 'right', 'off'],
           borderBeamMode: ['always', 'busy'],
           borderBeamPalette: ['theme', 'gemini', 'aurora', 'prism', 'neon', 'quota'],
           quotaRingPeriod: ['auto', 'weekly', '5h'],

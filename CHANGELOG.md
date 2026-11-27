@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.2 - 2026-11-28
+
+- **全界面 8 套主题配色零闪烁互通 + 一键体验预设 + 双设置中心双向联动（[prism-suite.js](extensions/prism-suite.js) / [prism-suite.css](extensions/prism-suite.css) / [app.html](plugin/ui/app.html) / [inline.html](plugin/ui/inline.html) / [custom.js](vendor/anti-claude/user/custom.js)）**：
+  - **主窗口、`Prism 工作台` 与 `内联文件卡片` 8 套棱镜主题同源同步**：新增 `PRISM_PALETTE_TOKENS` 与 `theme-sync` 实时桥接下发（配合本地缓存零闪烁冷启动），切换「纯白默认 / 白昼冷晶 / 暖白画册 / 松雾青岚 / 暖炭默认 / 深空黑曜 / 暖炭玄岩 / 深海墨蓝」时，右侧工作台与内联文件卡片的背景、边框、强调色实时同步变色，彻底告别割裂感；
+  - **面向普通用户的「一键体验模式」与四分类直觉菜单**：在 `✦ 棱镜控制中心` 顶部新增 **`🕊 极简专注 / ✦ 灵动推荐 / 🌈 炫彩满血`** 一键切换胶囊，并将全部开关按产品直觉归入 **`🎨 外观 / ✨ 动效 / 🧭 导航 / ⚡ 效率`** 四栏页签，低频兼容项自动收纳入底部「高级与环境兼容选项」折叠区；
+  - **双设置入口主从打通**：`✦ 棱镜` 顶栏新增 `全部设置 ⚙` 一键直达「设置 → 界面增强」，同时在「设置 → 界面增强」顶部提供引导卡一键返回并打开 `✦ 棱镜`。
+- **全局浮窗互斥与统一卡片语言 + 全端去术语化降噪 + 安装器简洁首屏（[custom.js](vendor/anti-claude/user/custom.js) / [custom.css](vendor/anti-claude/user/custom.css) / [runtime.js](vendor/anti-claude/core/runtime.js) / [popup.html](extensions/chrome-cua-bridge/popup.html) / [PrismSuiteInstaller.cs](installer/win/PrismSuiteInstaller.cs)）**：
+  - **全局浮窗互斥与层级对齐**：根治展开底栏额度卡时悬停右侧指标胶囊叠出双浮窗、或点击 `5h · 7d` 胶囊闪回的问题；统一所有浮窗与右键菜单为 `14px/12px` 圆角、顶边微高光、窄矮屏防裁切自适应材质，提升模型选择菜单层级（`99986`）并动态避让增高后的多行输入框；
+  - **全端通俗中文清洗与工作台降噪**：浏览器受控扩展升级为带专属棱镜真图标的「Prism 网页协作助手」（一键「允许 AI 协助此网页」）；工作台「账号接力」将「✨ Prism Suite 一键更新」独立置顶，将项目槽位、记忆、组件开关与上游动态收纳进默认折叠的「🛠️ 进阶协作与维护」；Windows 安装器默认折叠复杂目录配置并在安装完成后给出清晰的三步上手指引。
+- **输入框边缘光效三合一 + 120Hz/240Hz 纯 GPU 合成器流光 + 智能左栏去重 + 全主题光学切面增强（[prism-suite-fx.js](extensions/prism-suite-fx.js) / [prism-suite-fx.css](extensions/prism-suite-fx.css)）**：
+  - **纯 GPU 合成线程流光边框（告别高速流式输出卡顿）**：移除旧版主线程每帧 84 次 Canvas `stroke()` 绘制，升级为 `mask-composite: exclude` 圆角边框遮罩 + 纯 `transform: rotate(360deg)` 合成器图层（`.ag-ps-beam-ring > .ag-ps-beam-rotor`），即使 Agent 以 `135+ tok/s` 高速输出阻塞主线程也能锁满显示器高刷零掉帧；同步将 `ThinkingOrb` 128 粒子合并为 4 桶批量 `fill()`；
+  - **三合一 `输入框边缘光效` 与三态边缘余晖修复**：将「语义边缘余晖 + 流光边框 + 额度光环」合并为单一直观控件（`关 / 智能 / 常驻流光 / 纯静余晖` + 三阶段实机 `预览光效` 按钮），提升选择器权重并修复光标静止在输入框内导致完工余晖被瞬间误清的缺陷；
+  - **智能左栏去重与全主题立体切面**：默认启用 `智能左栏` 识别原生左栏轮次导航并自动收起右侧重复圆点条（消除右滚动条抢点击及点开额度卡乱飞避让），同时为原生左栏圆点补上中文提问悬停预览；升级 `opticalFacets` 在全部 8 套深浅主题下的卡片切面高光、提问气泡微边与 `1px` 分屏光丝对比度。
+
 ## 0.9.1 - 2026-11-27
 
 - **修复 Windows 安装器与 CUA 弹窗高分屏（150% / 200% / 250% DPI）布局裁切 Bug，并新增项目专属「光学色散水晶棱镜」多尺寸图标（[PrismSuiteInstaller.cs](installer/win/PrismSuiteInstaller.cs) / [prism-suite.ico](installer/win/prism-suite.ico) / [PrismWinCua.cs](native/win-cua/PrismWinCua.cs) / [build-win-exe.ps1](scripts/build-win-exe.ps1)）**：

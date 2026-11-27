@@ -1568,7 +1568,7 @@
     const anchor = textEl && textEl.offsetWidth > 0 ? textEl : pill;
     const r = anchor.getBoundingClientRect();
     const pillRect = pill.getBoundingClientRect();
-    const ttWidth = 272;
+    const ttWidth = 280;
     const isBottomRow = pill.getAttribute('data-ag-row-mode') === 'bottom';
     const idealLeft = isBottomRow ? r.left + r.width / 2 - ttWidth / 2 : r.left;
     const left = Math.round(Math.max(12, Math.min(idealLeft, window.innerWidth - ttWidth - 16)));
@@ -1579,8 +1579,22 @@
     tt.style.bottom = `${bottomPx}px`;
   }
 
+  function hideMetricsTooltipOverlay() {
+    const tt = document.getElementById('ag-live-metrics-tooltip');
+    if (tt) {
+      tt.removeAttribute('data-ag-pinned');
+      tt.removeAttribute('data-visible');
+    }
+  }
+
+  function broadcastClosePeerPopovers(exceptId) {
+    try {
+      window.dispatchEvent(new CustomEvent('ag-prism-close-popovers', { detail: { except: exceptId || '' } }));
+    } catch {}
+  }
+
   const onMetricsPillMouseEnter = (e) => {
-    if (disposed || !FEAT.contextRing) return;
+    if (disposed || !FEAT.contextRing || quotaPopoverOpen || modelPopoverOpen) return;
     const pill = e.target && e.target.closest && e.target.closest('#ag-live-metrics-pill');
     if (!pill) return;
     const syncPos = () => {
@@ -1596,7 +1610,7 @@
     const pill = e.target && e.target.closest && e.target.closest('#ag-live-metrics-pill');
     if (!pill) return;
     const tt = document.getElementById('ag-live-metrics-tooltip');
-    if (tt && tt.getAttribute('data-ag-pinned') === '1') {
+    if (tt && tt.getAttribute('data-ag-pinned') === '1' && !quotaPopoverOpen && !modelPopoverOpen) {
       tt.setAttribute('data-visible', '1');
     }
   };
@@ -1611,6 +1625,9 @@
       e.stopPropagation();
       const willPin = tt.getAttribute('data-ag-pinned') !== '1';
       if (willPin) {
+        if (quotaPopoverOpen) closeQuotaPopover();
+        if (typeof closeClaudeModelPopover === 'function' && modelPopoverOpen) closeClaudeModelPopover();
+        broadcastClosePeerPopovers('metrics');
         positionMetricsTooltip(pill, tt);
         tt.setAttribute('data-ag-pinned', '1');
         tt.setAttribute('data-visible', '1');
@@ -1969,6 +1986,15 @@
         renderQuotaPopoverBody();
         return;
       }
+      const switchBtn = e.target.closest('[data-ag-quota-switch]');
+      if (switchBtn) {
+        e.stopPropagation();
+        closeQuotaPopover();
+        if (window.__agPrismBus && typeof window.__agPrismBus.openWorkbench === 'function') {
+          window.__agPrismBus.openWorkbench('accounts');
+        }
+        return;
+      }
       const viewAll = e.target.closest('[data-ag-quota-view-all]');
       if (viewAll) {
         e.stopPropagation();
@@ -1998,7 +2024,7 @@
     const pop = document.getElementById('ag-claude-quota-popover');
     if (!ring || !pop) return;
     const r = ring.getBoundingClientRect();
-    const popW = 344;
+    const popW = 340;
     const left = Math.max(12, Math.min(Math.round(r.left - 84), window.innerWidth - popW - 14));
     const bottom = Math.max(12, Math.round(window.innerHeight - r.top + 10));
     pop.style.left = `${left}px`;
@@ -2132,13 +2158,17 @@
         .join('');
     }
 
+    const canQuickSwitch = Boolean(window.__agPrismBus && typeof window.__agPrismBus.openWorkbench === 'function');
     pop.innerHTML = `
       <div class="ag-qp-hdr">
         <span class="ag-qp-tier">${L('套餐使用限额', 'Plan usage')}${tierSuffix}</span>
-        <button type="button" class="ag-qp-all" data-ag-quota-view-all="true">
-          <span>${L('查看全部', 'View all')}</span>
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 8h9m0 0L8.8 4.3M12.5 8l-3.7 3.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
+        <span class="ag-qp-hdr-actions">
+          ${canQuickSwitch ? `<button type="button" class="ag-qp-switch-btn" data-ag-quota-switch="true" title="${escapeHtml(L('打开 Prism 账号安全接力面板', 'Open Prism Account Relay'))}">⚡ ${L('切号', 'Switch')}</button>` : ''}
+          <button type="button" class="ag-qp-all" data-ag-quota-view-all="true">
+            <span>${L('查看全部', 'View all')}</span>
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 8h9m0 0L8.8 4.3M12.5 8l-3.7 3.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </span>
       </div>
       <div class="ag-qp-item">
         <div class="ag-qp-row">
@@ -2161,6 +2191,8 @@
     if (typeof closeClaudeModelPopover === 'function' && modelPopoverOpen) {
       closeClaudeModelPopover();
     }
+    hideMetricsTooltipOverlay();
+    broadcastClosePeerPopovers('quota');
     quotaPopoverOpen = true;
     selectedQuotaGroupIdx = -1;
     discoverQuotaService(true);
@@ -2346,8 +2378,26 @@
     if (!quotaPopoverOpen) return;
     const pop = document.getElementById('ag-claude-quota-popover');
     const ring = document.getElementById('ag-claude-ctx-ring');
-    if ((pop && pop.contains(e.target)) || (ring && ring.contains(e.target))) return;
+    const qChip = document.getElementById('ag-ps-quota-chip');
+    if (
+      (pop && pop.contains(e.target)) ||
+      (ring && ring.contains(e.target)) ||
+      (qChip && qChip.contains(e.target))
+    ) {
+      return;
+    }
     closeQuotaPopover();
+  };
+  const onPeerPopoverCoord = (e) => {
+    if (disposed) return;
+    const ex = e && e.detail && e.detail.except ? String(e.detail.except) : '';
+    if (ex !== 'quota' && quotaPopoverOpen) closeQuotaPopover();
+    if (ex !== 'model' && typeof closeClaudeModelPopover === 'function' && modelPopoverOpen) closeClaudeModelPopover();
+    if (ex !== 'metrics') hideMetricsTooltipOverlay();
+    if (ex !== 'context-menu') {
+      if (typeof closeRecentRowMenu === 'function') closeRecentRowMenu();
+      if (typeof closeProjectActionMenu === 'function') closeProjectActionMenu();
+    }
   };
   const onPopoverKeyDown = (e) => {
     if (quotaPopoverOpen && e.key === 'Escape') {
@@ -2361,6 +2411,7 @@
   document.addEventListener('pointerdown', onOutsidePopoverPointerDown, true);
   document.addEventListener('keydown', onPopoverKeyDown, true);
   window.addEventListener('resize', onWindowResizePopover);
+  window.addEventListener('ag-prism-close-popovers', onPeerPopoverCoord);
 
   /* ==========================================================================
    * 6. Claude-Style Stratified Model Selector Popover
@@ -3937,6 +3988,8 @@
     const api = discoverModelSelectorApi(btn);
     if (!api) return false;
     if (quotaPopoverOpen) closeQuotaPopover();
+    hideMetricsTooltipOverlay();
+    broadcastClosePeerPopovers('model');
     if (api.open && typeof api.setIsOpen === 'function') {
       try {
         api.setIsOpen(false);
@@ -5805,6 +5858,8 @@
       closeRecentRowMenu();
       return;
     }
+    broadcastClosePeerPopovers('context-menu');
+    closeProjectActionMenu();
     let menu = document.getElementById('ag-recent-row-menu');
     if (!menu) {
       menu = document.createElement('div');
@@ -7093,11 +7148,21 @@
           <div>
             <h2 class="text-2xl m-0" style="color:var(--foreground)">${L('界面增强', 'UI Enhancements')}</h2>
             <div class="ag-cux-settings-desc" style="margin-top:4px">${L(
-              '管理 Anti-Claude 语言、视觉、过程流与侧边栏效率模块，点击开关即时生效并跨重启自动记忆。',
-              'Configure Anti-Claude language, layout, execution stream, and sidebar modules. Changes apply immediately and persist across restarts.'
+              '管理整体布局、过程流展示与侧边栏模块开关（底层总控，即时保存生效）。',
+              'Configure layout, execution stream, and sidebar modules. Changes apply immediately and persist across restarts.'
             )}</div>
           </div>
           <span class="ag-cux-toast" data-ag-cux-toast data-visible="false">${L('✓ 已保存并即时生效', '✓ Saved and applied')}</span>
+        </div>
+        <div class="ag-cux-prism-bridge-card" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border-radius:12px;border:1px solid color-mix(in srgb, var(--primary, #2F75C3) 26%, transparent);background:color-mix(in srgb, var(--primary, #2F75C3) 7%, var(--card, var(--background, #FFFFFF)));">
+          <div style="min-width:0">
+            <div style="font-size:13px;font-weight:600;color:var(--foreground)">${L('✦ 主题配色、流光动效与日常快捷开关', '✦ Themes, Motion & Quick Controls')}</div>
+            <div class="ag-cux-settings-desc" style="margin-top:2px">${L(
+              '8 套深浅主题、一键体验模式、输入框边缘光效、思考粒子球与像素伙伴均集中在右上角「✦ 棱镜控制中心」。',
+              'Switch 8 palettes, experience presets, composer border light, ThinkingOrb, and pixel mascots from the top-right ✦ Prism menu.'
+            )}</div>
+          </div>
+          <button type="button" data-ag-open-prism-suite="1" style="flex-shrink:0;padding:6px 12px;border-radius:8px;border:none;background:var(--primary, #2F75C3);color:#FFFFFF;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">${L('打开 ✦ 棱镜 ↗', 'Open ✦ Prism ↗')}</button>
         </div>
         ${SETTINGS_GROUPS.map(
           (grp) => `
@@ -7163,6 +7228,34 @@
         setCjkScaleOverride(btn.getAttribute('data-ag-cux-cjk-scale'));
       });
     });
+    const openPrismBtn = panel.querySelector('[data-ag-open-prism-suite]');
+    if (openPrismBtn) {
+      openPrismBtn.addEventListener('click', () => {
+        const directSuiteBtn = document.getElementById('ag-ps-btn-suite');
+        if (directSuiteBtn && directSuiteBtn.offsetWidth > 0) {
+          const dlgClose = panel.closest('[role="dialog"]')?.querySelector('button[aria-label*="Close"], button[aria-label*="关闭"]');
+          if (dlgClose) dlgClose.click();
+          setTimeout(() => directSuiteBtn.click(), 60);
+          return;
+        }
+        const firstRow = document.querySelector('[data-testid="conversation-row-sidebar"] a[href^="/c/"]');
+        if (firstRow) {
+          firstRow.click();
+        } else if (window.history.length > 1) {
+          window.history.back();
+        }
+        let tries = 0;
+        const waitBtn = () => {
+          const b = document.getElementById('ag-ps-btn-suite');
+          if (b && b.offsetWidth > 0) {
+            b.click();
+            return;
+          }
+          if (++tries <= 15) setTimeout(waitBtn, 80);
+        };
+        setTimeout(waitBtn, 100);
+      });
+    }
   }
 
   function applyImmediateFeatureEffects(featKey, on) {
@@ -9278,6 +9371,8 @@
       closeProjectActionMenu();
       return;
     }
+    broadcastClosePeerPopovers('context-menu');
+    closeRecentRowMenu();
     let menu = document.getElementById('ag-project-action-menu');
     if (!menu) {
       menu = document.createElement('div');
@@ -13686,7 +13781,7 @@
                           <span class="ag-ov-muted">${L('缓存命中率', 'Prompt cache')}</span>
                           <span class="ag-ov-cache-val">${
                             stats.cacheCollapsed
-                              ? `<strong class="ag-ov-warn-txt">${stats.lastCacheRate}%</strong> <span class="ag-ov-cache-drop-pill" title="${escapeHtml(L(`本轮大上下文缓存命中骤降（当前 ${stats.lastCacheRate}% vs 会话均值 ${stats.sessionCacheRate}%），可能触发了前缀失效`, `Sharp cache drop on large prompt (${stats.lastCacheRate}% vs ${stats.sessionCacheRate}% avg); prompt prefix may have invalidated`))}">${L('缓存塌陷', 'Cache drop')}</span>`
+                              ? `<strong class="ag-ov-warn-txt">${stats.lastCacheRate}%</strong> <span class="ag-ov-cache-drop-pill" title="${escapeHtml(L(`本轮上下文缓存命中率下降（当前 ${stats.lastCacheRate}% vs 会话均值 ${stats.sessionCacheRate}%），对话前缀已重新建立缓存`, `Sharp cache drop on large prompt (${stats.lastCacheRate}% vs ${stats.sessionCacheRate}% avg); prompt prefix may have invalidated`))}">${L('缓存重置', 'Cache reset')}</span>`
                               : `<strong class="ag-ov-blue-txt">${stats.lastCacheRate}%</strong> <span class="ag-ov-muted">${L('· 累计', '· avg')} ${stats.sessionCacheRate}%</span>`
                           }</span>
                         </div>
@@ -14415,6 +14510,7 @@
     window.removeEventListener('pointercancel', onPinnedRowPointerCancel, true);
     clearPinnedComposerDropHighlights();
     window.removeEventListener('resize', onWindowResizePopover);
+    window.removeEventListener('ag-prism-close-popovers', onPeerPopoverCoord);
     sidebarWheelBound = false;
     document.removeEventListener('wheel', onSidebarWheel, true);
     if (sidebarFocusTimer) {

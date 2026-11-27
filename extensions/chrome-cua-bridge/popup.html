@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Prism CUA 浏览器受控桥</title>
+  <title>Prism 网页协作助手</title>
   <style>
     :root {
       --bg: #ffffff;
@@ -79,17 +79,11 @@
       font-size: 13.5px;
     }
 
-    .brand-dot {
+    .brand-icon {
       width: 22px;
       height: 22px;
-      border-radius: 6px;
-      background: linear-gradient(135deg, #2563eb, #059669);
-      color: #fff;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 12px;
-      font-weight: 700;
+      border-radius: 5px;
+      display: block;
       flex-shrink: 0;
     }
 
@@ -268,31 +262,31 @@
 <body>
   <div class="head">
     <div class="brand">
-      <span class="brand-dot" aria-hidden="true">✦</span>
-      <span>Prism CUA 浏览器受控桥</span>
+      <img class="brand-icon" src="icons/icon48.png" width="22" height="22" alt="" />
+      <span>Prism 网页协作助手</span>
     </div>
-    <span class="ver-pill">v0.9.1</span>
+    <span class="ver-pill">v0.9.2</span>
   </div>
 
   <div id="state-card" class="card">
     <div class="kv-row">
-      <span class="kv-label">守护进程通道</span>
+      <span class="kv-label">桌面端连接</span>
       <span id="nm-badge" class="status-badge is-muted"><span class="dot"></span><span>检测中…</span></span>
     </div>
     <div class="kv-row">
-      <span class="kv-label">当前页状态</span>
-      <span id="arm-badge" class="status-badge is-muted">未授权隔离</span>
+      <span class="kv-label">当前网页状态</span>
+      <span id="arm-badge" class="status-badge is-muted">未允许 AI 操作</span>
     </div>
-    <div id="origin-box" class="origin-box">正在读取当前标签页同源域…</div>
+    <div id="origin-box" class="origin-box">正在识别当前网页地址…</div>
   </div>
 
   <div id="block-notice" class="notice" hidden></div>
 
-  <button type="button" id="btn-toggle-arm" class="btn-main" disabled>授权操控当前标签页 (ARMED)</button>
-  <button type="button" id="btn-disarm-all" class="btn-sub" disabled>一键解除全部标签页</button>
+  <button type="button" id="btn-toggle-arm" class="btn-main" disabled>允许 AI 协助此网页</button>
+  <button type="button" id="btn-disarm-all" class="btn-sub" disabled>停止全部网页协助</button>
 
   <div class="foot">
-    安全边界：仅显式点击授权的标签页可被观测或操作；跨域名跳转自动撤权，0 授权页时后台连接自动断开（0 空闲开销），密码框与人机验证挑战硬拦截。
+    隐私保护：仅在您手动点击允许的网页生效，跳转其他网站自动停止；密码框、支付页面与验证码全程自动避让。
   </div>
 
   <script src="popup.js"></script>

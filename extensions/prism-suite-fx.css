@@ -3,25 +3,86 @@
  * Scoped strictly via .ag-ps-* / #ag-ps-* / :where(...) to avoid host pollution.
  * ============================================================================ */
 
-/* ---- 1. Composer FX Host (Border Beam + Quota Ring) ---- */
+/* ---- 1. Composer FX Host (GPU Compositor Border Beam + Quota Ring) ---- */
 :where([data-ag-ps-fx-host="1"]) {
   position: relative;
 }
 
-.ag-ps-beam-canvas {
-  position: absolute;
-  inset: -2px;
-  width: calc(100% + 4px);
-  height: calc(100% + 4px);
-  pointer-events: none;
-  z-index: 16;
-  opacity: 0;
-  transition: opacity 220ms cubic-bezier(0.22, 1, 0.36, 1);
-  border-radius: inherit;
+@keyframes agPsBeamSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
-.ag-ps-beam-canvas[data-active="1"] {
+.ag-ps-beam-ring {
+  position: absolute;
+  inset: -1.5px;
+  border-radius: inherit;
+  padding: 2px;
+  pointer-events: none;
+  z-index: 16;
+  overflow: hidden;
+  contain: layout paint style;
+  opacity: 0;
+  transition: opacity 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+
+.ag-ps-beam-ring[data-running="1"] {
   opacity: 1;
+}
+
+.ag-ps-beam-ring[data-running="1"][data-ambient="1"] {
+  opacity: 0.82;
+}
+
+.ag-ps-beam-rotor {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: var(--ag-ps-beam-diag, 1080px);
+  height: var(--ag-ps-beam-diag, 1080px);
+  margin-left: calc(var(--ag-ps-beam-diag, 1080px) * -0.5);
+  margin-top: calc(var(--ag-ps-beam-diag, 1080px) * -0.5);
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    transparent 44deg,
+    var(--ag-ps-beam-c1, #2563EB) 106deg,
+    var(--ag-ps-beam-c2, #60A5FA) 152deg,
+    var(--ag-ps-beam-c3, #93C5FD) 173deg,
+    #FFFFFF 179deg,
+    transparent 185deg,
+    transparent 228deg,
+    var(--ag-ps-beam-c1, #2563EB) 292deg,
+    var(--ag-ps-beam-c2, #60A5FA) 344deg,
+    transparent 360deg
+  );
+  animation: agPsBeamSpin var(--ag-ps-beam-dur, 3.1s) linear infinite;
+  animation-play-state: paused;
+  will-change: auto;
+}
+
+.ag-ps-beam-ring[data-running="1"] .ag-ps-beam-rotor {
+  animation-play-state: running;
+  will-change: transform;
+}
+
+html[data-ag-prism-hidden="1"] .ag-ps-beam-rotor,
+html[data-ag-ps-perf="power-save"] .ag-ps-beam-rotor,
+html[data-ag-ps-reduced-motion="1"] .ag-ps-beam-rotor {
+  animation-play-state: paused !important;
+  will-change: auto !important;
+}
+
+html[data-ag-ps-perf="power-save"] .ag-ps-beam-ring {
+  opacity: 0 !important;
 }
 
 .ag-ps-quota-ring {
@@ -272,11 +333,20 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
   display: none !important;
 }
 
-/* ---- 6. Always-On Outline Dot Rail ---- */
+/* ---- 6. Smart Turn Navigator (Host Left Navigator Polish + Right Fallback Rail) ---- */
+html[data-ag-ps-nav-off="1"] [data-testid="conversation-navigator"] {
+  display: none !important;
+}
+
+html:not([data-ag-ps-nav-off="1"]) [data-testid="conversation-navigator"] [data-testid="conversation-navigator-turn"][aria-current="true"] {
+  background-color: var(--primary, #2F75C3) !important;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--primary, #2F75C3) 42%, transparent);
+}
+
 #ag-ps-outline-rail {
   position: fixed;
   top: 50%;
-  right: 12px;
+  right: 22px;
   transform: translateY(-50%);
   z-index: 99940;
   display: none;
@@ -288,9 +358,10 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
   overflow: hidden;
   scrollbar-width: none !important;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--background, #FFFFFF) 96%, transparent);
-  border: 1px solid var(--sidebar-border, rgba(128, 128, 128, 0.18));
+  background: color-mix(in srgb, var(--card, var(--background, #FFFFFF)) 95%, transparent);
+  border: 1px solid color-mix(in srgb, var(--foreground, #141413) 10%, transparent);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  pointer-events: none;
   transition: right 180ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease, background-color 180ms ease;
   opacity: 0.9;
 }
@@ -298,6 +369,7 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
 #ag-ps-outline-rail[data-scrollable="1"] {
   overflow-y: auto;
   overflow-x: hidden !important;
+  pointer-events: auto;
 }
 
 #ag-ps-outline-rail[data-occluded="1"] {
@@ -321,7 +393,7 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
 
 #ag-ps-outline-rail:hover {
   opacity: 1;
-  background: color-mix(in srgb, var(--background, #FFFFFF) 92%, transparent);
+  background: color-mix(in srgb, var(--card, var(--background, #FFFFFF)) 96%, transparent);
 }
 
 .ag-ps-rail-dot {
@@ -333,6 +405,7 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
   border-radius: 999px;
   background: color-mix(in srgb, var(--muted-foreground, #73726C) 48%, transparent);
   cursor: pointer;
+  pointer-events: auto;
   flex-shrink: 0;
   transition: height 180ms cubic-bezier(0.22, 1, 0.36, 1),
               width 180ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -361,16 +434,18 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
 #ag-ps-rail-tip {
   position: fixed;
   z-index: 99945;
-  max-width: 248px;
-  padding: 5px 9px;
-  border-radius: 8px;
-  background: var(--background, #FFFFFF);
+  max-width: 280px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--card, var(--background, #FFFFFF)) 96%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   color: var(--foreground, #141413);
-  border: 1px solid var(--sidebar-border, rgba(128, 128, 128, 0.16));
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.14);
+  border: 1px solid color-mix(in srgb, var(--foreground, #141413) 10%, transparent);
+  box-shadow: 0 10px 26px -4px rgba(15, 23, 42, 0.14), 0 2px 6px rgba(15, 23, 42, 0.05);
   font-family: var(--font-sans, system-ui, sans-serif);
-  font-size: 11px;
-  line-height: 1.38;
+  font-size: 11.5px;
+  line-height: 1.4;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -378,6 +453,10 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
   opacity: 0;
   transform: translateX(4px);
   transition: opacity 130ms ease, transform 130ms ease;
+}
+
+#ag-ps-rail-tip[data-side="left"] {
+  transform: translateX(-4px);
 }
 
 #ag-ps-rail-tip[data-show="1"] {
@@ -837,7 +916,7 @@ html[data-ag-ps-perf="power-save"] #ag-ps-quota-nudge {
 }
 
 html[data-ag-ps-perf="power-save"] :is(
-  .ag-ps-beam-canvas,
+  .ag-ps-beam-ring,
   .ag-ps-quota-ring,
   .ag-ps-orb-btn,
   .ag-ps-orb-pill,
@@ -853,10 +932,10 @@ html[data-ag-ps-perf="vivid"]:not([data-ag-prism-hidden="1"]):not([data-ag-ps-re
   filter: drop-shadow(0 0 6px color-mix(in srgb, var(--primary, #2F75C3) 42%, transparent));
 }
 
-/* ---- 11. Optical Micro-Facets, 1px Hairline Split Sash, 0fps Semantic Afterglow & Quota Chip ---- */
+/* ---- 11. All-Theme Optical Micro-Facets, 1px Optical Sash, 0fps Semantic Afterglow & Quota Chip ---- */
 
-/* 11.1 Tactile Ceramic / Brushed-Graphite Keycaps (<kbd>) */
-html[data-ag-ps-facets="1"]:not([data-ag-theme-mode="dark"]) body:not(.dark) :where([data-testid="autoscroll-viewport"] kbd, #ag-ps-popover kbd) {
+/* 11.1 Tactile Ceramic / Brushed-Graphite Keycaps (<kbd>) & Crisp Inline Code Bevel */
+html[data-ag-ps-facets="1"]:not([data-ag-theme-mode="dark"]) body:not(.dark) :is([data-testid="autoscroll-viewport"] kbd, #ag-ps-popover kbd) {
   display: inline-block;
   padding: 1px 5.5px;
   margin: 0 1px;
@@ -866,14 +945,14 @@ html[data-ag-ps-facets="1"]:not([data-ag-theme-mode="dark"]) body:not(.dark) :wh
   font-weight: 500;
   line-height: 1.35;
   color: var(--foreground, #191918);
-  background: linear-gradient(180deg, #FFFFFF 0%, #F2F1EE 100%);
-  border: 1px solid rgba(20, 20, 19, 0.16);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.92) inset, 0 1.5px 0 rgba(20, 20, 19, 0.11);
+  background: linear-gradient(180deg, #FFFFFF 0%, #F1F0EC 100%) !important;
+  border: 1px solid rgba(15, 23, 42, 0.18) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.96) inset, 0 1.5px 0 rgba(15, 23, 42, 0.12) !important;
   vertical-align: baseline;
 }
 
-html[data-ag-ps-facets="1"]:is([data-ag-theme-mode="dark"], .dark) :where([data-testid="autoscroll-viewport"] kbd, #ag-ps-popover kbd),
-html[data-ag-ps-facets="1"] body.dark :where([data-testid="autoscroll-viewport"] kbd, #ag-ps-popover kbd) {
+html[data-ag-ps-facets="1"]:is([data-ag-theme-mode="dark"], .dark) :is([data-testid="autoscroll-viewport"] kbd, #ag-ps-popover kbd),
+html[data-ag-ps-facets="1"] body.dark :is([data-testid="autoscroll-viewport"] kbd, #ag-ps-popover kbd) {
   display: inline-block;
   padding: 1px 5.5px;
   margin: 0 1px;
@@ -883,32 +962,74 @@ html[data-ag-ps-facets="1"] body.dark :where([data-testid="autoscroll-viewport"]
   font-weight: 500;
   line-height: 1.35;
   color: var(--foreground, #ECECEA);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.095) 0%, rgba(255, 255, 255, 0.04) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.10) inset, 0 1.5px 0 rgba(0, 0, 0, 0.46);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.11) 0%, rgba(255, 255, 255, 0.045) 100%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.12) inset, 0 1.5px 0 rgba(0, 0, 0, 0.48) !important;
   vertical-align: baseline;
 }
 
-/* 11.2 Specular Top-Edge Micro-Facet on File-Diff & Artifact Cards + Recessed Terminal Well */
-html[data-ag-ps-facets="1"]:not([data-ag-theme-mode="dark"]) body:not(.dark) :where([data-testid="changed-files-card-header"], [data-testid="artifact-card"]) {
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.72) inset, 0 1px 2.5px rgba(20, 20, 19, 0.035);
+html[data-ag-ps-facets="1"]:not([data-ag-theme-mode="dark"]) body:not(.dark) :is([data-testid="planner-response-text"], [data-markdown-root], .prose, .markdown) :not(pre) > code {
+  border-color: rgba(15, 23, 42, 0.11) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.88) inset, 0 1px 1.5px rgba(15, 23, 42, 0.04) !important;
 }
 
-html[data-ag-ps-facets="1"]:is([data-ag-theme-mode="dark"], .dark) :where([data-testid="changed-files-card-header"], [data-testid="artifact-card"]),
-html[data-ag-ps-facets="1"] body.dark :where([data-testid="changed-files-card-header"], [data-testid="artifact-card"]) {
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.075) inset, 0 2px 8px rgba(0, 0, 0, 0.22);
+html[data-ag-ps-facets="1"]:is([data-ag-theme-mode="dark"], .dark) :is([data-testid="planner-response-text"], [data-markdown-root], .prose, .markdown) :not(pre) > code,
+html[data-ag-ps-facets="1"] body.dark :is([data-testid="planner-response-text"], [data-markdown-root], .prose, .markdown) :not(pre) > code {
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset !important;
+}
+
+/* 11.2 All-Theme Optical Bevel on Code Blocks, Tool/Diff/Step Cards & User Bubbles */
+html[data-ag-ps-facets="1"][data-ag-ps-facets="1"]:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(
+  [data-testid="autoscroll-viewport"] pre,
+  [data-testid="tool-group-collapsible"][aria-expanded="true"] + div,
+  [data-testid="changed-files-card"],
+  [data-testid="changed-files-card-header"],
+  [data-testid="artifact-card"],
+  [data-testid="turn-cards-container"] > div
+) {
+  border: 1px solid color-mix(in srgb, var(--foreground, #0F172A) 11%, transparent) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.94) inset, 0 3px 10px -2px rgba(15, 23, 42, 0.065), 0 1px 2px rgba(15, 23, 42, 0.04) !important;
+}
+
+:is(html[data-ag-ps-facets="1"][data-ag-ps-facets="1"][data-ag-theme-mode="dark"] body, html[data-ag-ps-facets="1"][data-ag-ps-facets="1"] body.dark) :is(
+  [data-testid="autoscroll-viewport"] pre,
+  [data-testid="tool-group-collapsible"][aria-expanded="true"] + div,
+  [data-testid="changed-files-card"],
+  [data-testid="changed-files-card-header"],
+  [data-testid="artifact-card"],
+  [data-testid="turn-cards-container"] > div
+) {
+  border: 1px solid rgba(255, 255, 255, 0.125) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.085) inset, 0 6px 18px -4px rgba(0, 0, 0, 0.38) !important;
+}
+
+html[data-ag-ps-facets="1"][data-ag-ps-facets="1"]:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(
+  .agy-user-bubble:not(.ag-claude-editing-bubble),
+  [data-testid="user-message-bubble"]:not(.ag-claude-editing-bubble)
+) {
+  border: 1px solid color-mix(in srgb, var(--primary, #2F75C3) 18%, rgba(15, 23, 42, 0.09)) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.86) inset, 0 2px 7px -1px rgba(15, 23, 42, 0.05) !important;
+}
+
+:is(html[data-ag-ps-facets="1"][data-ag-ps-facets="1"][data-ag-theme-mode="dark"] body, html[data-ag-ps-facets="1"][data-ag-ps-facets="1"] body.dark) :is(
+  .agy-user-bubble:not(.ag-claude-editing-bubble),
+  [data-testid="user-message-bubble"]:not(.ag-claude-editing-bubble)
+) {
+  border: 1px solid color-mix(in srgb, var(--primary, #60A5FA) 22%, rgba(255, 255, 255, 0.11)) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08) inset, 0 4px 12px -2px rgba(0, 0, 0, 0.30) !important;
 }
 
 html[data-ag-ps-facets="1"]:not([data-ag-theme-mode="dark"]) body:not(.dark) :where(.xterm-viewport, [data-testid="terminal-container"]) {
-  box-shadow: 0 1px 3px rgba(20, 20, 19, 0.055) inset;
+  box-shadow: 0 1px 3px rgba(20, 20, 19, 0.065) inset;
 }
 
 html[data-ag-ps-facets="1"]:is([data-ag-theme-mode="dark"], .dark) :where(.xterm-viewport, [data-testid="terminal-container"]),
 html[data-ag-ps-facets="1"] body.dark :where(.xterm-viewport, [data-testid="terminal-container"]) {
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.30) inset;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.32) inset;
 }
 
-/* 11.3 1px Invisible Hairline Split Sash (strictly vertical column-resize sashes, crisp integer px, preserves 8px hit-target) */
+/* 11.3 1px Optical Prism Split Sash (vertical column-resize sashes, preserves full 8px hit-target) */
 html[data-ag-ps-facets="1"] :where([data-sash-handle="true"]:not([aria-orientation="horizontal"]):not(.cursor-row-resize):not(.cursor-ns-resize), [data-testid="sidebar-sash"]) {
   position: relative;
   background: transparent !important;
@@ -922,8 +1043,13 @@ html[data-ag-ps-facets="1"] :where([data-sash-handle="true"]:not([aria-orientati
   left: 50%;
   width: 1px;
   transform: translateX(-0.5px);
-  background: color-mix(in srgb, var(--sidebar-border, rgba(128, 128, 128, 0.22)) 72%, transparent);
-  opacity: 0.52;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    color-mix(in srgb, var(--primary, #2F75C3) 34%, var(--sidebar-border, rgba(128, 128, 128, 0.28))) 50%,
+    transparent 100%
+  );
+  opacity: 0.85;
   pointer-events: none;
   transition: opacity 150ms cubic-bezier(0.22, 1, 0.36, 1),
               width 140ms ease,
@@ -935,24 +1061,27 @@ html[data-ag-ps-facets="1"] :where([data-sash-handle="true"]:not([aria-orientati
   width: 2px;
   transform: translateX(-1px);
   background: var(--primary, #2F75C3);
-  opacity: 0.88;
+  opacity: 0.92;
 }
 
-/* 11.4 Tri-State 0fps Semantic Edge Afterglow on Composer (decision=amber, error=coral, done=emerald) */
+/* 11.4 Tri-State 0fps Semantic Edge Afterglow on Composer (5x ID specificity outranks custom.css composer rules) */
 :where([id="antigravity.agentSidePanelInputBox"]) {
-  transition: box-shadow 300ms cubic-bezier(0.22, 1, 0.36, 1), border-color 240ms ease;
+  transition: box-shadow 280ms cubic-bezier(0.22, 1, 0.36, 1), border-color 240ms ease;
 }
 
-:where([id="antigravity.agentSidePanelInputBox"][data-ag-ps-afterglow="decision"]) {
-  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.36), 0 4px 18px -3px rgba(245, 158, 11, 0.18) !important;
+#antigravity\.agentSidePanelInputBox#antigravity\.agentSidePanelInputBox#antigravity\.agentSidePanelInputBox#antigravity\.agentSidePanelInputBox#antigravity\.agentSidePanelInputBox[data-ag-ps-afterglow="decision"] {
+  border-color: rgba(245, 158, 11, 0.78) !important;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18), 0 8px 26px -4px rgba(245, 158, 11, 0.28) !important;
 }
 
-:where([id="antigravity.agentSidePanelInputBox"][data-ag-ps-afterglow="error"]) {
-  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.38), 0 4px 18px -3px rgba(239, 68, 68, 0.18) !important;
+#antigravity\.agentSidePanelInputBox#antigravity\.agentSidePanelInputBox#antigravity\.agentSidePanelInputBox#antigravity\.agentSidePanelInputBox#antigravity\.agentSidePanelInputBox[data-ag-ps-afterglow="error"] {
+  border-color: rgba(239, 68, 68, 0.80) !important;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18), 0 8px 26px -4px rgba(239, 68, 68, 0.28) !important;
 }
 
-:where([id="antigravity.agentSidePanelInputBox"][data-ag-ps-afterglow="done"]) {
-  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.32), 0 4px 16px -3px rgba(16, 185, 129, 0.14) !important;
+#antigravity\.agentSidePanelInputBox#antigravity\.agentSidePanelInputBox#antigravity\.agentSidePanelInputBox#antigravity\.agentSidePanelInputBox#antigravity\.agentSidePanelInputBox[data-ag-ps-afterglow="done"] {
+  border-color: rgba(16, 185, 129, 0.74) !important;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.16), 0 8px 24px -4px rgba(16, 185, 129, 0.24) !important;
 }
 
 /* 11.5 Composer Footer Compact 5h · 7d Quota Micro-Capsule (4x ID specificity outranks host theme overrides) */
@@ -1052,12 +1181,13 @@ html[data-ag-ps-reduced-motion="1"] :where([data-sash-handle="true"], [data-test
 
 @media (prefers-reduced-motion: reduce) {
   html:not([data-ag-ps-force-motion="1"]) #ag-ps-return-bar,
-  html:not([data-ag-ps-force-motion="1"]) #ag-ps-quota-nudge {
+  html:not([data-ag-ps-force-motion="1"]) #ag-ps-quota-nudge,
+  html:not([data-ag-ps-force-motion="1"]) .ag-ps-beam-rotor {
     animation: none !important;
     transition: none !important;
   }
   html:not([data-ag-ps-force-motion="1"]) :is(
-    .ag-ps-beam-canvas,
+    .ag-ps-beam-ring,
     .ag-ps-quota-ring,
     .ag-ps-qring-arc,
     .ag-ps-orb-btn,

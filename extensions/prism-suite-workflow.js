@@ -999,6 +999,12 @@
     }
 
     window.__agPrismCloseImageMenu = closeImageMenu;
+    const onPeerCloseForImgMenu = (e) => {
+      if (disposed) return;
+      const ex = e && e.detail && e.detail.except ? String(e.detail.except) : '';
+      if (ex !== 'img-menu') closeImageMenu();
+    };
+    window.addEventListener('ag-prism-close-popovers', onPeerCloseForImgMenu, { signal });
 
     addCleanup(() => {
       closeImageMenu();
@@ -1214,6 +1220,9 @@
 
     function openImageContextMenu(img, clientX, clientY) {
       closeImageMenu();
+      try {
+        window.dispatchEvent(new CustomEvent('ag-prism-close-popovers', { detail: { except: 'img-menu' } }));
+      } catch {}
       activeImgTarget = img;
 
       const menu = document.createElement('div');
@@ -3062,81 +3071,99 @@
       bus.registerPanelSection({
         id: 'workflow',
         order: 20,
-        title: '效率交互与多语言',
-        render(rawPrefs) {
+        title: '',
+        render(rawPrefs, helpers) {
           const p = Object.assign({}, DEFAULT_PREFS, rawPrefs || {});
+          const activeTab = (helpers && helpers.activeTab) || 'all';
           const i18nMode = VALID_I18N_MODES.has(p.i18nExtraMode) ? p.i18nExtraMode : 'off';
+
+          if (activeTab === 'appearance' || activeTab === 'motion') {
+            return '';
+          }
+
+          if (activeTab === 'nav') {
+            return `
+              <div class="ag-ps-toggle-list">
+                <div class="ag-ps-toggle-row">
+                  <div class="ag-ps-toggle-label">
+                    <span>从历史某轮开启分支对话</span>
+                    <span class="ag-ps-toggle-sub">鼠标移到历史提问显示「分支」按钮</span>
+                  </div>
+                  <button type="button" class="ag-ps-switch" data-wf-toggle="sessionFork" data-on="${p.sessionFork !== false ? '1' : '0'}" aria-label="从历史某轮开启分支对话"></button>
+                </div>
+                <div class="ag-ps-toggle-row">
+                  <div class="ag-ps-toggle-label">
+                    <span>已发消息快速修改重发</span>
+                    <span class="ag-ps-toggle-sub">鼠标移到历史提问可直接编辑重发</span>
+                  </div>
+                  <button type="button" class="ag-ps-switch" data-wf-toggle="inlineEditHelper" data-on="${p.inlineEditHelper !== false ? '1' : '0'}" aria-label="已发消息快速修改重发"></button>
+                </div>
+                <div class="ag-ps-toggle-row">
+                  <div class="ag-ps-toggle-label">
+                    <span>界面英文词条中文化</span>
+                    <span class="ag-ps-toggle-sub">补全未翻译菜单与按钮 · 可随时还原</span>
+                  </div>
+                  <div class="ag-ps-seg-group">
+                    <button type="button" class="ag-ps-seg-btn" data-wf-i18n="off" data-selected="${i18nMode === 'off' ? '1' : '0'}">关</button>
+                    <button type="button" class="ag-ps-seg-btn" data-wf-i18n="zh-CN" data-selected="${i18nMode === 'zh-CN' ? '1' : '0'}">简中</button>
+                    <button type="button" class="ag-ps-seg-btn" data-wf-i18n="zh-TW" data-selected="${i18nMode === 'zh-TW' ? '1' : '0'}">繁中</button>
+                    <button type="button" class="ag-ps-seg-btn" data-wf-i18n="en" data-selected="${i18nMode === 'en' ? '1' : '0'}">EN</button>
+                  </div>
+                </div>
+              </div>
+            `;
+          }
+
           return `
             <div class="ag-ps-toggle-list">
               <div class="ag-ps-toggle-row">
                 <div class="ag-ps-toggle-label">
-                  <span>图片右键快捷三连</span>
-                  <span class="ag-ps-toggle-sub">对话图片右键：引用 / 复制 PNG / 保存</span>
+                  <span>输入框拖入或粘贴文件</span>
+                  <span class="ag-ps-toggle-sub">拖入本地文件自动变成 @文件引用</span>
                 </div>
-                <button type="button" class="ag-ps-switch" data-wf-toggle="imageContextMenu" data-on="${p.imageContextMenu !== false ? '1' : '0'}" aria-label="图片右键快捷三连"></button>
+                <button type="button" class="ag-ps-switch" data-wf-toggle="composerFileDrop" data-on="${p.composerFileDrop !== false ? '1' : '0'}" aria-label="输入框拖入或粘贴文件"></button>
               </div>
               <div class="ag-ps-toggle-row">
                 <div class="ag-ps-toggle-label">
-                  <span>纯净复制最终回复</span>
-                  <span class="ag-ps-toggle-sub">自动过滤折叠思考与工具摘要（保留代码块）</span>
+                  <span>对话图片右键菜单</span>
+                  <span class="ag-ps-toggle-sub">右键图片一键引用到提问、复制或保存</span>
                 </div>
-                <button type="button" class="ag-ps-switch" data-wf-toggle="cleanCopy" data-on="${p.cleanCopy !== false ? '1' : '0'}" aria-label="纯净复制最终回复"></button>
+                <button type="button" class="ag-ps-switch" data-wf-toggle="imageContextMenu" data-on="${p.imageContextMenu !== false ? '1' : '0'}" aria-label="对话图片右键菜单"></button>
               </div>
               <div class="ag-ps-toggle-row">
                 <div class="ag-ps-toggle-label">
-                  <span>SSH 粘贴命令自动解析</span>
-                  <span class="ag-ps-toggle-sub">自动拆解端口与主机，安全丢弃密码</span>
+                  <span>纯净复制 AI 最终回答</span>
+                  <span class="ag-ps-toggle-sub">复制时自动去掉思考过程与工具日志</span>
                 </div>
-                <button type="button" class="ag-ps-switch" data-wf-toggle="sshPaste" data-on="${p.sshPaste !== false ? '1' : '0'}" aria-label="SSH 粘贴命令自动解析"></button>
-              </div>
-              <div class="ag-ps-toggle-row">
-                <div class="ag-ps-toggle-label">
-                  <span>输入框拖入/粘贴本地文件</span>
-                  <span class="ag-ps-toggle-sub">项目与对话输入框拖放/粘贴文件转 @路径（与原生零冲突）</span>
-                </div>
-                <button type="button" class="ag-ps-switch" data-wf-toggle="composerFileDrop" data-on="${p.composerFileDrop !== false ? '1' : '0'}" aria-label="输入框拖入/粘贴本地文件"></button>
-              </div>
-              <div class="ag-ps-toggle-row">
-                <div class="ag-ps-toggle-label">
-                  <span>WSL 资源管理器定位修复</span>
-                  <span class="ag-ps-toggle-sub">修复 WSL 模式下原生「在文件资源管理器中显示」无法打开本地盘符</span>
-                </div>
-                <button type="button" class="ag-ps-switch" data-wf-toggle="wslExplorerRevealFix" data-on="${p.wslExplorerRevealFix !== false ? '1' : '0'}" aria-label="WSL 资源管理器定位修复"></button>
-              </div>
-              <div class="ag-ps-toggle-row">
-                <div class="ag-ps-toggle-label" data-ag-ps-tip="为桌面/开始菜单快捷方式追加 --disable-renderer-backgrounding，防止最小化掉入低频休眠（下次重启客户端生效，关闭即还原）">
-                  <span>极速窗口恢复（防最小化白屏）</span>
-                  <span class="ag-ps-toggle-sub">禁止最小化后台降频驱逐显存帧 · 重启客户端生效</span>
-                </div>
-                <button type="button" class="ag-ps-switch" data-wf-toggle="fastWindowRestore" data-on="${p.fastWindowRestore === true ? '1' : '0'}" aria-label="极速窗口恢复（防最小化白屏）"></button>
-              </div>
-              <div class="ag-ps-toggle-row">
-                <div class="ag-ps-toggle-label">
-                  <span>原位消息编辑补位</span>
-                  <span class="ag-ps-toggle-sub">优先原生消息编辑，不可用时启用乐观锁编辑</span>
-                </div>
-                <button type="button" class="ag-ps-switch" data-wf-toggle="inlineEditHelper" data-on="${p.inlineEditHelper !== false ? '1' : '0'}" aria-label="原位消息编辑补位"></button>
-              </div>
-              <div class="ag-ps-toggle-row">
-                <div class="ag-ps-toggle-label">
-                  <span>历史轮次分支新会话</span>
-                  <span class="ag-ps-toggle-sub">大纲与轮次悬停「分支」按钮</span>
-                </div>
-                <button type="button" class="ag-ps-switch" data-wf-toggle="sessionFork" data-on="${p.sessionFork !== false ? '1' : '0'}" aria-label="历史轮次分支新会话"></button>
-              </div>
-              <div class="ag-ps-toggle-row">
-                <div class="ag-ps-toggle-label">
-                  <span>2.34–2.35 / Swarm 词条补全</span>
-                  <span class="ag-ps-toggle-sub">轻量定向翻译界面壳 · 可无损恢复原文</span>
-                </div>
-                <div class="ag-ps-wf-seg-wrap">
-                  <button type="button" class="ag-ps-wf-seg-btn" data-wf-i18n="off" data-selected="${i18nMode === 'off' ? '1' : '0'}">关</button>
-                  <button type="button" class="ag-ps-wf-seg-btn" data-wf-i18n="zh-CN" data-selected="${i18nMode === 'zh-CN' ? '1' : '0'}">简中</button>
-                  <button type="button" class="ag-ps-wf-seg-btn" data-wf-i18n="zh-TW" data-selected="${i18nMode === 'zh-TW' ? '1' : '0'}">繁中</button>
-                  <button type="button" class="ag-ps-wf-seg-btn" data-wf-i18n="en" data-selected="${i18nMode === 'en' ? '1' : '0'}">EN</button>
-                </div>
+                <button type="button" class="ag-ps-switch" data-wf-toggle="cleanCopy" data-on="${p.cleanCopy !== false ? '1' : '0'}" aria-label="纯净复制 AI 最终回答"></button>
               </div>
             </div>
+            <details class="ag-ps-adv-fold">
+              <summary>高级与环境兼容选项</summary>
+              <div class="ag-ps-toggle-list">
+                <div class="ag-ps-toggle-row">
+                  <div class="ag-ps-toggle-label" data-ag-ps-tip="优化桌面快捷方式启动参数，防止最小化到后台久置后切回短暂白屏（下次重启客户端生效，关闭即恢复原状）">
+                    <span>最小化后秒速恢复画面</span>
+                    <span class="ag-ps-toggle-sub">防止后台久置切回短暂白屏 · 重启生效</span>
+                  </div>
+                  <button type="button" class="ag-ps-switch" data-wf-toggle="fastWindowRestore" data-on="${p.fastWindowRestore === true ? '1' : '0'}" aria-label="最小化后秒速恢复画面"></button>
+                </div>
+                <div class="ag-ps-toggle-row">
+                  <div class="ag-ps-toggle-label">
+                    <span>WSL 打开本地文件夹修复</span>
+                    <span class="ag-ps-toggle-sub">修复 WSL 环境下点击打开文件夹无反应</span>
+                  </div>
+                  <button type="button" class="ag-ps-switch" data-wf-toggle="wslExplorerRevealFix" data-on="${p.wslExplorerRevealFix !== false ? '1' : '0'}" aria-label="WSL 打开本地文件夹修复"></button>
+                </div>
+                <div class="ag-ps-toggle-row">
+                  <div class="ag-ps-toggle-label">
+                    <span>粘贴远程连接命令自动整理</span>
+                    <span class="ag-ps-toggle-sub">粘贴 SSH 命令时自动提取地址并过滤密码</span>
+                  </div>
+                  <button type="button" class="ag-ps-switch" data-wf-toggle="sshPaste" data-on="${p.sshPaste !== false ? '1' : '0'}" aria-label="粘贴远程连接命令自动整理"></button>
+                </div>
+              </div>
+            </details>
           `;
         },
         onClick(e) {

@@ -10,14 +10,14 @@
       --p-bg-subtle: #f8fafc;
       --p-bg-hover: #f1f5f9;
       --p-bg-active: #e2e8f0;
-      --p-bg-selected: rgba(37, 99, 235, 0.1);
+      --p-bg-selected: color-mix(in srgb, var(--p-accent) 11%, transparent);
       --p-text: #0f172a;
       --p-text-secondary: #475569;
       --p-text-muted: #64748b;
       --p-border: rgba(15, 23, 42, 0.1);
       --p-border-strong: rgba(15, 23, 42, 0.18);
       --p-accent: #2563eb;
-      --p-accent-soft: rgba(37, 99, 235, 0.11);
+      --p-accent-soft: color-mix(in srgb, var(--p-accent) 11%, transparent);
       --p-warn: #d97706;
       --p-warn-soft: rgba(217, 119, 6, 0.12);
       --p-danger: #dc2626;
@@ -2841,9 +2841,9 @@
         <button type="button" class="tab-btn" role="tab" id="tab-btn-cua" data-tab="cua" aria-selected="false" title="电脑操控 (Alt+7)">电脑操控</button>
       </nav>
       <div class="topbar-controls">
-        <button type="button" id="btn-smb-toggle" class="ctrl-btn" aria-pressed="false" title="允许局域网 NAS/SMB 路径（默认关闭；开启后仅放行私网/Tailscale/本地 UNC，拒绝公网主机以防 NTLM 泄露）">
+        <button type="button" id="btn-smb-toggle" class="ctrl-btn" aria-pressed="false" title="允许访问局域网共享目录（默认关闭；开启后仅放行内网与 Tailscale 地址）">
           <span class="dot-indicator" aria-hidden="true"></span>
-          <span>NAS/SMB</span>
+          <span>局域网目录</span>
         </button>
         <button type="button" id="btn-hidden-toggle" class="ctrl-btn" aria-pressed="false" title="切换显示以 . 开头的隐藏文件">
           <span class="dot-indicator" aria-hidden="true"></span>
@@ -2891,7 +2891,7 @@
         <!-- Tab 2: 最近产物 -->
         <section id="panel-artifacts" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-artifacts">
           <div class="subbar">
-            <span id="artifacts-dir-label" class="subbar-info subbar-mono">~/.gemini/antigravity/brain</span>
+            <span id="artifacts-dir-label" class="subbar-info" title="默认扫描 ~/.gemini/antigravity/brain 目录">AI 生成的文档、报告与截图</span>
             <span id="artifacts-count" class="meta-count">0 项</span>
           </div>
           <div class="toolbar">
@@ -2948,7 +2948,7 @@
         <!-- Tab 5: 模型中枢 (Model Hub) -->
         <section id="panel-models" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-models" tabindex="-1">
           <div class="subbar" style="flex-wrap:wrap;">
-            <span id="models-summary-label" class="subbar-info">零依赖流式会诊中枢 · 公私隔离 (0600)</span>
+            <span id="models-summary-label" class="subbar-info">多模型协同会诊 · 密钥本地安全隔离</span>
             <div style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;flex-shrink:0;">
               <button type="button" id="btn-mhub-add-provider" class="ctrl-btn" title="添加或收起网关配置表单（再次点击关闭）">+ 网关</button>
               <button type="button" id="btn-mhub-discover" class="ctrl-btn" title="从已配置网关自动拉取 /v1/models 列表并勾选批量导入">🔍 发现模型</button>
@@ -2997,7 +2997,7 @@
         <!-- Tab 7: 电脑操控 (CUA) -->
         <section id="panel-cua" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-cua" tabindex="-1">
           <div class="subbar" style="flex-wrap:wrap;">
-            <span id="cua-summary-label" class="subbar-info">受控桌面与浏览器桥 · 默认关闭零 Token 开销 · 全局 Esc 急刹</span>
+            <span id="cua-summary-label" class="subbar-info">桌面与网页协作助手 · 默认休眠不占额度 · 按 Esc 随时急刹</span>
             <div style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;flex-shrink:0;">
               <span id="cua-broker-pill" class="pill">检测中…</span>
               <button type="button" id="btn-cua-refresh" class="ctrl-btn" title="刷新守护进程授权状态、已授权标签页与可观测桌面窗口">↻ 刷新状态</button>
@@ -3844,6 +3844,54 @@
         '--muted-foreground': '--p-text-muted',
         '--sidebar-border': '--p-border'
       };
+      const PRISM_WB_THEME_CACHE_KEY = 'ag_prism_wb_theme_v1';
+      let activePrismTheme = null;
+
+      function applyPrismThemePayload(theme, persist = true) {
+        if (!theme || typeof theme !== 'object') return;
+        activePrismTheme = theme;
+        if (persist) {
+          try { localStorage.setItem(PRISM_WB_THEME_CACHE_KEY, JSON.stringify(theme)); } catch {}
+        }
+        const root = document.documentElement;
+        if (theme.mode === 'dark' || theme.mode === 'light') {
+          root.dataset.theme = theme.mode;
+          root.style.colorScheme = theme.mode;
+        }
+        const t = theme.tokens;
+        if (t && typeof t === 'object') {
+          const pairs = [
+            ['--p-bg', t.bg],
+            ['--p-bg-subtle', t.subtle],
+            ['--p-bg-hover', t.hover],
+            ['--p-bg-active', t.active],
+            ['--p-text', t.text],
+            ['--p-text-secondary', t.textSec],
+            ['--p-text-muted', t.textMuted],
+            ['--p-border', t.border],
+            ['--p-border-strong', t.borderStrong],
+            ['--p-accent', t.accent],
+            ['--p-accent-soft', t.accentSoft],
+            ['--p-code-bg', t.codeBg || t.subtle],
+            ['--color-background-primary', t.bg],
+            ['--color-background-secondary', t.subtle],
+            ['--color-background-tertiary', t.hover],
+            ['--color-text-primary', t.text],
+            ['--color-text-secondary', t.textSec],
+            ['--color-text-tertiary', t.textMuted],
+            ['--color-border-primary', t.border],
+            ['--color-border-secondary', t.border],
+            ['--color-accent', t.accent]
+          ];
+          for (const [k, v] of pairs) {
+            if (typeof v === 'string' && v) root.style.setProperty(k, v);
+          }
+        }
+      }
+      try {
+        const cachedThemeRaw = localStorage.getItem(PRISM_WB_THEME_CACHE_KEY);
+        if (cachedThemeRaw) applyPrismThemePayload(JSON.parse(cachedThemeRaw), false);
+      } catch {}
 
       function applyHostContext(ctx) {
         if (!ctx || typeof ctx !== 'object') return;
@@ -3861,6 +3909,12 @@
               const mapped = HOST_VAR_BRIDGE[k];
               if (mapped) document.documentElement.style.setProperty(mapped, v);
             }
+          }
+        }
+        if (activePrismTheme) {
+          const nextMode = (themeRaw === 'dark' || themeRaw === 'light') ? themeRaw : activePrismTheme.mode;
+          if (nextMode === activePrismTheme.mode) {
+            applyPrismThemePayload(activePrismTheme, false);
           }
         }
       }
@@ -5745,8 +5799,8 @@
 
         if (modelsSummaryLabel) {
           modelsSummaryLabel.textContent = d
-            ? `已配 ${providers.length} 网关 · ${models.length} 模型（${readyCount} 就绪） · 0600 公私隔离`
-            : '零依赖流式会诊中枢 · 公私隔离 (0600)';
+            ? `已配置 ${providers.length} 个网关 · ${models.length} 个模型（${readyCount} 个可用） · 密钥本地隔离`
+            : '多模型协同会诊 · 密钥本地安全隔离';
         }
         if (btnMhubAddProvider) {
           const addProvActive = Boolean(st.showProviderForm && !st.editingProviderId);
@@ -6202,14 +6256,14 @@
         parts.push(
           `<details class="relay-accordion" data-mhub-sec="gateways" ${gwOpen ? 'open' : ''}>` +
             `<summary>` +
-              `<span>🔌 网关管理与防 SSRF 公网代搜安全护栏</span>` +
+              `<span>🔌 网关管理与联网搜索安全保护</span>` +
               `<span class="relay-acc-summary-right"><span class="pill">${providers.length} 网关</span><span class="relay-acc-chevron" aria-hidden="true">▸</span></span>` +
             `</summary>` +
             `<div class="relay-acc-body">` +
               `<div class="relay-form-row" style="justify-content:space-between;">` +
                 `<label style="font-size:11.5px;display:inline-flex;align-items:center;gap:5px;cursor:pointer;">` +
                   `<input type="checkbox" id="mh-set-websearch" ${wsEnabled ? 'checked' : ''}>` +
-                  `<span>允许无 Key 公网 HTTPS 代搜（强制 DNS 解析锁定公网 IP 防 SSRF/重绑定）</span>` +
+                  `<span>允许免密钥安全联网搜索（自动拦截内网地址防越权）</span>` +
                 `</label>` +
               `</div>` +
               `<div class="relay-form-row" style="justify-content:space-between;">` +
@@ -6463,7 +6517,7 @@
           accountsWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.9.1，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.9.2，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
                 `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
                 `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
               `</article>`
@@ -7266,7 +7320,7 @@
               ? `<span class="pill pill-warn">新版本 ${escapeHtml(suInfo.latestTag)}</span>`
               : st.radarLoading
                 ? '<span class="pill">检查中</span>'
-                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.9.1</span>');
+                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.9.2</span>');
         const expSnap = st.exposure || null;
         const expMcp = expSnap?.mcpExposure || appState.prefs?.mcpExposure || { fileTools: true, memoryTools: true, modelHubTools: true };
         const activeMcpCnt = (expMcp.fileTools !== false ? 2 : 0) + (expMcp.memoryTools !== false ? 4 : 0) + (expMcp.modelHubTools !== false ? 2 : 0);
@@ -7292,7 +7346,14 @@
           `</details>`
         );
 
-        const radarAutoOpen = Boolean(st.radarLoading || st.selfUpdateChecking || st.selfUpdateApplying || (!st.radarTouchedByUser && (rad || suInfo || suRes)));
+        const guideSideParts = [];
+        for (let i = sideParts.length - 1; i >= 0; i--) {
+          if (sideParts[i].includes('data-sec="guide"')) {
+            guideSideParts.unshift(sideParts.splice(i, 1)[0]);
+          }
+        }
+
+        const radarAutoOpen = Boolean(st.radarLoading || (!st.radarTouchedByUser && radHasUpdates));
         const radarOpen = st.radarTouchedByUser
           ? Boolean(st.openSections?.radar)
           : Boolean(st.openSections?.radar || radarAutoOpen);
@@ -7308,15 +7369,14 @@
         sideParts.push(
           `<details class="relay-accordion" data-sec="radar" ${radarOpen ? 'open' : ''}>` +
             `<summary>` +
-              `<span>🚀 版本更新与上游动态（一键升级 / 进阶参考）</span>` +
-              `<span class="relay-acc-summary-right">${radarBadge}<span class="relay-acc-chevron" aria-hidden="true">▸</span></span>` +
+              `<span>🔭 上游生态动态（开发者参考）</span>` +
+              `<span class="relay-acc-summary-right">${radarListPill}<span class="relay-acc-chevron" aria-hidden="true">▸</span></span>` +
             `</summary>` +
             `<div class="relay-acc-body">` +
-              selfUpdateBoxHtml +
-              `<details class="relay-accordion" data-sec="radarList" ${radarListOpen ? 'open' : ''} style="margin-top:6px;">` +
+              `<details class="relay-accordion" data-sec="radarList" ${radarListOpen ? 'open' : ''}>` +
                 `<summary>` +
-                  `<span>🔭 上游生态动态（悬停条目可看英文原文）</span>` +
-                  `<span class="relay-acc-summary-right">${radarListPill}<span class="relay-acc-chevron" aria-hidden="true">▸</span></span>` +
+                  `<span>查看各上游仓库变更条目（悬停可看英文原文）</span>` +
+                  `<span class="relay-acc-summary-right">${radarBadge}<span class="relay-acc-chevron" aria-hidden="true">▸</span></span>` +
                 `</summary>` +
                 `<div class="relay-acc-body">` +
                   `<div class="relay-card-head" style="margin-bottom:6px;">` +
@@ -7337,10 +7397,24 @@
           `</details>`
         );
 
+        const devAutoOpen = Boolean(st.openSections?.devTools || st.openSections?.catalog || st.openSections?.memories || st.openSections?.exposure || radarOpen);
+        const cleanSideHtml =
+          selfUpdateBoxHtml +
+          guideSideParts.join('') +
+          `<details class="relay-accordion" data-sec="devTools" ${devAutoOpen ? 'open' : ''}>` +
+            `<summary>` +
+              `<span>🛠️ 进阶协作与维护（项目槽位 / 交接记忆 / 组件开关 / 上游动态）</span>` +
+              `<span class="relay-acc-summary-right"><span class="pill">进阶选项</span><span class="relay-acc-chevron" aria-hidden="true">▸</span></span>` +
+            `</summary>` +
+            `<div class="relay-acc-body" style="display:flex;flex-direction:column;gap:6px;">` +
+              sideParts.join('') +
+            `</div>` +
+          `</details>`;
+
         accountsWrap.innerHTML =
           `<div class="accounts-dashboard">` +
             `<div class="accounts-col-main">${mainParts.join('')}</div>` +
-            `<div class="accounts-col-side">${sideParts.join('')}</div>` +
+            `<div class="accounts-col-side">${cleanSideHtml}</div>` +
           `</div>`;
         if (prevAccountsScrollTop > 0) {
           accountsWrap.scrollTop = prevAccountsScrollTop;
@@ -7428,10 +7502,10 @@
             cuaBrokerPill.textContent = '检测中…';
           } else if (d?.brokerOnline) {
             cuaBrokerPill.className = 'pill pill-ok';
-            cuaBrokerPill.textContent = '🟢 守护进程在线';
+            cuaBrokerPill.textContent = '🟢 桌面助手在线';
           } else {
             cuaBrokerPill.className = 'pill';
-            cuaBrokerPill.textContent = '⚪ 守护离线';
+            cuaBrokerPill.textContent = '⚪ 助手待命';
           }
         }
         if (cuaSummaryLabel && d) {
@@ -7452,7 +7526,7 @@
           cuaWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-cua-action="refresh">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.9.1，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程；请在 Plugins Manager 重载插件或重启一次 Antigravity。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.9.2，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程；请在 Plugins Manager 重载插件或重启一次 Antigravity。</p>` +
               `</article>`
             : `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">读取电脑操控状态失败</span><button type="button" class="mini-btn is-primary" data-cua-action="refresh">重试</button></div>` +
@@ -7517,8 +7591,8 @@
               ? '<span class="pill pill-ok" title="prism-cua 已就绪并向 AI 开放工具">AI 工具已就绪</span>'
               : '<span class="pill" title="已通过下方工具开关隐藏 MCP 工具，日常对话 0 工具 Token 占用">工具已休眠 (0占用)</span>';
         const brokerStatusPill = brokerOnline
-          ? '<span class="pill pill-ok">Broker 在线</span>'
-          : '<span class="pill">Broker 离线（按需唤醒或待启动守护）</span>';
+          ? '<span class="pill pill-ok">桌面助手在线</span>'
+          : '<span class="pill">助手待命（按需自动唤醒）</span>';
 
         const controlCardHtml =
           `<article class="relay-card">` +
@@ -7649,21 +7723,21 @@
                 const boundsTxt = (w.bounds && Number.isFinite(w.bounds.width))
                   ? `${w.bounds.width}×${w.bounds.height}`
                   : (Number.isFinite(w.width) && Number.isFinite(w.height) ? `${w.width}×${w.height}` : '');
+                const techMeta = [
+                  hwnd ? `句柄 ${hwnd}` : '',
+                  w.pid ? `PID ${w.pid}` : ''
+                ].filter(Boolean).join(' · ');
                 return (
-                  `<div class="cua-live-row">` +
+                  `<div class="cua-live-row"${techMeta ? ` title="${escapeHtml(`${title}（${techMeta}）`)}"` : ''}>` +
                     `<div class="relay-card-head">` +
-                      `<span class="row-name" title="${escapeHtml(title)}">${escapeHtml(title)}</span>` +
+                      `<span class="row-name">${escapeHtml(title)}</span>` +
                       `<div class="search-card-meta">` +
-                        (isFg ? '<span class="pill pill-ok">前台</span>' : '') +
-                        (isMin ? '<span class="pill pill-warn" title="观测时自动无抢焦点恢复防黑屏">最小化</span>' : '') +
+                        (isFg ? '<span class="pill pill-ok">当前窗口</span>' : '') +
+                        (isMin ? '<span class="pill pill-warn" title="观测时自动无感读取画面防黑屏">已最小化</span>' : '') +
                         (proc ? `<span class="pill">${escapeHtml(proc)}</span>` : '') +
                       `</div>` +
                     `</div>` +
-                    `<div class="relay-sub">` +
-                      (hwnd ? `句柄 <code>${escapeHtml(String(hwnd))}</code>` : '') +
-                      (w.pid ? `${hwnd ? ' · ' : ''}PID <code>${escapeHtml(String(w.pid))}</code>` : '') +
-                      (boundsTxt ? ` · 尺寸 <code>${escapeHtml(boundsTxt)}</code>` : '') +
-                    `</div>` +
+                    (boundsTxt ? `<div class="relay-sub">窗口尺寸 <code>${escapeHtml(boundsTxt)}</code></div>` : '') +
                   `</div>`
                 );
               }).join('') +
@@ -7775,6 +7849,7 @@
             return;
           }
           if (msg.type === 'init-sync') {
+            if (msg.theme) applyPrismThemePayload(msg.theme);
             if (msg.switchTab && VALID_TABS.includes(msg.switchTab)) {
               navigateFromExternalBridge(msg.switchTab, {
                 intentId: String(msg.intentId || ''),
@@ -7786,6 +7861,8 @@
               });
             }
             if (msg.quota) syncLiveQuotaFromMain(msg.quota);
+          } else if (msg.type === 'theme-sync' && msg.theme) {
+            applyPrismThemePayload(msg.theme);
           } else if (msg.type === 'quota-sync' && msg.quota) {
             syncLiveQuotaFromMain(msg.quota);
           } else if (msg.type === 'switch-tab') {
@@ -8457,7 +8534,7 @@
             appState.accounts.selfUpdateChecking = false;
             appState.accounts.selfUpdateInfo = info;
             renderAccounts();
-            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.9.1'}`);
+            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.9.2'}`);
           } else if (act === 'self-update-repair-ask') {
             appState.accounts.selfUpdateConfirmRepair = true;
             renderAccounts();
@@ -9994,7 +10071,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.9.1' },
+            appInfo: { name: 'prism-files', version: '0.9.2' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};
