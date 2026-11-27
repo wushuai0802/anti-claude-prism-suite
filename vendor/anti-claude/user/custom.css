@@ -2771,6 +2771,12 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-claude-folder-badge[da
   min-height: 0 !important;
 }
 
+/* 原生侧栏虚拟滚动列表：提升为独立 GPU 滚动合成层并做布局/绘制隔离，避免滚动时连带重排右侧长对话 */
+.bg-sidebar [data-testid="conversation-list-sidebar"]:not([data-ag-sb-unified] *) {
+  contain: layout style paint;
+  will-change: scroll-position;
+}
+
 /* 统一侧栏模式（unified）：原生虚拟列表仅承接顶部的置顶对话，高度严丝合缝，与下方全量「最近对话」共享外层单一滚动条 */
 .bg-sidebar :is(
   [data-testid="sidebar-navigation-items"],
@@ -2780,11 +2786,11 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-claude-folder-badge[da
   #ag-claude-recent-section *,
   [data-testid="settings-button"]
 ),
-:has(> #ag-claude-recent-section[data-mode="unified"]) {
+.bg-sidebar :has(> #ag-claude-recent-section[data-mode="unified"]) {
   -webkit-app-region: no-drag !important;
 }
 
-:has(> #ag-claude-recent-section[data-mode="unified"]) {
+.bg-sidebar :has(> #ag-claude-recent-section[data-mode="unified"]) {
   min-height: 0 !important;
 }
 
@@ -2792,11 +2798,13 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-claude-folder-badge[da
   flex: 0 0 auto !important;
   height: var(--ag-sb-pinned-height, auto) !important;
   min-height: 0 !important;
-  overflow: hidden !important;
+  overflow: clip !important;
+  overscroll-behavior: auto !important;
 }
 
 [data-ag-sb-unified="pinned"] [data-testid="conversation-list-sidebar"] {
-  overflow: hidden !important;
+  overflow: clip !important;
+  overscroll-behavior: auto !important;
 }
 
 /* 侧栏顶部「置顶对话」统一为单行紧凑行高：隐藏「📁 所属项目」第二行，保持与「最近对话」一致（悬停仍可看所属项目） */

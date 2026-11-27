@@ -5310,7 +5310,10 @@
 
   /* Left sidebar & Recents rely on native CSS `text-autospace: normal` (1/8em optical boundary, matching right-pane prose
    * without mutating DOM text nodes or polluting copied conversation titles with extra ASCII spaces). */
+  let legacySidebarCjkCleaned = false;
   function restoreLegacySidebarCjkNodes() {
+    if (legacySidebarCjkCleaned) return;
+    legacySidebarCjkCleaned = true;
     document.querySelectorAll('[data-ag-orig-cjk]').forEach((el) => {
       const orig = el.getAttribute('data-ag-orig-cjk');
       el.removeAttribute('data-ag-orig-cjk');
@@ -6184,6 +6187,7 @@
   function syncSidebarEnhancements() {
     if (disposed) return;
     restoreLegacySidebarCjkNodes();
+    syncSidebarWheelListener();
     const unifiedRecentsOn = Boolean(FEAT.hideSidebarProjects);
     if (!FEAT.folderStatus && !FEAT.recentSection && !unifiedRecentsOn) {
       if (sidebarStoreUnsub) {
@@ -6301,6 +6305,18 @@
     }
   }
 
+  let sidebarWheelBound = false;
+  function syncSidebarWheelListener() {
+    const wantWheel = !disposed && Boolean(FEAT.hideSidebarProjects);
+    if (wantWheel && !sidebarWheelBound) {
+      sidebarWheelBound = true;
+      document.addEventListener('wheel', onSidebarWheel, { capture: true, passive: false });
+    } else if (!wantWheel && sidebarWheelBound) {
+      sidebarWheelBound = false;
+      document.removeEventListener('wheel', onSidebarWheel, true);
+    }
+  }
+
   let sidebarFocusTimer = 0;
   const onWindowSidebarEvent = () => {
     if (sidebarFocusTimer) clearTimeout(sidebarFocusTimer);
@@ -6310,7 +6326,7 @@
       scheduleSidebarSync();
     }, 150);
   };
-  document.addEventListener('wheel', onSidebarWheel, { capture: true, passive: false });
+  syncSidebarWheelListener();
   window.addEventListener('focus', onWindowSidebarEvent);
   window.addEventListener('blur', onWindowSidebarEvent);
   window.addEventListener('popstate', scheduleSidebarSync);
@@ -6707,7 +6723,18 @@
             if (m.type === 'characterData' && m.target) {
               roots.add(m.target);
             } else if (m.type === 'childList') {
+              const inConvList =
+                m.target && m.target.nodeType === 1 && m.target.closest && Boolean(m.target.closest('[data-testid="conversation-list-sidebar"]'));
               for (const n of m.addedNodes) {
+                if (
+                  inConvList &&
+                  n.nodeType === 1 &&
+                  n.hasAttribute &&
+                  n.hasAttribute('data-index') &&
+                  (!n.querySelector || !n.querySelector('[data-testid="section-header"]'))
+                ) {
+                  continue;
+                }
                 if (n.nodeType === 1 || n.nodeType === 3) roots.add(n);
               }
             } else if (m.type === 'attributes' && m.target && m.target.nodeType === 1) {
@@ -14204,9 +14231,21 @@
     return true;
   }
 
+  let sidebarVirtualScrollTimer = 0;
+  function scheduleSidebarVirtualRowSync() {
+    if (disposed) return;
+    if (!FEAT.folderStatus && !FEAT.hideSidebarProjects) return;
+    if (sidebarVirtualScrollTimer) cancelLater(sidebarVirtualScrollTimer);
+    sidebarVirtualScrollTimer = later(() => {
+      sidebarVirtualScrollTimer = 0;
+      if (!disposed) syncSidebarEnhancements();
+    }, 140);
+  }
+
   const observer = new MutationObserver((mutations) => {
     if (disposed) return;
     let needSync = false;
+    let needSidebarVirtualSync = false;
     let sawChildList = false;
     for (const m of mutations) {
       if (m.type === 'attributes') {
@@ -14227,8 +14266,13 @@
         }
       } else if (m.type === 'childList') {
         if (!isOwnChildListMutation(m)) {
-          needSync = true;
-          sawChildList = true;
+          const mt = m.target;
+          if (mt && mt.nodeType === 1 && mt.closest && mt.closest('[data-testid="conversation-list-sidebar"]')) {
+            needSidebarVirtualSync = true;
+          } else {
+            needSync = true;
+            sawChildList = true;
+          }
         }
       }
     }
@@ -14244,6 +14288,7 @@
       }
     }
     if (needSync) scheduleSync();
+    else if (needSidebarVirtualSync) scheduleSidebarVirtualRowSync();
   });
 
   let bodyEnhancementsMounted = false;
@@ -14352,6 +14397,7 @@
     window.removeEventListener('pointercancel', onPinnedRowPointerCancel, true);
     clearPinnedComposerDropHighlights();
     window.removeEventListener('resize', onWindowResizePopover);
+    sidebarWheelBound = false;
     document.removeEventListener('wheel', onSidebarWheel, true);
     window.removeEventListener('focus', onWindowSidebarEvent);
     window.removeEventListener('blur', onWindowSidebarEvent);

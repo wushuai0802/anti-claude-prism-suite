@@ -21,7 +21,11 @@
     const reg = (window.__agPrismModules = window.__agPrismModules || Object.create(null));
     reg[id] = initFn;
     if (window.__agPrismBus && window.__agPrismBus.version >= 4) {
-      try { initFn(window.__agPrismBus); } catch {}
+      try {
+        initFn(window.__agPrismBus);
+      } catch (err) {
+        console.error(`[PrismSuite:${id}] init failed:`, err);
+      }
     }
   }
 
@@ -154,6 +158,10 @@
     let disposed = false;
     const ac = new AbortController();
     const { signal } = ac;
+    const fxCleanups = [];
+    function onCleanup(fn) {
+      if (typeof fn === 'function') fxCleanups.push(fn);
+    }
 
     bus.registerDefaults(FX_DEFAULTS);
 
@@ -3621,6 +3629,10 @@
       if (onboardingRetryTimer) {
         clearTimeout(onboardingRetryTimer);
         onboardingRetryTimer = 0;
+      }
+      while (fxCleanups.length) {
+        const fn = fxCleanups.pop();
+        try { fn(); } catch {}
       }
       if (typeof unsub === 'function') {
         try { unsub(); } catch {}

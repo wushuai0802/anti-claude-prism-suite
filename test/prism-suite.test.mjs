@@ -3681,3 +3681,24 @@ test('Clean-Room TOP 6 hardening: IMDS guard (preserving Tailscale *.ts.net), re
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('ThinkingOrb fx module clean init (no bare onCleanup crash) and left-sidebar GPU scroll isolation', async () => {
+  const repoRoot = REPO;
+  const fxSrc = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite-fx.js'), 'utf8');
+  const customJsSrc = fs.readFileSync(path.join(repoRoot, 'vendor', 'anti-claude', 'user', 'custom.js'), 'utf8');
+  const customCssSrc = fs.readFileSync(path.join(repoRoot, 'vendor', 'anti-claude', 'user', 'custom.css'), 'utf8');
+
+  // 1. initFxModule must define local onCleanup + fxCleanups and drain them in dispose()
+  const initFxSlice = fxSrc.slice(fxSrc.indexOf('function initFxModule(bus)'), fxSrc.indexOf('function getPrefs()'));
+  assert.match(initFxSlice, /const fxCleanups = \[\];/);
+  assert.match(initFxSlice, /function onCleanup\(fn\)/);
+  const disposeSlice = fxSrc.slice(fxSrc.indexOf('function dispose()'), fxSrc.indexOf('window.__agPrismFxDispose = dispose;'));
+  assert.match(disposeSlice, /while \(fxCleanups\.length\)/);
+
+  // 2. Left sidebar wheel listener stays detached unless hideSidebarProjects is active, and virtual rows never trigger full-chat syncStepStream
+  assert.match(customJsSrc, /function syncSidebarWheelListener\(\)/);
+  assert.match(customJsSrc, /function scheduleSidebarVirtualRowSync\(\)/);
+  assert.match(customJsSrc, /mt\.closest\('\[data-testid="conversation-list-sidebar"\]'\)/);
+  assert.match(customCssSrc, /\[data-testid="conversation-list-sidebar"\]:not\(\[data-ag-sb-unified\] \*\)[\s\S]{0,120}contain:\s*layout style paint/);
+  assert.match(customCssSrc, /will-change:\s*scroll-position/);
+});

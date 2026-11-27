@@ -5252,10 +5252,14 @@
   window.__agPrismBus = prismBus;
   const attachedInitFns = new Set();
   if (window.__agPrismModules && typeof window.__agPrismModules === 'object') {
-    for (const initFn of Object.values(window.__agPrismModules)) {
+    for (const [modId, initFn] of Object.entries(window.__agPrismModules)) {
       if (typeof initFn === 'function' && !attachedInitFns.has(initFn)) {
         attachedInitFns.add(initFn);
-        try { initFn(prismBus); } catch {}
+        try {
+          initFn(prismBus);
+        } catch (err) {
+          console.error(`[PrismSuite:${modId}] attach failed:`, err);
+        }
       }
     }
   }
