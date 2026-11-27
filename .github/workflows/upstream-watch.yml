@@ -51,7 +51,24 @@ jobs:
         with:
           script: |
             const fs = require('node:fs');
-            const body = fs.readFileSync('radar-report.md', 'utf8');
+            const rawBody = fs.readFileSync('radar-report.md', 'utf8');
+            const sanitizeSegment = (seg) => seg
+              .replace(/(^|[^A-Za-z0-9_`@/])@([A-Za-z0-9][A-Za-z0-9-]{0,38})/g, '$1`@$2`')
+              .replace(/<(\/?(?:script|iframe|img|svg|object|embed|form|input|meta|link|style)[^>]*)>/gi, '&lt;$1&gt;');
+            const safeBody = rawBody
+              .split(/(```[\s\S]*?```|`[^`\n]+`)/g)
+              .map((part, idx) => (idx % 2 === 1 ? part : sanitizeSegment(part)))
+              .join('');
+            const MAX_ISSUE_CHARS = 60000;
+            let body = safeBody;
+            if (safeBody.length > MAX_ISSUE_CHARS) {
+              let cut = MAX_ISSUE_CHARS;
+              const code = safeBody.charCodeAt(cut - 1);
+              if (code >= 0xd800 && code <= 0xdbff) cut -= 1;
+              let prefix = safeBody.slice(0, cut);
+              if (((prefix.match(/```/g) || []).length % 2) === 1) prefix += '\n```';
+              body = prefix + '\n\n> ⚠️ 报告内容超过 GitHub Issue 长度限制，已自动截断；完整结果请见本次 Actions Summary。';
+            }
             const labelName = 'upstream-watch';
             try {
               await github.rest.issues.createLabel({

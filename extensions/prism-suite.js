@@ -5115,6 +5115,7 @@
     if (disposed) return;
     cancelPendingRestoreWake();
     if (document.hidden) {
+      document.documentElement.setAttribute('data-ag-prism-hidden', '1');
       notifyHostVisibility('hidden');
       detachStreamObserver();
       clearInkHighlights();
@@ -5130,6 +5131,7 @@
           restoreWakeTimer = window.setTimeout(() => {
             restoreWakeTimer = 0;
             if (disposed || document.hidden) return;
+            document.documentElement.removeAttribute('data-ag-prism-hidden');
             emitBus('visibility');
             tickAll();
           }, 140);
@@ -5137,9 +5139,13 @@
       });
     }
   }
+  if (document.hidden) {
+    document.documentElement.setAttribute('data-ag-prism-hidden', '1');
+  }
   document.addEventListener('visibilitychange', onVisibilityChange);
   onCleanup(() => {
     cancelPendingRestoreWake();
+    document.documentElement.removeAttribute('data-ag-prism-hidden');
     document.removeEventListener('visibilitychange', onVisibilityChange);
   });
 

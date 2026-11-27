@@ -5507,15 +5507,31 @@
         }
 
         if (pv.editing) {
+          const existingTa = $('editor-textarea');
+          if (existingTa && previewBody.contains(existingTa) && existingTa.dataset.filePath === String(data.path || '')) {
+            if (existingTa.value !== pv.draft) {
+              const selS = existingTa.selectionStart;
+              const selE = existingTa.selectionEnd;
+              const scTop = existingTa.scrollTop;
+              existingTa.value = pv.draft;
+              try {
+                existingTa.setSelectionRange(selS, selE);
+                existingTa.scrollTop = scTop;
+              } catch {}
+            }
+            if (!preserveFocus && document.activeElement !== existingTa) existingTa.focus();
+            return;
+          }
           previewBody.innerHTML = '';
           const ta = document.createElement('textarea');
           ta.id = 'editor-textarea';
           ta.className = 'editor-textarea';
+          ta.dataset.filePath = String(data.path || '');
           ta.spellcheck = false;
           ta.value = pv.draft;
           ta.addEventListener('input', () => {
             pv.draft = ta.value;
-            const nextDirty = pv.draft !== (data.text || '');
+            const nextDirty = pv.draft !== (pv.data?.text || '');
             if (nextDirty !== pv.dirty) {
               pv.dirty = nextDirty;
               renderPreviewHeaderOnly();

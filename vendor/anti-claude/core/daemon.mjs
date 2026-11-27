@@ -135,9 +135,11 @@ if (VERIFY_ONCE && (process.env.ANTI_CLAUDE_FAKE_VERIFY_OK === '1' || process.en
 /* -------------------------------------------------------------------------- */
 
 function readProcessCommandLine(pid) {
+  const numPid = Number(pid);
+  if (!Number.isInteger(numPid) || numPid <= 0) return '';
   if (process.platform === 'linux') {
     try {
-      const raw = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+      const raw = fs.readFileSync(`/proc/${numPid}/cmdline`, 'utf8');
       if (raw) return raw.replace(/\0+/g, ' ').trim();
     } catch {}
   }
@@ -145,15 +147,15 @@ function readProcessCommandLine(pid) {
     try {
       return execFileSync(
         'powershell',
-        ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
-        { encoding: 'utf8', timeout: 2000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
+        ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${numPid}").CommandLine`],
+        { encoding: 'utf8', timeout: 3500, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
       ).trim();
     } catch {
       return '';
     }
   }
   try {
-    return execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'command='], {
+    return execFileSync('ps', ['-ww', '-p', String(numPid), '-o', 'command='], {
       encoding: 'utf8',
       timeout: 1500,
       stdio: ['ignore', 'pipe', 'ignore']
@@ -3327,7 +3329,7 @@ function execGitAsync(absDir, args, timeoutMs = 1200) {
   return new Promise((resolve) => {
     execFile(
       'git',
-      ['-C', absDir, ...args],
+      ['-c', 'core.fsmonitor=false', '-C', absDir, ...args],
       {
         timeout: timeoutMs,
         maxBuffer: 256 * 1024,

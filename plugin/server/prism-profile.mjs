@@ -186,10 +186,98 @@ export function validateEnvVarName(name) {
   return trimmed;
 }
 
+const CLOUD_METADATA_HOSTS = new Set([
+  'metadata.google.internal',
+  'metadata.goog',
+  'instance-data',
+  'metadata'
+]);
+
+function parseIpv6Words(rawHost) {
+  let h = String(rawHost || '').trim().toLowerCase();
+  const v4Tail = h.match(/^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4Tail) {
+    const oct = v4Tail.slice(2).map((x) => Number(x));
+    if (oct.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+    h = `${v4Tail[1]}${((oct[0] << 8) | oct[1]).toString(16)}:${((oct[2] << 8) | oct[3]).toString(16)}`;
+  }
+  if ((h.match(/::/g) || []).length > 1) return null;
+  if (/^:[^:]|[^:]:$/.test(h)) return null;
+  let groups;
+  if (h.includes('::')) {
+    const [left, right] = h.split('::');
+    const L = left ? left.split(':') : [];
+    const R = right ? right.split(':') : [];
+    if (L.length + R.length >= 8) return null;
+    groups = [...L, ...Array(8 - L.length - R.length).fill('0'), ...R];
+  } else {
+    groups = h.split(':');
+    if (groups.length !== 8) return null;
+  }
+  const words = [];
+  for (const g of groups) {
+    if (!/^[0-9a-f]{1,4}$/i.test(g)) return null;
+    words.push(parseInt(g, 16));
+  }
+  return words;
+}
+
+/**
+ * Blocks cloud IMDS / link-local / unspecified / multicast endpoints while explicitly
+ * preserving localhost, RFC1918 LAN, Tailscale CGNAT (100.64.0.0/10 except 100.100.100.200),
+ * and Tailscale MagicDNS (*.ts.net).
+ */
+export function isBlockedMetadataOrSpecialHost(rawHostname) {
+  let host = String(rawHostname || '').trim().toLowerCase();
+  if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
+  host = host.replace(/\.+$/, '');
+  if (!host || host.includes('%')) return true;
+  if (CLOUD_METADATA_HOSTS.has(host)) return true;
+
+  // IPv4 check
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const nums = v4.slice(1).map((x) => Number(x));
+    if (nums.some((n) => n < 0 || n > 255)) return true;
+    const [a, b, c, d] = nums;
+    if (a === 0) return true; // 0.0.0.0/8 unspecified
+    if (a === 169 && b === 254) return true; // AWS/GCP/Azure link-local IMDS 169.254.169.254
+    if (a === 100 && b === 100 && c === 100 && d === 200) return true; // Alibaba Cloud ECS IMDS
+    if (a >= 224) return true; // Multicast / broadcast
+    return false;
+  }
+
+  // IPv6 8-word numeric check (covers ::, fe80::/10, ff00::/8, fd00:ec2::254, ::ffff:a9fe:a9fe, ::a9fe:a9fe, NAT64 64:ff9b::/96)
+  if (host.includes(':')) {
+    const w = parseIpv6Words(host);
+    if (!w) return true;
+    if (w.every((x) => x === 0)) return true; // :: unspecified
+    if ((w[0] & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+    if ((w[0] & 0xff00) === 0xff00) return true; // ff00::/8 multicast
+    if (
+      w[0] === 0xfd00 && w[1] === 0x0ec2 &&
+      w[2] === 0 && w[3] === 0 && w[4] === 0 && w[5] === 0 && w[6] === 0 &&
+      w[7] === 0x0254
+    ) {
+      return true; // AWS IPv6 IMDS fd00:ec2::254
+    }
+    const z5 = w[0] === 0 && w[1] === 0 && w[2] === 0 && w[3] === 0 && w[4] === 0;
+    const isV4Mapped = z5 && w[5] === 0xffff;
+    const isV4Compat = z5 && w[5] === 0 && !(w[6] === 0 && w[7] === 1);
+    const isNat64 = w[0] === 0x0064 && w[1] === 0xff9b && w[2] === 0 && w[3] === 0 && w[4] === 0 && w[5] === 0;
+    if (isV4Mapped || isV4Compat || isNat64) {
+      const embeddedV4 = `${(w[6] >> 8) & 0xff}.${w[6] & 0xff}.${(w[7] >> 8) & 0xff}.${w[7] & 0xff}`;
+      return isBlockedMetadataOrSpecialHost(embeddedV4);
+    }
+  }
+
+  return false;
+}
+
 /**
  * Validates and normalizes an HTTP/HTTPS gateway endpoint URL.
- * Allows only http: and https:, forbids embedded credentials (username/password/@)
- * and ASCII control characters.
+ * Allows only http: and https:, blocks cloud metadata / link-local endpoints,
+ * forbids embedded credentials (username/password/@) and ASCII control characters.
  */
 export function validateHttpEndpointUrl(rawUrl) {
   if (typeof rawUrl !== 'string' || !rawUrl.trim()) {
@@ -232,6 +320,11 @@ export function validateHttpEndpointUrl(rawUrl) {
   if (!parsed.hostname) {
     throw Object.assign(new Error('网关端点 URL 缺少主机名'), {
       code: 'INVALID_ENDPOINT_URL'
+    });
+  }
+  if (isBlockedMetadataOrSpecialHost(parsed.hostname)) {
+    throw Object.assign(new Error(`安全拦截：禁止将云元数据或链路本地保留地址配置为网关端点 (${parsed.hostname})`), {
+      code: 'BLOCKED_METADATA_ENDPOINT'
     });
   }
   if (parsed.hash) {

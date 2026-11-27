@@ -520,14 +520,17 @@ export function createAccountVault(options = {}) {
 
   const PROBE_TTL_MS = 120 * 1000;
   const SAVED_META_TTL_MS = 60 * 1000;
+  const PROVIDER_SECRET_CACHE_TTL_MS = 60_000;
   let probeCache = null; // { value, expiresAt }
   let savedCacheRev = 0;
   const savedMetaCache = new Map(); // cleanId -> { value, expiresAt, rev }
+  const providerSecretRamCache = new Map(); // cleanId -> { value, expiresAt }
 
   function invalidateCache() {
     savedCacheRev += 1;
     probeCache = null;
     savedMetaCache.clear();
+    providerSecretRamCache.clear();
   }
 
   function updateSavedCacheEntry(cleanId, meta) {
@@ -1159,6 +1162,13 @@ export function createAccountVault(options = {}) {
 
   function getProviderSecret(providerId) {
     const cleanId = sanitizeProviderSecretId(providerId);
+    const now = Date.now();
+    const cached = providerSecretRamCache.get(cleanId);
+    if (cached && now < cached.expiresAt) {
+      return cached.value;
+    }
+    if (cached) providerSecretRamCache.delete(cleanId);
+
     let buf = null;
     try {
       if (backendInfo.backend === 'win32-credman' || backendInfo.backend === 'wsl-wincred') {
@@ -1170,7 +1180,11 @@ export function createAccountVault(options = {}) {
       } else {
         return '';
       }
-      return buf && buf.length ? buf.toString('utf8') : '';
+      const val = buf && buf.length ? buf.toString('utf8') : '';
+      if (val) {
+        providerSecretRamCache.set(cleanId, { value: val, expiresAt: now + PROVIDER_SECRET_CACHE_TTL_MS });
+      }
+      return val;
     } finally {
       if (buf) buf.fill(0);
     }
@@ -1182,18 +1196,22 @@ export function createAccountVault(options = {}) {
     if (!str) {
       throw Object.assign(new Error('Provider API Key 不能为空'), { code: 'EMPTY_PROVIDER_SECRET' });
     }
+    providerSecretRamCache.delete(cleanId);
     const buf = Buffer.from(str, 'utf8');
     try {
       if (backendInfo.backend === 'win32-credman' || backendInfo.backend === 'wsl-wincred') {
         writeWinCredBuffer(providerSecretTargetName(cleanId), buf);
+        providerSecretRamCache.set(cleanId, { value: str, expiresAt: Date.now() + PROVIDER_SECRET_CACHE_TTL_MS });
         return true;
       }
       if (backendInfo.backend === 'darwin-keychain') {
         writeKeychainBuffer('prism-suite-provider', cleanId, buf);
+        providerSecretRamCache.set(cleanId, { value: str, expiresAt: Date.now() + PROVIDER_SECRET_CACHE_TTL_MS });
         return true;
       }
       if (backendInfo.backend === 'linux-secret-service') {
         writeSecretToolBuffer('prism-suite-provider', cleanId, `Prism Model Hub (${cleanId})`, buf);
+        providerSecretRamCache.set(cleanId, { value: str, expiresAt: Date.now() + PROVIDER_SECRET_CACHE_TTL_MS });
         return true;
       }
       throw Object.assign(new Error(`当前系统不支持原生凭据库: ${backendInfo.backend}`), { code: 'UNSUPPORTED_VAULT' });
@@ -1204,6 +1222,7 @@ export function createAccountVault(options = {}) {
 
   function deleteProviderSecret(providerId) {
     const cleanId = sanitizeProviderSecretId(providerId);
+    providerSecretRamCache.delete(cleanId);
     if (backendInfo.backend === 'win32-credman' || backendInfo.backend === 'wsl-wincred') {
       return deleteWinCred(providerSecretTargetName(cleanId));
     }

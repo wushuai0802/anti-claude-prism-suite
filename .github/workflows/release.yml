@@ -21,21 +21,32 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Verify syntax, zero dependencies, and run tests
+      - name: Verify syntax, zero dependencies, tag/changelog parity, and run tests
         run: |
           node --check install.mjs
           node --check uninstall.mjs
           node --check plugin/server/index.mjs
+          node --check plugin-cua/server/index.mjs
           node --check extensions/chrome-cua-bridge/background.js
           node --check extensions/chrome-cua-bridge/content-agent.js
           node --check extensions/chrome-cua-bridge/popup.js
           node -e "const p=require('./package.json'); if(p.dependencies && Object.keys(p.dependencies).length) throw new Error('Must keep zero runtime npm dependencies');"
+          node -e "if((process.env.GITHUB_REF||'').startsWith('refs/tags/')){const fs=require('fs');const pkg=JSON.parse(fs.readFileSync('package.json','utf8')).version;const tag=(process.env.GITHUB_REF_NAME||'').replace(/^v/i,'');if(pkg!==tag) throw new Error('Tag '+tag+' != package.json '+pkg);const cl=fs.readFileSync('CHANGELOG.md','utf8');if(!new RegExp('^## '+tag.replace(/\./g,'\\.')+'(?:\\s|$)','m').test(cl)) throw new Error('CHANGELOG.md missing section for '+tag);}"
           npm test
 
-      - name: Build Windows 1-Click GUI Installer (.exe)
+      - name: Build Windows 1-Click GUI Installer (.exe) and Verified Source Tarball
         shell: powershell
         run: |
+          $ErrorActionPreference = "Stop"
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-win-exe.ps1 -OutDir dist
+          if ($LASTEXITCODE -ne 0) { throw "build-win-exe.ps1 failed ($LASTEXITCODE)" }
+          $ver = (Get-Content -Raw package.json | ConvertFrom-Json).version
+          $tarPath = "dist\Anti-Claude-Prism-Suite-Source.tar.gz"
+          $tarShaPath = "$tarPath.sha256"
+          git archive --format=tar.gz --prefix="anti-claude-prism-suite-v$ver/" HEAD -o $tarPath
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tarPath)) { throw "Failed to package source tarball" }
+          $tarHash = (Get-FileHash -LiteralPath $tarPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText($tarShaPath, "$tarHash  Anti-Claude-Prism-Suite-Source.tar.gz`n", (New-Object System.Text.UTF8Encoding($false)))
 
       - name: Smoke test Windows installer CLI (install / in-place update / uninstall)
         shell: powershell
@@ -76,6 +87,8 @@ jobs:
           path: |
             dist/Anti-Claude-Prism-Suite-Setup.exe
             dist/Anti-Claude-Prism-Suite-Setup.exe.sha256
+            dist/Anti-Claude-Prism-Suite-Source.tar.gz
+            dist/Anti-Claude-Prism-Suite-Source.tar.gz.sha256
 
       - name: Extract Chinese changelog section for Release notes
         if: startsWith(github.ref, 'refs/tags/')
@@ -92,3 +105,5 @@ jobs:
           files: |
             dist/Anti-Claude-Prism-Suite-Setup.exe
             dist/Anti-Claude-Prism-Suite-Setup.exe.sha256
+            dist/Anti-Claude-Prism-Suite-Source.tar.gz
+            dist/Anti-Claude-Prism-Suite-Source.tar.gz.sha256

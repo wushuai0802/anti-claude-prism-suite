@@ -1116,6 +1116,67 @@ function buildProtocolEndpoint(baseUrl, suffix) {
   return `${cleanBase}${suffix}`;
 }
 
+async function readBoundedResponseText(response, maxBytes = 4 * 1024 * 1024, throwOnOverflow = true) {
+  const declared = Number(response?.headers?.get?.('content-length') || 0);
+  if (throwOnOverflow && Number.isFinite(declared) && declared > maxBytes) {
+    try { await response.body?.cancel?.(); } catch {}
+    throw createUpstreamError(`上游响应体超过上限 (${declared} > ${maxBytes} bytes)`, {
+      code: 'RESPONSE_TOO_LARGE',
+      status: 502,
+      retriable: false
+    });
+  }
+  if (response?.body && typeof response.body.getReader === 'function') {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    const parts = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        const chunk = value instanceof Uint8Array ? value : Buffer.from(value);
+        total += chunk.byteLength;
+        if (total > maxBytes) {
+          try { await reader.cancel(); } catch {}
+          if (throwOnOverflow) {
+            throw createUpstreamError(`上游响应体超过上限 (> ${maxBytes} bytes)`, {
+              code: 'RESPONSE_TOO_LARGE',
+              status: 502,
+              retriable: false
+            });
+          }
+          const keep = Math.max(0, maxBytes - (total - chunk.byteLength));
+          if (keep > 0) parts.push(decoder.decode(chunk.subarray(0, keep), { stream: false }));
+          return parts.join('');
+        }
+        parts.push(decoder.decode(chunk, { stream: true }));
+      }
+      parts.push(decoder.decode());
+      return parts.join('');
+    } finally {
+      try { reader.releaseLock?.(); } catch {}
+    }
+  }
+  if (typeof response?.text === 'function') {
+    const txt = await response.text();
+    const byteLen = Buffer.byteLength(txt, 'utf8');
+    if (byteLen > maxBytes) {
+      if (throwOnOverflow) {
+        throw createUpstreamError(`上游响应体超过上限 (> ${maxBytes} bytes)`, {
+          code: 'RESPONSE_TOO_LARGE',
+          status: 502,
+          retriable: false
+        });
+      }
+      return Buffer.from(txt, 'utf8').subarray(0, maxBytes).toString('utf8');
+    }
+    return txt;
+  }
+  return '';
+}
+
 function extractOpenAiChatJsonFallback(json) {
   if (json?.error) {
     const { message, status } = extractEmbeddedErrorDetails(json);
@@ -1490,6 +1551,7 @@ export function createModelHub({
       try {
         response = await fetchFn(endpointUrl, {
           method: 'POST',
+          redirect: 'error',
           headers,
           body: JSON.stringify(requestBody),
           signal: requestController.signal
@@ -1505,7 +1567,7 @@ export function createModelHub({
       if (!response.ok) {
         let errText = '';
         try {
-          errText = (await response.text()).slice(0, 800);
+          errText = (await readBoundedResponseText(response, 16 * 1024, false)).slice(0, 800);
         } catch {}
         let parsedMsg = errText;
         if (errText.trim().startsWith('{')) {
@@ -1526,7 +1588,8 @@ export function createModelHub({
 
       const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase();
       if (contentType.includes('application/json') && !contentType.includes('text/event-stream')) {
-        const json = await response.json();
+        const rawJsonText = await readBoundedResponseText(response, 4 * 1024 * 1024, true);
+        const json = JSON.parse(rawJsonText);
         markFirstToken();
         const fallbackParsed = protocol === 'openai-chat'
           ? extractOpenAiChatJsonFallback(json)
@@ -2117,7 +2180,7 @@ export function createModelHub({
           signal: controller.signal
         });
         lastStatus = Number(resp?.status) || 0;
-        const rawText = await resp.text();
+        const rawText = await readBoundedResponseText(resp, 2 * 1024 * 1024, Boolean(resp?.ok));
         if (!resp.ok) {
           if (lastStatus === 401 || lastStatus === 403 || lastStatus === 404) {
             lastMsg = `该网关未开放 /models 模型枚举接口 (HTTP ${lastStatus})，这不影响正常对话调用；请直接点击「+ 模型」手动添加或复制 AI 配置口令`;

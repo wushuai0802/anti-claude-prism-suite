@@ -3489,3 +3489,195 @@ test('v0.8.1 visual virtual cursor overlay, 4-tier non-intrusive mouse routing (
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('Clean-Room TOP 6 hardening: IMDS guard (preserving Tailscale *.ts.net), redirect:error, bounded body, verified source tarball, git fsmonitor=false, and hidden CSS pause', async () => {
+  const repoRoot = REPO;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-cleanroom-top6-'));
+  try {
+    // 1. IMDS metadata block while preserving Tailscale MagicDNS (*.ts.net), CGNAT, LAN & localhost
+    const { validateHttpEndpointUrl, createPrismProfileManager } = await import(
+      pathToFileURL(path.join(repoRoot, 'plugin', 'server', 'prism-profile.mjs')).href
+    );
+    for (const blockedUrl of [
+      'http://169.254.169.254/latest/meta-data',
+      'http://[::ffff:169.254.169.254]/latest/meta-data',
+      'http://100.100.100.200/latest/meta-data',
+      'http://[::ffff:100.100.100.200]/latest/meta-data',
+      'http://[64:ff9b::169.254.169.254]/latest/meta-data',
+      'http://[fd00:ec2::254]/latest',
+      'http://metadata.google.internal/computeMetadata/v1',
+      'http://0.0.0.0:8080/v1'
+    ]) {
+      assert.throws(
+        () => validateHttpEndpointUrl(blockedUrl),
+        (err) => err.code === 'BLOCKED_METADATA_ENDPOINT',
+        `Must block metadata/special endpoint: ${blockedUrl}`
+      );
+    }
+    for (const allowedUrl of [
+      'http://my-nas.tail12345.ts.net:11434/v1',
+      'https://my-nas.tail12345.ts.net:8317/v1',
+      'http://100.100.100.199:8317/v1',
+      'http://[::ffff:100.100.100.199]:8317/v1',
+      'http://192.168.1.20:11434/v1',
+      'http://127.0.0.1:11434/v1',
+      'http://[::1]:11434/v1'
+    ]) {
+      assert.ok(validateHttpEndpointUrl(allowedUrl).startsWith('http'), `Must preserve LAN/Tailscale endpoint: ${allowedUrl}`);
+    }
+
+    // 2. Outbound redirect:'error' & bounded JSON response protection in Model Hub
+    const { createModelHub } = await import(
+      pathToFileURL(path.join(repoRoot, 'plugin', 'server', 'model-hub.mjs')).href
+    );
+    const profPath = path.join(tmp, 'profile.json');
+    const pm = createPrismProfileManager({
+      profilePath: profPath,
+      env: { MOCK_HUB_KEY: 'sk-mock-cleanroom-1234567890' }
+    });
+    pm.upsertProvider({
+      id: 'lan-gw',
+      protocol: 'openai-chat',
+      baseUrl: 'http://my-nas.tail12345.ts.net:11434/v1',
+      apiKeyEnv: 'MOCK_HUB_KEY'
+    });
+    pm.upsertModel({
+      id: 'demo-m',
+      providerId: 'lan-gw',
+      upstreamModel: 'demo-m',
+      tier: 'T2',
+      vendor: 'openai'
+    });
+
+    let seenRedirectOpt = '';
+    const hub = createModelHub({
+      profileManager: pm,
+      fetchFn: async (_url, init) => {
+        seenRedirectOpt = init?.redirect || '';
+        return {
+          ok: true,
+          status: 200,
+          headers: {
+            get: (k) => {
+              const lk = String(k).toLowerCase();
+              if (lk === 'content-type') return 'application/json';
+              if (lk === 'content-length') return String(9 * 1024 * 1024);
+              return null;
+            }
+          },
+          text: async () => '{}'
+        };
+      }
+    });
+    await assert.rejects(
+      () => hub.askModel({ model: 'demo-m', prompt: 'ping' }),
+      (err) => err.code === 'RESPONSE_TOO_LARGE'
+    );
+    assert.equal(seenRedirectOpt, 'error', 'Model Hub outbound POST must enforce redirect: error');
+
+    // 3. Verified Release Source Tarball (.tar.gz.sha256) in upstream-radar self-update
+    const { checkPrismSelfUpdate, applyPrismSelfUpdate } = await import(
+      pathToFileURL(path.join(repoRoot, 'plugin', 'server', 'upstream-radar.mjs')).href
+    );
+    const fakeTarBytes = Buffer.from('fake-tar-gz-bytes', 'utf8');
+    const cryptoMod = await import('node:crypto');
+    const validHash = cryptoMod.default.createHash('sha256').update(fakeTarBytes).digest('hex');
+    const badShaText = `${'0'.repeat(64)}  Anti-Claude-Prism-Suite-Source.tar.gz\n`;
+
+    const mockRelJson = {
+      tag_name: 'v9.9.9',
+      name: 'v9.9.9',
+      html_url: 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/tag/v9.9.9',
+      published_at: '2026-11-27T09:00:00Z',
+      body: '- Hardened release',
+      assets: [
+        {
+          name: 'Anti-Claude-Prism-Suite-Source.tar.gz',
+          size: fakeTarBytes.length,
+          browser_download_url: 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/download/v9.9.9/Anti-Claude-Prism-Suite-Source.tar.gz'
+        },
+        {
+          name: 'Anti-Claude-Prism-Suite-Source.tar.gz.sha256',
+          size: 98,
+          browser_download_url: 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/download/v9.9.9/Anti-Claude-Prism-Suite-Source.tar.gz.sha256'
+        }
+      ]
+    };
+
+    const makeUpdaterFetch = (shaContent) => async (url) => {
+      if (String(url).includes('/releases/latest')) {
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => mockRelJson };
+      }
+      if (String(url).endsWith('.tar.gz.sha256')) {
+        return { ok: true, status: 200, headers: { get: () => String(Buffer.byteLength(shaContent)) }, arrayBuffer: async () => Buffer.from(shaContent, 'utf8') };
+      }
+      if (String(url).endsWith('Anti-Claude-Prism-Suite-Source.tar.gz')) {
+        return { ok: true, status: 200, headers: { get: () => String(fakeTarBytes.length) }, arrayBuffer: async () => fakeTarBytes };
+      }
+      return { ok: false, status: 404, headers: { get: () => null } };
+    };
+
+    const updInfo = await checkPrismSelfUpdate({ currentVersion: '0.8.2', fetchImpl: makeUpdaterFetch(`${validHash}  Anti-Claude-Prism-Suite-Source.tar.gz\n`), etagCacheFile: '' });
+    assert.ok(updInfo.sourceTarAsset?.url.endsWith('Anti-Claude-Prism-Suite-Source.tar.gz'));
+    assert.ok(updInfo.sourceSha256Asset?.url.endsWith('.tar.gz.sha256'));
+
+    await assert.rejects(
+      () => applyPrismSelfUpdate({
+        currentVersion: '0.8.2',
+        platform: 'darwin',
+        isWsl: false,
+        lockDir: path.join(tmp, 'lock1'),
+        fetchImpl: makeUpdaterFetch(badShaText)
+      }),
+      (err) => err.code === 'SHA256_MISMATCH'
+    );
+
+    // Partial asset guard: sourceTarAsset present without companion .sha256 must NOT silently downgrade
+    await assert.rejects(
+      () => applyPrismSelfUpdate({
+        currentVersion: '0.8.2',
+        platform: 'darwin',
+        isWsl: false,
+        lockDir: path.join(tmp, 'lock2'),
+        fetchImpl: async (url) => {
+          if (String(url).includes('/releases/latest')) {
+            return {
+              ok: true,
+              status: 200,
+              headers: { get: () => null },
+              json: async () => ({ ...mockRelJson, assets: [mockRelJson.assets[0]] })
+            };
+          }
+          return { ok: false, status: 404, headers: { get: () => null } };
+        }
+      }),
+      (err) => err.code === 'SHA256_MISSING'
+    );
+
+    // Binary .tar.gz header audit rejects symlink / traversal before invoking system tar
+    const { auditTarGzBufferSafe } = await import(
+      pathToFileURL(path.join(repoRoot, 'plugin', 'server', 'upstream-radar.mjs')).href
+    );
+    const zlibMod = await import('node:zlib');
+    const badTarHdr = Buffer.alloc(1024, 0);
+    badTarHdr.write('pkg/evil-link', 0, 'utf8');
+    badTarHdr.write('00000000000\0', 124, 'ascii');
+    badTarHdr[156] = '2'.charCodeAt(0); // USTAR symlink
+    assert.throws(
+      () => auditTarGzBufferSafe(zlibMod.default.gzipSync(badTarHdr)),
+      (err) => err.code === 'UNSAFE_TAR_ENTRY'
+    );
+
+    // 4. Static checks: daemon -c core.fsmonitor=false, app.html textarea dataset.filePath reuse, hidden CSS pause, workflow @mention escaping
+    const daemonSrc = fs.readFileSync(path.join(repoRoot, 'vendor', 'anti-claude', 'core', 'daemon.mjs'), 'utf8');
+    assert.match(daemonSrc, /core\.fsmonitor=false/);
+    const appSrc = fs.readFileSync(path.join(repoRoot, 'plugin', 'ui', 'app.html'), 'utf8');
+    assert.match(appSrc, /existingTa\.dataset\.filePath === String\(data\.path \|\| ''\)/);
+    const suiteCss = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite.css'), 'utf8');
+    assert.match(suiteCss, /html\[data-ag-prism-hidden="1"\] #ag-ps-mascot-stage/);
+    const watchYml = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'upstream-watch.yml'), 'utf8');
+    assert.match(watchYml, /MAX_ISSUE_CHARS = 60000/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

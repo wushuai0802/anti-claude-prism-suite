@@ -1672,3 +1672,8 @@ html[data-ag-ps-dark="marine"] body.dark {
 .ag-ps-outline-act {
   margin-right: 2px;
 }
+
+html[data-ag-prism-hidden="1"] #ag-ps-mascot-stage,
+html[data-ag-prism-hidden="1"] #ag-ps-mascot-stage * {
+  animation-play-state: paused !important;
+}

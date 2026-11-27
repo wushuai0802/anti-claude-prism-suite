@@ -95,7 +95,7 @@
       "absorptionPolicy": "clean-room-cua-patterns",
       "adoptionBoundary": "Clean-Room 参考 UIA 无障碍树压缩、control_overlay 边缘指示胶囊与 control_consent 显式授权机制；严禁引入外部二进制或开启遥测，外部兼容连接须强制 ANONYMIZED_TELEMETRY=false 并排除 Shell/Registry/FileSystem/Process。",
       "baselineTag": "v0.9.0",
-      "baselineCommit": "e788eda",
+      "baselineCommit": "ccbe664",
       "watchedPaths": [
         "src/",
         "manifest.json",
