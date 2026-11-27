@@ -2614,24 +2614,41 @@
       }
     }
 
+    function isSafeOnboardingTextMatch(rawText) {
+      const norm = String(rawText || '').replace(/\s+/g, ' ').trim();
+      if (!norm || norm.length > 1800) return false;
+      // Never auto-dismiss destructive, permission, or OAuth/account-access consent prompts
+      if (/\b(delete|remove|uninstall|reset|overwrite|format|revoke|authorize|permission|oauth|allow access|grant access)\b|删除|移除|卸载|重置|格式化|覆盖|吊销|授权|允许访问/i.test(norm)) {
+        return false;
+      }
+      const matchesEn =
+        norm.includes('One last thing before getting started') &&
+        norm.includes('You are in control');
+      const matchesZh =
+        (norm.includes('开始使用前的最后一步') || norm.includes('开始前的最后一步')) &&
+        /由[你您]掌控/.test(norm);
+      return matchesEn || matchesZh;
+    }
+
     function tryDismissOnboardingDialog() {
       const now = Date.now();
-      if (now - lastOnboardingDismissAt < 2500) return false;
-      const dialogs = document.querySelectorAll('[role="dialog"]');
-      for (let i = 0; i < dialogs.length; i++) {
-        const d = dialogs[i];
+      if (now - lastOnboardingDismissAt < 1200) return false;
+
+      const candidates = document.querySelectorAll('[role="dialog"], [role="alertdialog"], dialog, [aria-modal="true"]');
+
+      for (let i = 0; i < candidates.length; i++) {
+        const d = candidates[i];
         if (!d || !d.isConnected) continue;
         if (d.hidden || d.getAttribute('aria-hidden') === 'true') continue;
+        if (d.closest('.monaco-editor, pre, code, [data-testid*="message"], #ag-ps-panel, iframe, webview, [data-mcp-app]')) continue;
         if (d.offsetWidth <= 0 && d.offsetHeight <= 0 && d.getClientRects().length === 0) continue;
-        const txt = String(d.textContent || '');
-        const matchesEn = txt.includes('One last thing before getting started') && txt.includes('You are in control');
-        const matchesZh = txt.includes('开始使用前的最后一步') && txt.includes('由你掌控');
-        if (!matchesEn && !matchesZh) continue;
+        if (!isSafeOnboardingTextMatch(d.textContent)) continue;
 
-        const buttons = d.querySelectorAll('button');
+        const buttons = d.querySelectorAll('button, [role="button"]');
         for (let j = 0; j < buttons.length; j++) {
           const btn = buttons[j];
           if (!btn || btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
+          if (btn.getAttribute('role') === 'checkbox' || btn.getAttribute('role') === 'switch') continue;
           const bTxt = String(btn.textContent || '').replace(/\s+/g, ' ').trim();
           if (/^(Continue|继续|繼續)$/i.test(bTxt)) {
             lastOnboardingDismissAt = now;
@@ -2648,6 +2665,28 @@
       }
       return false;
     }
+
+    // Cold-start / post-account-switch onboarding watcher (catches delayed OAuth modal hydration within 22s, then self-terminates)
+    let startupOnboardingPollCount = 0;
+    let startupOnboardingPollTimer = setInterval(() => {
+      startupOnboardingPollCount++;
+      if (disposed || startupOnboardingPollCount > 48) {
+        clearInterval(startupOnboardingPollTimer);
+        startupOnboardingPollTimer = 0;
+        return;
+      }
+      if (!getPrefs().autoDismissOnboarding) return;
+      if (tryDismissOnboardingDialog()) {
+        clearInterval(startupOnboardingPollTimer);
+        startupOnboardingPollTimer = 0;
+      }
+    }, 450);
+    onCleanup(() => {
+      if (startupOnboardingPollTimer) {
+        clearInterval(startupOnboardingPollTimer);
+        startupOnboardingPollTimer = 0;
+      }
+    });
 
     function syncSwitchReturnHelper() {
       if (getPrefs().autoDismissOnboarding) {

@@ -464,7 +464,9 @@ export function installChromeBridge({
 export function installPlugin({
   pluginsDir = resolvePluginsDir(),
   srcDir = path.join(__dirname, 'plugin'),
-  cuaSrcDir
+  cuaSrcDir,
+  skipFileCardRule = false,
+  skipSkills = false
 } = {}) {
   const defaultPluginSrc = path.resolve(path.join(__dirname, 'plugin'));
   const resolvedSrc = path.resolve(srcDir);
@@ -483,6 +485,22 @@ export function installPlugin({
   fs.mkdirSync(path.dirname(targetDir), { recursive: true });
   const installed = [];
   syncDirInPlace(resolvedSrc, targetDir, installed);
+
+  if (skipFileCardRule) {
+    const ruleFile = path.join(targetDir, 'rules', 'AGENTS.md');
+    try { fs.rmSync(ruleFile, { force: true }); } catch {}
+    for (let i = installed.length - 1; i >= 0; i--) {
+      if (installed[i] === ruleFile) installed.splice(i, 1);
+    }
+  }
+
+  if (skipSkills) {
+    const skillsDir = path.join(targetDir, 'skills');
+    try { fs.rmSync(skillsDir, { recursive: true, force: true }); } catch {}
+    for (let i = installed.length - 1; i >= 0; i--) {
+      if (installed[i].startsWith(`${skillsDir}${path.sep}`)) installed.splice(i, 1);
+    }
+  }
 
   const effectiveCuaSrc = cuaSrcDir !== undefined
     ? (cuaSrcDir ? path.resolve(cuaSrcDir) : null)
@@ -518,14 +536,23 @@ export function installAll({
   kernelSrcDir = path.join(__dirname, 'vendor', 'anti-claude'),
   extensionsOnly,
   pluginOnly,
+  skipPlugin,
+  skipFileCardRule,
+  skipSkills,
   skipKernel,
   activateKernelDaemon
 } = {}) {
   const onlyExt = extensionsOnly !== undefined ? Boolean(extensionsOnly) : argv.includes('--extensions-only');
   const onlyPlugin = pluginOnly !== undefined ? Boolean(pluginOnly) : argv.includes('--plugin-only');
+  const noPlugin = skipPlugin !== undefined ? Boolean(skipPlugin) : (onlyExt || argv.includes('--no-plugin'));
+  const noFileCardRule = skipFileCardRule !== undefined ? Boolean(skipFileCardRule) : argv.includes('--no-file-card-rule');
+  const noSkills = skipSkills !== undefined ? Boolean(skipSkills) : argv.includes('--no-skills');
 
   if (onlyExt && onlyPlugin) {
     throw new Error('Cannot combine --extensions-only and --plugin-only');
+  }
+  if (onlyPlugin && argv.includes('--no-plugin')) {
+    throw new Error('Cannot combine --plugin-only and --no-plugin');
   }
 
   const resolvedUserDir = userDir !== undefined ? path.resolve(userDir) : resolveUserDir(argv);
@@ -559,11 +586,24 @@ export function installAll({
   const chromeBridge = onlyPlugin ? null : installChromeBridge({ userDir: resolvedUserDir, srcDir: chromeBridgeSrcDir });
   const defaultPluginSrc = path.resolve(path.join(__dirname, 'plugin'));
   const effectiveCuaSrc = path.resolve(pluginSrcDir) === defaultPluginSrc ? pluginCuaSrcDir : undefined;
-  const plugin = onlyExt ? null : installPlugin({
+  const plugin = noPlugin ? null : installPlugin({
     pluginsDir: resolvedPluginsDir,
     srcDir: pluginSrcDir,
+    skipFileCardRule: noFileCardRule,
+    skipSkills: noSkills,
     ...(effectiveCuaSrc !== undefined ? { cuaSrcDir: effectiveCuaSrc } : {})
   });
+
+  if (!onlyPlugin && chromeBridge?.targetDir) {
+    try {
+      const suiteDir = path.dirname(chromeBridge.targetDir);
+      writeTextInPlace(
+        path.join(suiteDir, 'install-mode.json'),
+        `${JSON.stringify({ schema: 1, noPlugin, noFileCardRule, noSkills, updatedAt: new Date().toISOString() }, null, 2)}\n`,
+        path.dirname(suiteDir)
+      );
+    } catch {}
+  }
 
   return { kernel, extensions, chromeBridge, plugin };
 }
@@ -573,6 +613,9 @@ function printHelp() {
     'Usage: node install.mjs [options]',
     '',
     'Options:',
+    '  --no-plugin          Install bundled Anti-Claude kernel + Prism UI extensions only (skip prism-files & prism-cua)',
+    '  --no-file-card-rule  Install prism-files without rules/AGENTS.md automatic file-card prompt injection',
+    '  --no-skills          Install prism-files without bundled skills/',
     '  --extensions-only    Install only Prism Suite user extensions (prism-suite*.{css,js})',
     '  --plugin-only        Install only Antigravity prism-files MCP App plugin',
     '  --no-kernel          Skip deploying the bundled Anti-Claude runtime kernel',

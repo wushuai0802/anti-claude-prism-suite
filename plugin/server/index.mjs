@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Prism Files MCP App Server (Clean-Room Original, MIT, Zero External Dependencies)
- * Part of Anti-Claude Prism Suite v0.8.0
+ * Part of Anti-Claude Prism Suite v0.8.1
  *
  * Implements MCP stdio JSON-RPC 2.0 + SEP-1865 MCP Apps UI resources:
  *   - Model-visible tools (strictly 8):
@@ -46,7 +46,7 @@ export const APP_URI = 'ui://prism-files/app.html';
 export const INLINE_URI = 'ui://prism-files/inline.html';
 export const APP_MIME_TYPE = 'text/html;profile=mcp-app';
 export const CUA_EXTENSION_ID = 'lbmibnghmlnidfiihkegicaejaacmkca';
-const SERVER_INFO = { name: 'prism-files', version: '0.8.0' };
+const SERVER_INFO = { name: 'prism-files', version: '0.8.1' };
 const MAX_TEXT_PREVIEW_BYTES = 256 * 1024;
 const MAX_IMAGE_PREVIEW_BYTES = 4 * 1024 * 1024;
 const MAX_SAVE_BYTES = 512 * 1024;
@@ -1594,6 +1594,15 @@ export function createPrismFilesServer({
   const VALID_TABS = new Set(['browse', 'artifacts', 'pins', 'search', 'models', 'accounts', 'cua']);
   const RESTORABLE_TABS = new Set(['browse', 'artifacts', 'pins', 'search', 'models', 'cua']);
 
+  function normalizeMcpExposure(raw) {
+    const r = raw && typeof raw === 'object' ? raw : {};
+    return {
+      fileTools: r.fileTools !== false,
+      memoryTools: r.memoryTools !== false,
+      modelHubTools: r.modelHubTools !== false
+    };
+  }
+
   function loadState() {
     const defaults = {
       pinnedPaths: [],
@@ -1602,7 +1611,8 @@ export function createPrismFilesServer({
       showHidden: false,
       doubleClickAction: 'reveal', // 'reveal' | 'open_tab'
       allowLanSmb: false, // explicit opt-in for LAN SMB/UNC paths
-      dismissedGuides: []
+      dismissedGuides: [],
+      mcpExposure: { fileTools: true, memoryTools: true, modelHubTools: true }
     };
     if (!stateFile) return defaults;
     try {
@@ -1617,7 +1627,8 @@ export function createPrismFilesServer({
           allowLanSmb: Boolean(parsed.allowLanSmb),
           dismissedGuides: Array.isArray(parsed.dismissedGuides)
             ? parsed.dismissedGuides.filter((g) => typeof g === 'string' && /^[a-z0-9:_-]{2,48}$/i.test(g)).slice(0, 32)
-            : []
+            : [],
+          mcpExposure: normalizeMcpExposure(parsed.mcpExposure)
         };
       }
     } catch {}
@@ -1626,6 +1637,9 @@ export function createPrismFilesServer({
 
   function saveState(patch) {
     const cur = loadState();
+    const nextExposure = patch?.mcpExposure && typeof patch.mcpExposure === 'object'
+      ? normalizeMcpExposure({ ...cur.mcpExposure, ...patch.mcpExposure })
+      : cur.mcpExposure;
     const next = {
       pinnedPaths: Array.isArray(patch?.pinnedPaths) ? patch.pinnedPaths.filter((p) => typeof p === 'string').slice(0, 30) : cur.pinnedPaths,
       lastPath: typeof patch?.lastPath === 'string' && patch.lastPath ? patch.lastPath : cur.lastPath,
@@ -1635,7 +1649,8 @@ export function createPrismFilesServer({
       allowLanSmb: typeof patch?.allowLanSmb === 'boolean' ? patch.allowLanSmb : cur.allowLanSmb,
       dismissedGuides: Array.isArray(patch?.dismissedGuides)
         ? Array.from(new Set(patch.dismissedGuides.filter((g) => typeof g === 'string' && /^[a-z0-9:_-]{2,48}$/i.test(g)))).slice(0, 32)
-        : cur.dismissedGuides
+        : cur.dismissedGuides,
+      mcpExposure: nextExposure
     };
     if (stateFile) {
       fs.mkdirSync(path.dirname(stateFile), { recursive: true });
@@ -2427,8 +2442,10 @@ export function createPrismFilesServer({
 
     // 3. Resolve cua-broker.json (freshest existing non-symlink file across prism-suite / anti-claude / WSL Windows user profile)
     let brokerFile = '';
-    if (cuaBrokerPath) {
-      const explicit = path.resolve(cuaBrokerPath);
+    const envBrokerPath = typeof process.env.PRISM_CUA_BROKER_FILE === 'string' ? process.env.PRISM_CUA_BROKER_FILE.trim() : '';
+    const explicitBrokerInput = cuaBrokerPath || envBrokerPath;
+    if (explicitBrokerInput) {
+      const explicit = path.resolve(explicitBrokerInput);
       const st = fs.lstatSync(explicit, { throwIfNoEntry: false });
       if (st && st.isFile() && !st.isSymbolicLink()) brokerFile = explicit;
     } else {
@@ -2458,6 +2475,98 @@ export function createPrismFilesServer({
       chromeBridgeWinDisplay,
       brokerFile
     };
+  }
+
+  function resolveCuaSettingsFile(ctx) {
+    const suiteDir = ctx?.brokerFile ? path.dirname(ctx.brokerFile) : path.dirname(ctx?.chromeBridgeDir || path.join(resolvedAccountStateDir, 'chrome-bridge'));
+    return path.join(suiteDir, 'cua-settings.json');
+  }
+
+  function readCuaSettings(ctx) {
+    const defaults = { schema: 1, mouseMode: 'courteous', toolsEnabled: true };
+    try {
+      const settingsFile = resolveCuaSettingsFile(ctx);
+      const st = fs.lstatSync(settingsFile, { throwIfNoEntry: false });
+      if (!st || !st.isFile() || st.isSymbolicLink()) return defaults;
+      const parsed = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+      return {
+        schema: 1,
+        mouseMode: parsed?.mouseMode === 'strict_virtual' ? 'strict_virtual' : 'courteous',
+        toolsEnabled: parsed?.toolsEnabled !== false
+      };
+    } catch {
+      return defaults;
+    }
+  }
+
+  function writeCuaSettings(ctx, patch = {}) {
+    const prev = readCuaSettings(ctx);
+    const next = {
+      schema: 1,
+      mouseMode: patch.mouseMode === 'strict_virtual'
+        ? 'strict_virtual'
+        : (patch.mouseMode === 'courteous' ? 'courteous' : prev.mouseMode),
+      toolsEnabled: typeof patch.toolsEnabled === 'boolean' ? patch.toolsEnabled : prev.toolsEnabled,
+      updatedAt: new Date().toISOString()
+    };
+    try {
+      const settingsFile = resolveCuaSettingsFile(ctx);
+      const suiteDir = path.dirname(settingsFile);
+      fs.mkdirSync(suiteDir, { recursive: true, mode: 0o700 });
+      const st = fs.lstatSync(settingsFile, { throwIfNoEntry: false });
+      if (!st || (!st.isSymbolicLink() && !st.isDirectory())) {
+        const tmp = `${settingsFile}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+        fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+        fs.renameSync(tmp, settingsFile);
+      }
+    } catch {}
+    return next;
+  }
+
+  async function queryHostCuaPluginEnabled() {
+    if (isExternalSandboxState) return null;
+    const rawAddr = String(process.env.ANTIGRAVITY_LS_ADDRESS || '').trim();
+    const csrf = String(process.env.ANTIGRAVITY_CSRF_TOKEN || '').trim();
+    if (!rawAddr || !csrf) return null;
+    let urlStr;
+    try {
+      const u = new URL(rawAddr.includes('://') ? rawAddr : `http://${rawAddr}`);
+      const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+      if (u.protocol !== 'http:' || (h !== '127.0.0.1' && h !== 'localhost' && h !== '::1')) return null;
+      u.pathname = '/exa.language_server_pb.LanguageServerService/GetAllPlugins';
+      urlStr = u.toString();
+    } catch {
+      return null;
+    }
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 750);
+    try {
+      const res = await fetch(urlStr, {
+        method: 'POST',
+        redirect: 'error',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-codeium-csrf-token': csrf
+        },
+        body: '{}',
+        signal: ac.signal
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const plugins = Array.isArray(data?.plugins) ? data.plugins : [];
+      for (const p of plugins) {
+        const pPath = String(p?.path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+        const dirName = pPath.split('/').pop() || '';
+        if (dirName.toLowerCase() === 'prism-cua' || String(p?.name || '').toLowerCase() === 'prism-cua') {
+          return p?.disabled !== true;
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   function buildSafeCuaEndpoints(brokerCfg) {
@@ -3282,10 +3391,111 @@ export function createPrismFilesServer({
       description: 'App-only: reveal deployed chrome-bridge unpacked extension directory in Windows Explorer / OS file manager',
       inputSchema: { type: 'object', properties: {} },
       _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'cua_bridge_set_mouse_mode',
+      description: 'App-only: set CUA virtual mouse routing mode (courteous or strict_virtual) via Broker and local settings',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          mouseMode: { type: 'string', enum: ['courteous', 'strict_virtual'] }
+        },
+        required: ['mouseMode']
+      },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'cua_bridge_set_tools_enabled',
+      description: 'App-only: toggle whether prism-cua exposes its 3 MCP tools to the AI model (zero-token sleep mode)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          enabled: { type: 'boolean' }
+        },
+        required: ['enabled']
+      },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'plugin_exposure_status',
+      description: 'App-only: query fine-grained MCP tool groups, AGENTS.md file-card rule, and bundled Skills exposure status',
+      inputSchema: { type: 'object', properties: {} },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'plugin_exposure_update',
+      description: 'App-only: toggle fine-grained MCP tool groups (fileTools/memoryTools/modelHubTools) and deployed AGENTS.md rule / bundled Skills',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          fileTools: { type: 'boolean' },
+          memoryTools: { type: 'boolean' },
+          modelHubTools: { type: 'boolean' },
+          fileCardRule: { type: 'boolean' },
+          bundledSkills: { type: 'boolean' }
+        }
+      },
+      _meta: { ui: { visibility: ['app'] } }
     }
   ];
 
+  const FILE_TOOL_NAMES = new Set(['show_files_inline', 'open_prism_files']);
+  const MEMORY_TOOL_NAMES = new Set(['prism_memory_store', 'prism_memory_list', 'prism_memory_search', 'prism_quota_sync']);
+  const MODEL_HUB_TOOL_NAMES = new Set(['prism_list_models', 'prism_ask_model']);
+
+  function getExposedToolsList() {
+    const exp = loadState().mcpExposure || { fileTools: true, memoryTools: true, modelHubTools: true };
+    return TOOLS.filter((t) => {
+      const vis = t?._meta?.ui?.visibility;
+      if (Array.isArray(vis) && vis.includes('app')) return true;
+      if (FILE_TOOL_NAMES.has(t.name)) return exp.fileTools !== false;
+      if (MEMORY_TOOL_NAMES.has(t.name)) return exp.memoryTools !== false;
+      if (MODEL_HUB_TOOL_NAMES.has(t.name)) return exp.modelHubTools !== false;
+      return true;
+    });
+  }
+
+  function resolveDeployedPluginRootForToggle() {
+    // Only mutate rules/ or skills/ on deployed plugin copies (never inside git repo source tree)
+    if (fs.existsSync(path.join(PLUGIN_ROOT, '..', '.git'))) {
+      const deployedCand = path.join(home, '.gemini', 'config', 'plugins', 'prism-files');
+      return fs.existsSync(path.join(deployedCand, 'plugin.json')) ? deployedCand : '';
+    }
+    return path.basename(PLUGIN_ROOT).toLowerCase() === 'prism-files' ? PLUGIN_ROOT : '';
+  }
+
+  function getPluginExposureSnapshot() {
+    const st = loadState();
+    const exp = normalizeMcpExposure(st.mcpExposure);
+    const deployedRoot = resolveDeployedPluginRootForToggle();
+    const checkRoot = deployedRoot || PLUGIN_ROOT;
+    const ruleActive = fs.existsSync(path.join(checkRoot, 'rules', 'AGENTS.md'));
+    const skillsActive = fs.existsSync(path.join(checkRoot, 'skills'));
+    const activeMcpCount = (exp.fileTools ? 2 : 0) + (exp.memoryTools ? 4 : 0) + (exp.modelHubTools ? 2 : 0);
+    return {
+      ok: true,
+      mcpExposure: exp,
+      fileCardRule: ruleActive,
+      bundledSkills: skillsActive,
+      canToggleFilesOnDisk: Boolean(deployedRoot),
+      activeMcpCount
+    };
+  }
+
   async function handleToolCall(name, args = {}) {
+    const exp = loadState().mcpExposure || { fileTools: true, memoryTools: true, modelHubTools: true };
+    if (
+      (name === 'show_files_inline' && exp.fileTools === false) ||
+      (MEMORY_TOOL_NAMES.has(name) && exp.memoryTools === false) ||
+      (MODEL_HUB_TOOL_NAMES.has(name) && exp.modelHubTools === false)
+    ) {
+      return {
+        isError: true,
+        content: [{ type: 'text', text: `工具 ${name} 已在 Prism「上下文精简开关」中停用` }],
+        structuredContent: { ok: false, code: 'TOOL_GROUP_DISABLED', tool: name }
+      };
+    }
+
     if (name === 'show_files_inline') {
       const files = Array.isArray(args.files) ? args.files.filter((f) => typeof f === 'string' && f.trim()).slice(0, 40) : [];
       const baseDir = args.baseDir ? expandUserPath(args.baseDir) : '';
@@ -3987,15 +4197,21 @@ export function createPrismFilesServer({
     }
 
     if (name === 'cua_bridge_status') {
-      const brokerRes = await callCuaBrokerAction(
-        'status',
-        { includeWindows: true, includeArmedTabs: true, refreshWindows: true },
-        { timeoutMs: 3800 }
-      );
+      const [brokerRes, hostPluginEnabled] = await Promise.all([
+        callCuaBrokerAction(
+          'status',
+          { includeWindows: true, includeArmedTabs: true, refreshWindows: true },
+          { timeoutMs: 3800 }
+        ),
+        queryHostCuaPluginEnabled()
+      ]);
       const { ctx } = brokerRes;
+      const savedCuaSettings = readCuaSettings(ctx);
       const baseMeta = {
         ok: true,
         pluginInstalled: ctx.pluginInstalled,
+        hostPluginEnabled,
+        toolsEnabled: savedCuaSettings.toolsEnabled !== false,
         customizationUri: 'customization://prism-cua',
         extensionId: CUA_EXTENSION_ID,
         chromeBridgeDir: ctx.chromeBridgeDir,
@@ -4005,11 +4221,13 @@ export function createPrismFilesServer({
       };
 
       if (!brokerRes.reachable) {
+        const savedMouseMode = savedCuaSettings.mouseMode === 'strict_virtual' ? 'strict_virtual' : 'courteous';
         const offline = {
           ...baseMeta,
           brokerOnline: false,
           controlState: 'locked',
           stateLabelZh: '未授权锁定',
+          mouseMode: savedMouseMode,
           remainingSeconds: 0,
           expiresAtMs: 0,
           nmHostRegistered: false,
@@ -4051,6 +4269,7 @@ export function createPrismFilesServer({
         brokerOnline: true,
         controlState,
         stateLabelZh,
+        mouseMode: raw?.mouseMode === 'strict_virtual' ? 'strict_virtual' : 'courteous',
         expiresAtMs,
         remainingSeconds,
         nmHostRegistered: Boolean(raw?.nmHostRegistered ?? raw?.nativeMessagingRegistered ?? raw?.nmRegistered ?? false),
@@ -4130,6 +4349,100 @@ export function createPrismFilesServer({
       };
     }
 
+    if (name === 'cua_bridge_set_mouse_mode') {
+      const wantMode = String(args?.mouseMode || '').trim().toLowerCase();
+      if (wantMode !== 'courteous' && wantMode !== 'strict_virtual') {
+        const bad = { ok: false, error: 'mouseMode 仅支持 courteous 或 strict_virtual' };
+        return { isError: true, content: [{ type: 'text', text: bad.error }], structuredContent: bad };
+      }
+      const ctx = resolveCuaBridgeContext();
+      writeCuaSettings(ctx, { mouseMode: wantMode });
+
+      const brokerRes = await callCuaBrokerAction('set_mouse_mode', { mouseMode: wantMode }, { timeoutMs: 3500 });
+      const labelZh = wantMode === 'strict_virtual'
+        ? '严格后台虚拟鼠标（100% 绝不触碰真鼠标）'
+        : '智能无感虚拟鼠标（UIA/网页零抢鼠 + 自绘窗空闲礼让归位）';
+      const out = {
+        ok: true,
+        mouseMode: wantMode,
+        brokerOnline: Boolean(brokerRes.reachable),
+        message: brokerRes.reachable
+          ? `已切换虚拟鼠标模式：${labelZh}`
+          : `已保存默认鼠标模式（守护唤醒后自动生效）：${labelZh}`
+      };
+      return { content: [{ type: 'text', text: out.message }], structuredContent: out };
+    }
+
+    if (name === 'cua_bridge_set_tools_enabled') {
+      if (typeof args?.enabled !== 'boolean') {
+        const bad = { ok: false, error: 'enabled 必须为布尔值' };
+        return { isError: true, content: [{ type: 'text', text: bad.error }], structuredContent: bad };
+      }
+      const wantEnabled = Boolean(args.enabled);
+      const ctx = resolveCuaBridgeContext();
+      const nextSettings = writeCuaSettings(ctx, { toolsEnabled: wantEnabled });
+      const hostPluginEnabled = await queryHostCuaPluginEnabled();
+      const out = {
+        ok: true,
+        toolsEnabled: nextSettings.toolsEnabled !== false,
+        hostPluginEnabled,
+        message: wantEnabled
+          ? (hostPluginEnabled === false
+              ? '已开启 CUA 工具暴露；注意宿主插件 prism-cua 当前仍处于关闭态，请在左侧栏「技能与自定义 → 插件」打开一次 prism-cua 即可生效'
+              : '已开启 AI 电脑操控工具（cua_status / cua_observe / cua_act），新对话或重载插件后模型即可按需调用')
+          : '已将 AI 电脑操控工具设为休眠隐藏（日常对话 0 工具 Token 占用）'
+      };
+      return { content: [{ type: 'text', text: out.message }], structuredContent: out };
+    }
+
+    if (name === 'plugin_exposure_status') {
+      const snap = getPluginExposureSnapshot();
+      return { content: [{ type: 'text', text: `Active MCP tools: ${snap.activeMcpCount}/8` }], structuredContent: snap };
+    }
+
+    if (name === 'plugin_exposure_update') {
+      const expPatch = {};
+      if (typeof args.fileTools === 'boolean') expPatch.fileTools = args.fileTools;
+      if (typeof args.memoryTools === 'boolean') expPatch.memoryTools = args.memoryTools;
+      if (typeof args.modelHubTools === 'boolean') expPatch.modelHubTools = args.modelHubTools;
+      if (Object.keys(expPatch).length > 0) {
+        saveState({ mcpExposure: expPatch });
+      }
+
+      const deployedRoot = resolveDeployedPluginRootForToggle();
+      if (deployedRoot) {
+        if (typeof args.fileCardRule === 'boolean') {
+          const activeRule = path.join(deployedRoot, 'rules', 'AGENTS.md');
+          const disabledRule = path.join(deployedRoot, 'rules', '.AGENTS.md.disabled');
+          try {
+            if (!args.fileCardRule && fs.existsSync(activeRule)) {
+              fs.renameSync(activeRule, disabledRule);
+            } else if (args.fileCardRule && !fs.existsSync(activeRule) && fs.existsSync(disabledRule)) {
+              fs.renameSync(disabledRule, activeRule);
+            }
+          } catch {}
+        }
+        if (typeof args.bundledSkills === 'boolean') {
+          const activeSkills = path.join(deployedRoot, 'skills');
+          const disabledSkills = path.join(deployedRoot, '.skills-disabled');
+          try {
+            if (!args.bundledSkills && fs.existsSync(activeSkills)) {
+              fs.renameSync(activeSkills, disabledSkills);
+            } else if (args.bundledSkills && !fs.existsSync(activeSkills) && fs.existsSync(disabledSkills)) {
+              fs.renameSync(disabledSkills, activeSkills);
+            }
+          } catch {}
+        }
+      }
+
+      const snap = {
+        ...getPluginExposureSnapshot(),
+        needsReload: true,
+        message: '已保存上下文暴露设置；在插件管理重载一次 prism-files 或重启客户端即可对新对话生效'
+      };
+      return { content: [{ type: 'text', text: snap.message }], structuredContent: snap };
+    }
+
     throw Object.assign(new Error(`Unknown tool: ${name}`), { code: -32601 });
   }
 
@@ -4161,7 +4474,7 @@ export function createPrismFilesServer({
         return { jsonrpc: '2.0', id, result: {} };
       }
       if (method === 'tools/list') {
-        return { jsonrpc: '2.0', id, result: { tools: TOOLS } };
+        return { jsonrpc: '2.0', id, result: { tools: getExposedToolsList() } };
       }
       if (method === 'tools/call') {
         const result = await handleToolCall(params?.name, params?.arguments || {});

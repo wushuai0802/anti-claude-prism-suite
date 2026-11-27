@@ -1,7 +1,7 @@
 # Anti-Claude Prism Suite
 
 <p align="left">
-  <img src="https://img.shields.io/badge/version-v0.8.0-2563eb?style=flat-square" alt="Version v0.8.0" />
+  <img src="https://img.shields.io/badge/version-v0.8.1-2563eb?style=flat-square" alt="Version v0.8.1" />
   <img src="https://img.shields.io/badge/edition-All--in--One%20Standalone-059669?style=flat-square" alt="Standalone Edition" />
   <img src="https://img.shields.io/badge/kernel-Anti--Claude%20v3.1.9%20Bundled-7c3aed?style=flat-square" alt="Bundled Anti-Claude v3.1.9" />
   <img src="https://img.shields.io/badge/dependencies-0%20npm%20packages-d97706?style=flat-square" alt="Zero Runtime Dependencies" />
@@ -10,9 +10,9 @@
 
 **面向 Google Antigravity Desktop（Windows / WSL2 / macOS / Linux）的一体化独立完整版体验增强、跨厂商模型会诊、受控电脑操控（CUA）与多账号工程工作台套件。**
 
-自 **v0.6.0+** 起，本项目已**原生内嵌继承增强版 [Anti-Claude](https://github.com/hongqi7/Anti-Claude) `v3.1.9` 运行时内核（`vendor/anti-claude/`）**，并在 **v0.8.0** 全面升级为涵盖 **「内核增强 + 棱镜桌面交互扩展 + 七合一响应式工作台 + 默认关闭零开销受控电脑操控桥（Windows UIA + Chrome/Edge MV3）+ 双模 SQLite FTS5 记忆 + 零依赖 SSE 模型会诊中枢 + 3 项内置工程 Skill」** 的全栈自包含套件：
+自 **v0.6.0+** 起，本项目已**原生内嵌继承增强版 [Anti-Claude](https://github.com/hongqi7/Anti-Claude) `v3.1.9` 运行时内核（`vendor/anti-claude/`）**，并在 **v0.8.1** 全面升级为涵盖 **「内核增强 + 棱镜桌面交互扩展 + 七合一响应式工作台 + 默认关闭零开销受控电脑操控桥（独立可视化虚拟指针 + 四级防抢鼠路由 + Chrome/Edge MV3）+ 双模 SQLite FTS5 记忆 + 零依赖 SSE 模型会诊中枢 + 3 项内置工程 Skill」** 的全栈自包含套件：
 - **新用户零前置依赖**：下载运行单个安装包（或执行一条 `node install.mjs`），一次性完成「底层 CDP 守护内核 + 棱镜视觉交互扩展 + Prism 七合一工作台插件 + 默认关闭的 `prism-cua` 受控电脑操控插件 + Chrome/Edge 浏览器受控桥 + 内置规则与技能」全栈部署，**无需单独安装其他前置项目**；
-- **默认关闭零上下文损耗 · 全局 `Esc` 物理急刹**：受控电脑与浏览器操控工具独立封装在同级插件 `prism-cua` 中并默认关闭，日常写代码聊天时 `0` 额外工具 Token 开销；按需开启操控期间，在系统任意窗口按下物理 **`Esc`** 键即可毫秒级中断动作队列并吊销全部操控租约；
+- **默认关闭零上下文损耗 · 可视化虚拟指针防抢鼠 · 全局 `Esc` 急刹**：受控电脑与浏览器操控工具独立封装在同级插件 `prism-cua` 中并默认关闭，日常写代码聊天时 `0` 额外工具 Token 开销；操控期间渲染独立鼠标穿透 **AI 虚拟指针**，对已授权网页与标准桌面 UIA / Win32 控件实现 **`0px` 物理鼠标位移、零焦点抢占**，并在系统任意窗口按下物理 **`Esc`** 键毫秒级中断急刹；
 - **老用户无感平滑升级**：完整保留本地 `ui-prefs.json` 与已隐藏说明偏好，3-way 合并保护手改过的 `config.json`，点击工作台内 **「🚀 一键更新」** 即可连同底层内核与双插件同步原地升级；
 - **零外部运行时依赖 · 零全局 Body 观察器 · Windows 零闪黑框**：全栈基于原生 Node.js ESM（`>=22`，含内置 `node:sqlite`）、`.NET Framework 4.8` 系统自带编译器与浏览器原生 API 实现；空闲 `0fps` 停帧、输入框打字 `0ms` 额外开销，全链路 Windows 子进程均强制 `windowsHide: true` 杜绝终端黑框闪烁。
 
@@ -115,8 +115,8 @@
 
 ```mermaid
 flowchart TB
-  subgraph PKG["Anti-Claude Prism Suite v0.8.0（单包独立完整版 · 零外部 npm 依赖）"]
-    K["第 1 层 · 内置增强内核与本地 CUA Broker<br/>vendor/anti-claude/ + native/win-cua/ (v3.1.9 + UIA 执行器 + 全局 Esc 急刹)"]
+  subgraph PKG["Anti-Claude Prism Suite v0.8.1（单包独立完整版 · 零外部 npm 依赖）"]
+    K["第 1 层 · 内置增强内核与本地 CUA Broker<br/>vendor/anti-claude/ + native/win-cua/ (v3.1.9 + 四级防抢鼠执行器 + 全局 Esc 急刹)"]
     E["第 2 层 · 棱镜前端扩展 & Chrome/Edge MV3 扩展桥<br/>extensions/prism-suite*.{css,js} + extensions/chrome-cua-bridge/"]
     P["第 3 层 · Prism 七合一工作台 & 双插件 MCP/Skills<br/>plugin/ (8 常驻工具) + plugin-cua/ (默认关闭 3 操控工具)"]
   end
@@ -149,7 +149,7 @@ flowchart TB
 
 ### 二、顶栏「`✦ 棱镜`」视觉、像素伙伴与高效工作流套件
 
-点击窗口顶栏右侧 **`✦ 棱镜`** 按钮打开控制中心（所有开关通过 `localStorage` + 同源 Cookie + 守护进程 `savePrismUiPrefs` 实时写入本地 `prism-suite-00-prefs.js` 与 `ui-prefs.json`，**切换账号或重启换端口后 100% 保持你的设定**）：
+点击窗口顶栏右侧 **`✦ 棱镜`** 按钮打开控制中心（支持一键显隐顶栏 `工作台` 快捷入口 `showWorkbenchBtn`；所有开关通过 `localStorage` + 同源 Cookie + 守护进程 `savePrismUiPrefs` 实时写入本地 `prism-suite-00-prefs.js` 与 `ui-prefs.json`，**切换账号或重启换端口后 100% 保持你的设定**）：
 
 1. **8 套深浅双色主题卡（随系统/宿主亮暗自动切换）**
    - **浅色 4 套**：`纯白默认` / `白昼冷晶` / `暖白画册` / `松雾青岚`
@@ -180,25 +180,29 @@ flowchart TB
 3. **Tab 5：`模型中枢`（零依赖 SSE 流式会诊网关 · T1–T4 梯队网格）**
    - 原生支持 `OpenAI Chat (/chat/completions)`、`OpenAI Responses (/responses)` 与 `Anthropic Messages (/messages)` 流式协议，内置常用收藏拖拽排序、单模型/批量 TTFT 测速、防 SSRF 公网代搜开关与出站密钥脱敏；
    - 提供 **「GUI `/v1/models` 自动探测勾选批量导入」** 与 **「一键复制零密钥 AI 自动部署口令」** 双轨配置体验（修改已绑凭据库网关的域名 Origin 时强制重验密钥，严防凭据误发）。
-4. **Tab 6：`账号接力`（宽屏双栏指挥台 + 双模记忆看板 + 一键自更新/雷达）**
-   - **宽屏双栏仪表盘（`>=900px`）**：左主栏展示在线账号双模型池并排仪表卡（告别超长拉伸进度条）、待切换紧凑决策卡（支持双击卡片快速启动 5s 切号倒计时，全模型池短板一票否决防误推）与新号捕获区；右辅栏同屏并列展示 **`catalog:master` 主目录槽位看板**、**时间倒序槽位交接记忆**、**Prism Suite 一键自更新** 与 **7 源上游动态雷达**，首屏免翻页全局掌控。
-5. **Tab 7：`电脑操控`（CUA 受控总控看板 + Chrome/Edge 扩展三步配置 + 实时窗口/标签页监控）**
-   - **左栏（操控总控与扩展桥配置）**：实时显示本地 CUA Broker 在线状态与四态流转（`未授权锁定 / 只读观察 / 键鼠操控中 / 等待人工接管`）及剩余租约倒计时，提供醒目的红色 **`🛑 立即收回全部操控权限`** 急停按钮、`customization://prism-cua` 快捷开关跳转，以及 **Chrome / Edge 136+ 受控扩展桥三步配置向导**（`1. 一键注册 Native Messaging 宿主` → `2. 打开 chrome-bridge 扩展目录` → `3. 复制 chrome://extensions 加载已解压扩展`）；
+4. **Tab 6：`账号接力`（宽屏双栏指挥台 + 上下文精简组件开关 + 一键自更新/防限流雷达）**
+   - **宽屏双栏仪表盘（`>=900px`）**：左主栏展示在线账号双模型池并排仪表卡、待切换紧凑决策卡（双击快速启动 5s 切号倒计时，全模型池短板一票否决防误推）与新号捕获区；右辅栏同屏并列展示 **`catalog:master` 主目录槽位看板**、**时间倒序槽位交接记忆**、**`🧩 上下文精简与插件组件开关`**（可按组开启/隐藏文件卡片、槽位记忆、模型会诊 MCP 工具及 `AGENTS.md` / 内置 Skills）、**Prism Suite 一键自更新** 与 **可独立折叠的 `🔭 上游生态动态` 雷达**（内置本机 `gh auth token` 进程内存复用与 `ETag / If-None-Match` 304 免配额缓存）。
+5. **Tab 7：`电脑操控`（CUA 受控总控看板 + 工具一键休眠开关 + 虚拟鼠标双档策略 + 扩展三步配置）**
+   - **左栏（操控总控与扩展桥配置）**：实时显示本地 CUA Broker 在线状态、宿主 `prism-cua` 插件状态与四态流转（`未授权锁定 / 只读观察 / 键鼠操控中 / 等待人工接管`）及剩余租约倒计时，内置 **`🤖 AI 电脑操控工具按需开关`**（一键休眠/唤醒 `cua_*` 工具，日常编码零 Token 损耗）、**`✨ 智能无感礼让 / 🔒 严格后台零触鼠`** 虚拟鼠标双档切换开关、醒目的红色 **`🛑 立即收回全部操控权限`** 急停按钮，以及 **Chrome / Edge 136+ 受控扩展桥三步配置向导**；
    - **右栏（实时受控范围监控）**：同屏列出当前浏览器中用户显式点击授权（`ARMED`）的标签页清单及本机可观测桌面顶层窗口列表（标注前台、最小化防黑屏状态与窗口尺寸）。
 
-### 四、受控电脑与浏览器操控桥（Default-Off `prism-cua` · `Esc` 急刹 · Chrome MV3 桥）
+### 四、受控电脑与浏览器操控桥（Default-Off `prism-cua` · 可视化虚拟指针 · `Esc` 急刹 · Chrome MV3 桥）
 
-针对传统 Computer-Use 工具「常驻拖慢上下文、后台浏览器调试端口被封禁、最小化窗口截出纯黑图、误操作难紧急叫停」四大痛点，`v0.8.0` 采用全新受控架构：
+针对传统 Windows Computer-Use 工具「常驻拖慢上下文、跟用户争抢物理鼠标与打字焦点、后台浏览器调试端口被封禁、最小化窗口截出纯黑图、误操作难紧急叫停」五大痛点，`v0.8.1` 采用受控架构：
 
-1. **双插件 Default-Off 零上下文损耗架构**：
-   - `prism-files` 保持 8 个高频工具不变；桌面与浏览器操控工具独立拆分为同级插件 **`prism-cua`**（默认关闭，日常编码 `0` Token 开销）。需要让 AI 协助测试桌面软件或操作已登录网页时，打开 **`customization://prism-cua`**（Plugins Manager）启用即可，用完随时关回。
-2. **精简 3 工具闭环与最小化恢复防黑屏优化**：
-   - `cua_status`：查询当前守护进程状态、有效授权租约、可观测桌面窗口清单与已 `ARMED` 的浏览器标签页；
-   - `cua_observe`：按需采集指定桌面窗口的压缩 UIA 无障碍元素树与截图（**针对最小化窗口内置无抢焦点恢复捕获优化，彻底避免最小化窗口截出全黑/空白画面**），或读取已授权浏览器标签页的 `@e1..@e200` 紧凑交互快照；
-   - `cua_act`：在受控租约内执行桌面键鼠动作（点击、双击、拖拽、滚轮、文本输入、组合键）或浏览器页面动作（`click`、`double_click`、`type_text` 原生原型链 Setter 兼容 React/Vue、`press_key`、`select_option`、`scroll`、`focus_ref`、`wait_for`），自动附带动作前后状态校验。
-3. **Codex 风格全局物理 `Esc` 急刹（Emergency Kill-Switch）**：
-   - 当操控租约处于激活态时，你无需切回 Antigravity 窗口点停止——**在系统任意窗口直接按下键盘物理 `Esc` 键**（或点击工作台「电脑操控」页红色急停按钮），守护进程毫秒级立即清空待执行动作队列、吊销操控租约并解除所有已授权标签页。
-4. **适配 Chrome / Edge 136+ 的按页显式授权 MV3 扩展桥（固定 ID `lbmibnghmlnidfiihkegicaejaacmkca`）**：
+1. **双插件 Default-Off + 工作台一键休眠零上下文损耗架构**：
+   - `prism-files` 保持 8 个高频工具（且支持按组隐藏）；桌面与浏览器操控工具独立拆分为同级插件 **`prism-cua`**（安装后默认关闭，日常编码 `0` Token 开销）。需要让 AI 协助测试桌面软件或操作已登录网页时，在窗口左栏 **`技能与自定义 → 插件`** 开启一次 `prism-cua`，后续即可随时在工作台「电脑操控」页通过 **`🤖 AI 电脑操控工具按需开关`** 一键唤醒或休眠。
+2. **独立可视化「AI 虚拟指针」与 Windows 四级防抢鼠路由（`mouseMode`）**：
+   - 桌面端通过 `UpdateLayeredWindow` 渲染带 `AI` 徽标与波纹的透明鼠标穿透置顶悬浮指针（`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE`），浏览器端通过隔离 Shadow DOM 渲染平滑页面虚拟指针，动作完毕自动淡出清零，不挡用户点击、不留残影；
+   - **L1（已授权浏览器网页） & L2（桌面标准 UIA 控件） & L3（传统 Win32 子句柄）**：分别通过 DOM 原生 Setter、MTA 线程 UIA `InvokePattern` / `ValuePattern` / `SelectionItemPattern` / `ScrollPattern` 及 `RealChildWindowFromPoint` + `PostMessageW` 后台直达目标控件（含 UIA `IsPassword` 子句柄密码框硬拦截与原前台窗口焦点保护），**100% 不移动系统真实鼠标、不抢当前打字窗口焦点**（即使目标桌面窗口位于后台被遮挡亦可精准触发）；
+   - **L4（Electron / 自绘无 UIA 窗口回退与系统边界说明）**：受 Windows `win32k` 单一硬件光标架构所限，纯自绘画布桌面窗口无法仅凭后台消息完成全部点击。默认 `courteous`（智能无感礼让）模式会先校验目标点未被其他进程窗口遮挡（`TARGET_OCCLUDED` 防误点），并通过 `GetLastInputInfo` 等待用户物理键鼠静止 `>= 350ms`（按住鼠标拖拽时绝不抢夺），在 `<12ms` 内瞬移完成点击并立即将真实光标归位原坐标；若切换为 `strict_virtual`（严格后台零触鼠）模式，则对需借用物理光标的窗口直接返回 `PHYSICAL_CURSOR_REQUIRED` 拦截。
+3. **精简 3 工具闭环与最小化恢复防黑屏优化**：
+   - `cua_status`：查询当前守护进程状态、有效授权租约、`mouseMode` 档位、可观测桌面窗口清单与已 `ARMED` 的浏览器标签页；
+   - `cua_observe`：按需采集指定桌面窗口的压缩 UIA 无障碍元素树与截图（针对最小化窗口内置无抢焦点恢复捕获优化，避免截出黑屏画面），或读取已授权浏览器标签页的 `@e1..@e200` 紧凑交互快照；
+   - `cua_act`：在受控租约内执行 `1..12` 步声明式桌面或网页批量动作，自动附带前后置断言与每步投递方式（`delivery` / `physicalCursorMoved`）回执。
+4. **Codex 风格全局物理 `Esc` 急刹（Emergency Kill-Switch）**：
+   - 当动作正在执行时，你无需切回 Antigravity 窗口点停止——**在系统任意窗口直接按下键盘物理 `Esc` 键**（或点击工作台「电脑操控」页红色急停按钮），守护进程毫秒级立即清空待执行动作队列、释放修饰键并吊销操控租约。
+5. **适配 Chrome / Edge 136+ 的按页显式授权 MV3 扩展桥（固定 ID `lbmibnghmlnidfiihkegicaejaacmkca`）**：
    - 不依赖已被新版 Chrome 限制的默认 Profile `--remote-debugging-port`：通过本地 Native Messaging（`com.prism.cua.bridge`）直连当前用户注册表；
    - **严格按标签页同源授权**：仅当你在目标网页点击浏览器右上角扩展图标开启 **`授权操控当前标签页 (ARMED)`** 后，该 `tabId` 才允许观测或交互；一旦该标签页发生跨源跳转（Origin 变更）或跳入 `chrome://*` / `edge://*` / 扩展商店 / 密码页即**自动撤权**；当 `0` 个标签页处于 `ARMED` 状态时，扩展后台自动断开 Native 连接并清除心跳定时器，保持 **0 空闲驻留开销**；
    - **密码与人机验证硬红线**：自动将 `input[type="password"]` 与 `cc-*` 支付字段脱敏为 `[PASSWORD_REDACTED]` 并拒绝自动填密；检测到 Cloudflare Turnstile、reCAPTCHA、hCaptcha 等人机验证挑战时立即停止自动动作并转交人工完成。
@@ -222,7 +226,7 @@ flowchart TB
 > **如何配置 `prism_list_models` / `prism_ask_model` 所需的会诊网关？**
 > 打开工作台 **「模型中枢」** 页签，任选一种方式即可：
 > 1. **可视化探测导入**：点击 **`+ 网关`** 填入兼容端点 Base URL 与环境变量名（或存入系统凭据库）→ 点击 **`🔍 发现模型`** 自动拉取 `/v1/models` 清单并一键勾选导入 T1–T4 梯队；
-> 2. **AI 零密钥代配**：点击副栏 **`🤖 AI 代配`** 复制安全部署口令粘贴给当前对话 AI，让 AI 直接为你编排写入 `~/.gemini/antigravity/prism-files/prism-profile.json`（`0600` 权限，仅写环境变量名，全程零私钥入聊天框）。
+> 2. **AI 零密钥代配**：点击副栏 **`🤖 AI 代配`** 复制安全部署口令粘贴给当前对话 AI，让 AI 直接为你编排写入 `~/.gemini/antigravity/anti-claude/prism-profile.json`（`0600` 权限，仅写环境变量名或系统凭据库引用，全程零私钥入聊天框）。
 
 ### 六、随包内置的 3 项工程协作 Skill
 
@@ -268,6 +272,8 @@ node install.mjs
 | 常用命令 / 参数 | 作用说明 |
 | --- | --- |
 | `node install.mjs` | 全量部署内置 `runtime/` 内核、激活后台无窗 CDP 守护进程、安装棱镜扩展、`chrome-bridge` 与 `prism-files` / `prism-cua` 双插件 |
+| `node install.mjs --no-plugin` | **纯前端轻量模式**：部署内置 `Anti-Claude` 内核与棱镜前端 UI 扩展，跳过 `prism-files` 与 `prism-cua` 插件（`0` 模型工具/Skill/规则注入） |
+| `node install.mjs --no-file-card-rule` | 安装全套组件但不注入 `rules/AGENTS.md` 自动文件卡片提示规则（亦可搭配 `--no-skills`） |
 | `node install.mjs --extensions-only` | 仅更新 `extensions/` 下的棱镜前端扩展与 `chrome-bridge` 目录 |
 | `node install.mjs --plugin-only` | 仅原地增量更新 `prism-files` 与 `prism-cua` 插件及内置 Skills（保留目录 inode） |
 | `node install.mjs --no-kernel` | 仅安装扩展与双插件，跳过部署内置 `Anti-Claude` 内核 |

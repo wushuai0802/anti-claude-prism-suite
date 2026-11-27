@@ -12,7 +12,7 @@
     try { window.__agPrismSuiteDispose(); } catch {}
   }
 
-  const SUITE_VERSION = '0.8.0';
+  const SUITE_VERSION = '0.8.1';
   const REPO_RELEASES_API = 'https://api.github.com/repos/wushuai0802/anti-claude-prism-suite/releases/latest';
   const REPO_RELEASES_URL = 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/latest';
   const STORAGE_KEY = 'ag_prism_suite_prefs_v1';
@@ -54,6 +54,7 @@
   const PREF_VALIDATORS = Object.freeze({
     lightPalette: enumValidator(['default', 'crystal', 'alabaster', 'sage']),
     darkPalette: enumValidator(['default', 'obsidian', 'basalt', 'marine']),
+    showWorkbenchBtn: boolValidator,
     outline: boolValidator,
     usageExtra: boolValidator,
     inkStream: boolValidator,
@@ -180,6 +181,7 @@
   const DEFAULT_PREFS = {
     lightPalette: 'default',   // 'default' | 'crystal' | 'alabaster' | 'sage'
     darkPalette: 'default',    // 'default' | 'obsidian' | 'basalt' | 'marine'
+    showWorkbenchBtn: true,    // Topbar '工作台' quick button (can hide in pure-UI mode)
     outline: true,             // Conversation outline + Alt+Up/Down turn jump
     usageExtra: true,          // Book yardstick + weekday-aligned 12-week heatmap
     inkStream: true,           // 5-stage CSS.highlights stream fade-in
@@ -4036,7 +4038,7 @@
       <div class="ag-ps-pop-hdr">
         <span class="ag-ps-pop-title">✦ 棱镜扩展套件</span>
         <span style="display:inline-flex;align-items:center;gap:6px;">
-          <button type="button" class="ag-ps-mini-reset" data-open-workbench="1" title="快捷打开 Prism 工作台（文件 / 历史检索 / 账号接力）">工作台 ↗</button>
+          ${prefs.showWorkbenchBtn !== false ? '<button type="button" class="ag-ps-mini-reset" data-open-workbench="1" title="快捷打开右侧 Prism 工作台（文件 / 历史检索 / 账号接力）">工作台 ↗</button>' : ''}
           <span class="ag-ps-pop-meta">${darkNow ? '深色模式' : '浅色模式'} · v${SUITE_VERSION}</span>
         </span>
       </div>
@@ -4070,6 +4072,10 @@
 
       <div class="ag-ps-sec-lbl"><span>增强功能</span></div>
       <div class="ag-ps-toggle-list">
+        <div class="ag-ps-toggle-row">
+          <div class="ag-ps-toggle-label"><span>顶栏「工作台」快捷入口</span><span class="ag-ps-toggle-sub">纯前端增强模式可关闭隐藏顶栏按钮</span></div>
+          <button type="button" class="ag-ps-switch" data-toggle="showWorkbenchBtn" data-on="${prefs.showWorkbenchBtn !== false ? '1' : '0'}"></button>
+        </div>
         <div class="ag-ps-toggle-row">
           <div class="ag-ps-toggle-label"><span>会话大纲 &amp; 跳轮</span><span class="ag-ps-toggle-sub">Alt+↑/↓ 跳轮 · Alt+O 大纲</span></div>
           <button type="button" class="ag-ps-switch" data-toggle="outline" data-on="${prefs.outline ? '1' : '0'}"></button>
@@ -4445,9 +4451,10 @@
   }
 
   function isFullPageWorkbenchActive() {
-    if (document.querySelector('[data-testid="autoscroll-viewport"]')) return false;
-    if (document.getElementById('antigravity.agentSidePanelInputBox')) return false;
-    if (document.querySelector('[data-testid="settings-sidebar"]')) return false;
+    if (getActiveViewportEl()) return false;
+    if (getActiveInputBox()) return false;
+    const settingsSb = document.querySelector('[data-testid="settings-sidebar"]');
+    if (settingsSb && isElementRendered(settingsSb)) return false;
     if (isOwnedWorkbenchFrameVisible(0.42)) return true;
     const sbEntry = findSidebarWorkbenchEntry();
     if (!sbEntry) return false;
@@ -4478,6 +4485,58 @@
     return null;
   }
 
+  function findSidePanelToggleButton(toolbar) {
+    const scope = toolbar || document.querySelector('[data-testid="pane-titlebar-toolbar"]');
+    if (!scope) return null;
+    const buttons = Array.from(scope.querySelectorAll('button')).filter(
+      (b) => b.isConnected && !b.classList.contains('ag-ps-tb-btn') && b.getAttribute('data-testid') !== 'toggle-overview-panel'
+    );
+    const matched = buttons.find((b) => {
+      const lbl = `${b.getAttribute('aria-label') || ''} ${b.getAttribute('title') || ''} ${b.getAttribute('data-testid') || ''}`;
+      return /Side\s*Panel|Auxiliary\s*Pane|侧边面板|辅助看板|右侧边栏|aux[-_]?pane/i.test(lbl);
+    });
+    if (matched) return matched;
+    // If there is a single non-menu native icon button at the right end of pane-titlebar-toolbar, it is Toggle Side Panel
+    const nonMenuBtns = buttons.filter((b) => b.getAttribute('aria-haspopup') !== 'menu');
+    return nonMenuBtns.length === 1 ? nonMenuBtns[0] : null;
+  }
+
+  function safeClickElement(el) {
+    if (!el || !el.isConnected) return false;
+    try { el.focus({ preventScroll: true }); } catch {}
+    try {
+      el.click();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function triggerRadixMenuOpen(el) {
+    if (!el || !el.isConnected) return;
+    // Never dispatch synthetic pointerdown inside left sidebar (@dnd-kit PointerSensor would start dragging!)
+    if (el.closest('aside, nav, .bg-sidebar, [data-testid*="sidebar" i]')) {
+      safeClickElement(el);
+      return;
+    }
+    const r = el.getBoundingClientRect();
+    const cx = Math.round(r.left + Math.max(1, r.width) / 2);
+    const cy = Math.round(r.top + Math.max(1, r.height) / 2);
+    const evInit = { bubbles: true, cancelable: true, button: 0, clientX: cx, clientY: cy };
+    try { el.focus({ preventScroll: true }); } catch {}
+    try {
+      if (typeof PointerEvent === 'function') {
+        el.dispatchEvent(new PointerEvent('pointerdown', { ...evInit, pointerId: 1, pointerType: 'mouse', isPrimary: true, buttons: 1 }));
+      }
+      el.dispatchEvent(new MouseEvent('mousedown', { ...evInit, buttons: 1 }));
+      if (typeof PointerEvent === 'function') {
+        el.dispatchEvent(new PointerEvent('pointerup', { ...evInit, pointerId: 1, pointerType: 'mouse', isPrimary: true, buttons: 0 }));
+      }
+      el.dispatchEvent(new MouseEvent('mouseup', { ...evInit, buttons: 0 }));
+    } catch {}
+    try { el.click(); } catch {}
+  }
+
   function closeAuxWorkbenchTab(rightTab) {
     if (!rightTab || !rightTab.isConnected) return false;
     const isCloseControl = (b) => {
@@ -4494,7 +4553,7 @@
     const innerBtns = rightTab.querySelectorAll('button, [role="button"]');
     for (const b of innerBtns) {
       if (b !== rightTab && isCloseControl(b)) {
-        triggerRadixTrigger(b);
+        safeClickElement(b);
         setTimeout(syncToolbarActiveStates, 80);
         return true;
       }
@@ -4506,7 +4565,7 @@
           const tr = rightTab.getBoundingClientRect();
           const br = b.getBoundingClientRect();
           if (Math.abs(br.top - tr.top) < 24 && br.left >= tr.left && br.left <= tr.right + 36) {
-            triggerRadixTrigger(b);
+            safeClickElement(b);
             setTimeout(syncToolbarActiveStates, 80);
             return true;
           }
@@ -4521,17 +4580,29 @@
           const tr = rightTab.getBoundingClientRect();
           const br = b.getBoundingClientRect();
           if (Math.abs(br.top - tr.top) < 28 && br.left > tr.left) {
-            triggerRadixTrigger(b);
+            safeClickElement(b);
             setTimeout(syncToolbarActiveStates, 80);
             return true;
           }
         }
       }
     }
+    const toggleSideBtn = findSidePanelToggleButton();
+    if (toggleSideBtn) {
+      safeClickElement(toggleSideBtn);
+      setTimeout(syncToolbarActiveStates, 90);
+      return true;
+    }
     return false;
   }
 
   function returnFromFullPageWorkbench() {
+    // Ensure any stale @dnd-kit PointerSensor in the host is cleanly cancelled first
+    try {
+      if (typeof PointerEvent === 'function') {
+        window.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, cancelable: false }));
+      }
+    } catch {}
     const wantedCid = lastChatConvPath.startsWith('/c/') ? lastChatConvPath.slice(3).split('/')[0] : '';
     const rows = Array.from(document.querySelectorAll('[data-testid="conversation-row-sidebar"], aside a[href^="/c/"], nav a[href^="/c/"]'));
     let targetRow = null;
@@ -4553,7 +4624,7 @@
       const clickable = targetRow.matches('a, button, [role="button"]')
         ? targetRow
         : (targetRow.querySelector('a, button, [role="button"]') || targetRow);
-      triggerRadixTrigger(clickable);
+      safeClickElement(clickable);
       setTimeout(syncToolbarActiveStates, 90);
       return true;
     }
@@ -4566,7 +4637,7 @@
     } catch {}
     const newBtn = document.querySelector('[data-testid="new-conversation-button"], aside a[href="/"], nav a[href="/"]');
     if (newBtn && isElementRendered(newBtn)) {
-      triggerRadixTrigger(newBtn);
+      safeClickElement(newBtn);
       return true;
     }
     return false;
@@ -4580,6 +4651,14 @@
     if (rightTab && isAuxWorkbenchTabActive(rightTab)) {
       if (closeAuxWorkbenchTab(rightTab)) return true;
     }
+    if (isOwnedWorkbenchFrameVisible(0.12)) {
+      const toggleSideBtn = findSidePanelToggleButton();
+      if (toggleSideBtn) {
+        safeClickElement(toggleSideBtn);
+        setTimeout(syncToolbarActiveStates, 90);
+        return true;
+      }
+    }
     return false;
   }
 
@@ -4589,7 +4668,6 @@
     if (!t || !t.closest) return;
     const sbEntry = findSidebarWorkbenchEntry();
     if (!sbEntry || !sbEntry.contains(t)) return;
-    // Ignore secondary menu/unpin buttons inside the sidebar row
     const innerBtn = t.closest('button, [role="button"]');
     if (innerBtn && innerBtn !== sbEntry && sbEntry.contains(innerBtn)) return;
     if (isFullPageWorkbenchActive()) {
@@ -4604,13 +4682,13 @@
 
   function findWorkbenchEntry(root = document, { skipSidebar = false } = {}) {
     if (!root || !root.querySelectorAll) return null;
-    const candidates = root.querySelectorAll('button, a, [role="tab"], [role="button"], [role="menuitem"]');
+    const candidates = root.querySelectorAll('button, a, [role="tab"], [role="button"], [role="menuitem"], [role="option"]');
     for (const el of candidates) {
       if (!el.isConnected || el.closest('#ag-ps-popover, #ag-ps-outline, [data-testid="autoscroll-viewport"]')) continue;
       if (el.id === 'ag-ps-btn-workbench' || el.id === 'ag-ps-btn-suite' || el.id === 'ag-ps-btn-outline') continue;
       const r = el.getBoundingClientRect();
       if (r.width <= 0 || r.height <= 0) continue;
-      if (skipSidebar && !el.closest('[role="menu"], [data-radix-popper-content-wrapper]') && (el.closest('aside, nav, [data-testid*="sidebar" i]') || r.left < 280)) {
+      if (skipSidebar && !el.closest('[role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]') && (el.closest('aside, nav, .bg-sidebar, [data-testid*="sidebar" i]') || r.left < 280)) {
         continue;
       }
       const txt = String(el.textContent || '').replace(/\s+/g, ' ').trim();
@@ -4622,20 +4700,6 @@
     return null;
   }
 
-  function triggerRadixTrigger(el) {
-    if (!el) return;
-    try { el.focus({ preventScroll: true }); } catch {}
-    try {
-      if (typeof PointerEvent === 'function') {
-        el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' }));
-      }
-    } catch {}
-    try {
-      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
-    } catch {}
-    try { el.click(); } catch {}
-  }
-
   function hoverAndClickMenuItem(el) {
     if (!el) return;
     for (const type of ['pointerenter', 'pointermove', 'mouseover', 'mouseenter']) {
@@ -4644,8 +4708,7 @@
         el.dispatchEvent(new Evt(type, { bubbles: true, cancelable: true }));
       } catch {}
     }
-    try { el.focus({ preventScroll: true }); } catch {}
-    try { el.click(); } catch {}
+    safeClickElement(el);
   }
 
   function findMoreToolbarButton(toolbar) {
@@ -4655,27 +4718,55 @@
     const buttons = Array.from(toolbar.querySelectorAll('button')).filter(
       (b) => b.isConnected && !b.classList.contains('ag-ps-tb-btn') && b.getAttribute('data-testid') !== 'toggle-overview-panel'
     );
-    const tagged = buttons.find((b) => {
+    return buttons.find((b) => {
       const lbl = `${b.getAttribute('aria-label') || ''} ${b.getAttribute('title') || ''}`;
       return /more|更多|menu|菜单|action|选项/i.test(lbl);
-    });
-    return tagged || buttons[0] || null;
+    }) || null;
+  }
+
+  function findRightPaneExtensionPickerButton() {
+    const minLeft = Math.max(290, (window.innerWidth || 1000) * 0.42);
+    const candidates = document.querySelectorAll('button, [role="button"]');
+    for (const b of candidates) {
+      if (!b.isConnected || b.classList.contains('ag-ps-tb-btn')) continue;
+      if (b.closest('#ag-ps-popover, #ag-ps-outline, aside, nav, .bg-sidebar, [data-testid="autoscroll-viewport"]')) continue;
+      const r = b.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0 || r.left < minLeft || r.top > 110) continue;
+      const lbl = `${b.getAttribute('aria-label') || ''} ${b.getAttribute('title') || ''} ${b.textContent || ''}`.replace(/\s+/g, ' ').trim();
+      if (/UI\s*Extensions|Show\s*or\s*Hide\s*Extensions|界面扩展|显示或隐藏扩展|扩展插件|Plugins|Add\s*Tab|New\s*Tab|添加|更多|\+/i.test(lbl) || b.getAttribute('aria-haspopup') === 'menu') {
+        if (!b.closest('[data-testid="pane-titlebar-toolbar"]')) {
+          return b;
+        }
+      }
+    }
+    return null;
   }
 
   function trySidebarFallback() {
-    const fallback = findWorkbenchEntry(document, { skipSidebar: false });
+    const fallback = findSidebarWorkbenchEntry();
     if (!fallback) return false;
     if (isFullPageWorkbenchActive()) {
       return returnFromFullPageWorkbench();
     }
-    triggerRadixTrigger(fallback);
+    // Check if row exposes an inline "Open in Side Panel" button first
+    const row = fallback.closest('.agy-sidebar-row, li, div') || fallback.parentElement;
+    if (row) {
+      for (const b of row.querySelectorAll('button, [role="button"]')) {
+        const lbl = `${b.getAttribute('aria-label') || ''} ${b.getAttribute('title') || ''}`;
+        if (/Side\s*Panel|side\s*pane|侧边面板|侧边栏中打开|分屏/i.test(lbl)) {
+          safeClickElement(b);
+          return true;
+        }
+      }
+    }
+    // Strictly use safeClickElement (el.click() only, NEVER pointerdown!) so @dnd-kit never drags the sidebar item!
+    safeClickElement(fallback);
     return true;
   }
 
   function openPrismWorkbenchQuick(targetTab = '') {
     const wantTab = targetTab && ALLOWED_BRIDGE_TABS.has(targetTab) ? targetTab : '';
     if (!wantTab) {
-      // Pure toggle click: if Workbench is already active (either full-page or active right aux pane), close/return!
       if (toggleOrClosePrismWorkbench()) {
         clearPendingWorkbenchNav();
         return true;
@@ -4684,12 +4775,12 @@
     } else {
       dispatchSwitchTabWithRetry(wantTab);
     }
-    // 1. Prioritize already-open right-side aux pane tab (skipping left global sidebar)
+
+    // 1. Prioritize already-open right-side aux pane tab (strictly skipping left global sidebar)
     const rightTab = findWorkbenchEntry(document, { skipSidebar: true });
     if (rightTab) {
-      triggerRadixTrigger(rightTab);
+      safeClickElement(rightTab);
       if (wantTab) {
-        // Re-ping after aux pane becomes visible so focus + tab switch completes even if pane was hidden/unmounted
         bridgeRetryTimers.push(setTimeout(() => {
           if (!disposed && pendingIntentId) broadcastBridgePing();
         }, 160));
@@ -4697,66 +4788,109 @@
       setTimeout(syncToolbarActiveStates, 80);
       return true;
     }
+
     if (workbenchOpening) return false;
     const toolbar = document.querySelector('[data-testid="pane-titlebar-toolbar"]');
+    const sideToggleBtn = findSidePanelToggleButton(toolbar);
     const moreBtn = findMoreToolbarButton(toolbar);
-    if (!moreBtn) {
-      if (!trySidebarFallback()) {
-        showJumpToast('请在右侧栏点「+」或「⋮ → 扩展插件」打开「Prism 工作台」');
-      }
-      return false;
-    }
+
     workbenchOpening = true;
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     (async () => {
       try {
-        // 2. Open via native toolbar menu (⋮ -> 扩展插件 -> Prism 工作台) for side-by-side aux pane
-        triggerRadixTrigger(moreBtn);
-        let subTrigger = null;
-        for (let i = 0; i < 6; i++) {
-          await sleep(60);
-          if (disposed) return;
-          const menus = document.querySelectorAll('[role="menu"], [data-radix-popper-content-wrapper]');
-          for (const m of menus) {
-            const directItem = findWorkbenchEntry(m, { skipSidebar: false });
-            if (directItem) {
-              directItem.click();
-              return;
-            }
-            const items = m.querySelectorAll('[role="menuitem"], button');
-            for (const it of items) {
-              const t = String(it.textContent || '').replace(/\s+/g, ' ').trim();
-              if (/扩展插件|Plugins|Extensions/i.test(t)) {
-                subTrigger = it;
-                break;
+        const searchOpenMenusAndClick = async (loops = 6) => {
+          let subTrigger = null;
+          for (let i = 0; i < loops; i++) {
+            await sleep(55);
+            if (disposed) return true;
+            const poppers = document.querySelectorAll('[role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]');
+            for (const m of poppers) {
+              const directItem = findWorkbenchEntry(m, { skipSidebar: false });
+              if (directItem) {
+                safeClickElement(directItem);
+                setTimeout(syncToolbarActiveStates, 90);
+                return true;
               }
+              const items = m.querySelectorAll('[role="menuitem"], [role="option"], button');
+              for (const it of items) {
+                const t = String(it.textContent || '').replace(/\s+/g, ' ').trim();
+                if (/扩展插件|界面扩展|UI\s*Extensions|Show\s*or\s*Hide\s*Extensions|Plugins|Extensions/i.test(t)) {
+                  subTrigger = it;
+                  break;
+                }
+              }
+              if (subTrigger) break;
             }
             if (subTrigger) break;
           }
-          if (subTrigger) break;
-        }
-        if (subTrigger) {
-          hoverAndClickMenuItem(subTrigger);
-          for (let j = 0; j < 7; j++) {
-            await sleep(65);
-            if (disposed) return;
-            const menus = document.querySelectorAll('[role="menu"], [data-radix-popper-content-wrapper]');
-            for (const m of menus) {
-              const target = findWorkbenchEntry(m, { skipSidebar: false });
-              if (target) {
-                target.click();
-                return;
+          if (subTrigger) {
+            hoverAndClickMenuItem(subTrigger);
+            for (let j = 0; j < 6; j++) {
+              await sleep(60);
+              if (disposed) return true;
+              const poppers = document.querySelectorAll('[role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]');
+              for (const m of poppers) {
+                const target = findWorkbenchEntry(m, { skipSidebar: false });
+                if (target) {
+                  safeClickElement(target);
+                  setTimeout(syncToolbarActiveStates, 90);
+                  return true;
+                }
               }
             }
           }
+          return false;
+        };
+
+        // 2a. Expand right Side Panel first if collapsed, then check its tab strip & extension picker
+        let sidePanelOpenedByUs = false;
+        if (sideToggleBtn && !isFullPageWorkbenchActive() && !findRightPaneExtensionPickerButton()) {
+          safeClickElement(sideToggleBtn);
+          sidePanelOpenedByUs = true;
+          for (let k = 0; k < 5; k++) {
+            await sleep(55);
+            if (disposed) return;
+            if (isOwnedWorkbenchFrameVisible(0.12)) {
+              setTimeout(syncToolbarActiveStates, 60);
+              return;
+            }
+            const newlyMountedRightTab = findWorkbenchEntry(document, { skipSidebar: true });
+            if (newlyMountedRightTab) {
+              safeClickElement(newlyMountedRightTab);
+              setTimeout(syncToolbarActiveStates, 80);
+              return;
+            }
+          }
         }
-        try {
-          (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-        } catch {}
+
+        const rightPickerBtn = findRightPaneExtensionPickerButton();
+        if (rightPickerBtn) {
+          triggerRadixMenuOpen(rightPickerBtn);
+          if (await searchOpenMenusAndClick(6)) return;
+          try {
+            (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+          } catch {}
+        }
+
+        // 2b. Try toolbar ⋮ overflow menu if present
+        if (moreBtn) {
+          triggerRadixMenuOpen(moreBtn);
+          if (await searchOpenMenusAndClick(6)) return;
+          try {
+            (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+          } catch {}
+        }
+
+        // Re-collapse empty Side Panel if we opened it and Prism wasn't inside it
+        if (sidePanelOpenedByUs && sideToggleBtn && !isOwnedWorkbenchFrameVisible(0.12)) {
+          safeClickElement(sideToggleBtn);
+          await sleep(40);
+        }
+
         if (!disposed) {
-          // 3. Fallback to left sidebar global view only if aux pane menu didn't have it
+          // 3. Clean fallback to global Workbench entry (using safeClickElement -> zero drag sensor activation!)
           if (!trySidebarFallback()) {
-            showJumpToast('未检测到已启用的 Prism 工作台入口，请先在 Plugins Manager 确认已启用');
+            showJumpToast('未检测到已启用的 Prism 工作台插件，请先在插件管理中启用 prism-files');
           }
         }
       } finally {
@@ -4771,20 +4905,24 @@
     if (!toolbar) return;
 
     let wbBtn = document.getElementById('ag-ps-btn-workbench');
-    if (!wbBtn || wbBtn.parentElement !== toolbar) {
-      if (wbBtn) wbBtn.remove();
-      wbBtn = document.createElement('button');
-      wbBtn.id = 'ag-ps-btn-workbench';
-      wbBtn.type = 'button';
-      wbBtn.className = 'ag-ps-tb-btn';
-      wbBtn.setAttribute('data-ag-i18n-ignore', '1');
-      wbBtn.setAttribute('data-ag-ps-tip', '快捷打开 Prism 工作台（文件 / 历史检索 / 账号接力 / 上游雷达）');
-      wbBtn.textContent = '工作台';
-      wbBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        openPrismWorkbenchQuick();
-      });
-      toolbar.insertBefore(wbBtn, toolbar.firstChild);
+    if (prefs.showWorkbenchBtn !== false) {
+      if (!wbBtn || wbBtn.parentElement !== toolbar) {
+        if (wbBtn) wbBtn.remove();
+        wbBtn = document.createElement('button');
+        wbBtn.id = 'ag-ps-btn-workbench';
+        wbBtn.type = 'button';
+        wbBtn.className = 'ag-ps-tb-btn';
+        wbBtn.setAttribute('data-ag-i18n-ignore', '1');
+        wbBtn.setAttribute('data-ag-ps-tip', '打开 / 收起 Prism 工作台（文件 / 历史检索 / 账号接力 / 电脑操控）');
+        wbBtn.textContent = '工作台';
+        wbBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openPrismWorkbenchQuick();
+        });
+        toolbar.insertBefore(wbBtn, toolbar.firstChild);
+      }
+    } else if (wbBtn) {
+      wbBtn.remove();
     }
 
     let outBtn = document.getElementById('ag-ps-btn-outline');
@@ -4881,6 +5019,16 @@
   let lastActiveBox = null;
   let lastDarkState = isCurrentlyDark();
   let navSwitchTimer = 0;
+  let isImeComposing = false;
+
+  const onImeStart = () => { isImeComposing = true; };
+  const onImeEnd = () => { isImeComposing = false; };
+  document.addEventListener('compositionstart', onImeStart, { capture: true, passive: true });
+  document.addEventListener('compositionend', onImeEnd, { capture: true, passive: true });
+  onCleanup(() => {
+    document.removeEventListener('compositionstart', onImeStart, true);
+    document.removeEventListener('compositionend', onImeEnd, true);
+  });
 
   function onNavClickHint(e) {
     if (disposed) return;
@@ -4924,8 +5072,8 @@
     }
     const busy = isAgentGenerating();
     syncStreamObserver(busy);
-    // Defer non-urgent DOM scans while user is actively typing in composer
-    if (isUserActivelyTyping() && !busy) return;
+    // Defer non-urgent DOM scans while user is actively typing or using Windows/CJK IME composition
+    if (isImeComposing || (isUserActivelyTyping() && !busy)) return;
     syncToolbarButtons();
     syncWorkbenchTooltip();
     syncMascotDock(busy);

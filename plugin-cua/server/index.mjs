@@ -41,7 +41,7 @@ const MAX_STDIN_BUFFER_BYTES = 16 * 1024 * 1024;
 
 export const SERVER_INFO = Object.freeze({
   name: 'prism-cua_control',
-  version: '0.8.0'
+  version: '0.8.1'
 });
 
 const ASSERTION_SCHEMA = {
@@ -180,6 +180,11 @@ export const TOOLS = Object.freeze([
           type: 'boolean',
           description: '动作批次完成后是否附带最新画面截图'
         },
+        mouseMode: {
+          type: 'string',
+          enum: ['courteous', 'strict_virtual'],
+          description: '虚拟鼠标防抢鼠模式：courteous（默认，优先 UIA/DOM/消息零抢鼠，自绘窗键鼠空闲礼让并毫秒归位光标）或 strict_virtual（100% 绝不触碰系统物理鼠标与焦点）'
+        },
         reason: {
           type: 'string',
           description: '请求操控授权（needAct: true）时展示给用户的意图摘要'
@@ -220,6 +225,15 @@ export const TOOLS = Object.freeze([
               clearFirst: {
                 type: 'boolean',
                 description: 'type_text 前是否先清空已有内容'
+              },
+              clear: {
+                type: 'boolean',
+                description: 'type_text 前是否先清空已有内容（clearFirst 同义别名）'
+              },
+              mouseMode: {
+                type: 'string',
+                enum: ['courteous', 'strict_virtual'],
+                description: '单步覆盖虚拟鼠标防抢鼠模式'
               },
               key: {
                 type: 'string',
@@ -978,6 +992,7 @@ export function createPrismCuaServer({
       windowId: args.windowId,
       hwnd: args.hwnd,
       tabId: args.tabId,
+      mouseMode: args.mouseMode,
       includeScreenshot: Boolean(args.includeScreenshot),
       initialObservation: lastObservation
     });
@@ -1045,7 +1060,94 @@ export function createPrismCuaServer({
     };
   }
 
+  function readToolsEnabledFromFile(filePath) {
+    const st = fs.lstatSync(filePath, { throwIfNoEntry: false });
+    if (!st) return { exists: false, enabled: true, mtimeMs: -1 };
+    if (!st.isFile() || st.isSymbolicLink()) return { exists: true, enabled: false, mtimeMs: Date.now() };
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (typeof parsed?.toolsEnabled === 'boolean') {
+        return { exists: true, enabled: parsed.toolsEnabled, mtimeMs: st.mtimeMs };
+      }
+      return { exists: true, enabled: true, mtimeMs: st.mtimeMs };
+    } catch {
+      return { exists: true, enabled: false, mtimeMs: st.mtimeMs };
+    }
+  }
+
+  function isCuaToolsEnabled() {
+    if (process.env.PRISM_CUA_SETTINGS_FILE) {
+      return readToolsEnabledFromFile(path.resolve(process.env.PRISM_CUA_SETTINGS_FILE)).enabled;
+    }
+    if (process.env.PRISM_CUA_BROKER_FILE) {
+      const sibling = path.join(path.dirname(path.resolve(process.env.PRISM_CUA_BROKER_FILE)), 'cua-settings.json');
+      return readToolsEnabledFromFile(sibling).enabled;
+    }
+
+    const localFile = path.join(os.homedir(), '.gemini', 'antigravity', 'prism-suite', 'cua-settings.json');
+    const curUid = typeof process.getuid === 'function' ? process.getuid() : null;
+    try {
+      const lst = fs.lstatSync(localFile, { throwIfNoEntry: false });
+      if (lst && (curUid === null || lst.uid === curUid)) {
+        const localRes = readToolsEnabledFromFile(localFile);
+        if (localRes.exists && localRes.enabled === false) return false;
+      }
+    } catch {}
+
+    const dirs = [path.dirname(localFile)];
+    if (process.platform === 'linux') {
+      try {
+        const mntUsers = '/mnt/c/Users';
+        if (fs.existsSync(mntUsers)) {
+          let activeBrokerDir = '';
+          let bestBrokerMtime = -1;
+          for (const d of fs.readdirSync(mntUsers, { withFileTypes: true })) {
+            if (!d.isDirectory() || /^(Public|Default|Default User|All Users)$/i.test(d.name)) continue;
+            const candDir = path.join(mntUsers, d.name, '.gemini', 'antigravity', 'prism-suite');
+            try {
+              const bst = fs.statSync(path.join(candDir, 'cua-broker.json'));
+              if (bst.mtimeMs > bestBrokerMtime) {
+                bestBrokerMtime = bst.mtimeMs;
+                activeBrokerDir = candDir;
+              }
+            } catch {}
+          }
+          if (activeBrokerDir) dirs.push(activeBrokerDir);
+        }
+      } catch {}
+    }
+
+    let bestMtime = -1;
+    let bestVal = null;
+    for (const dir of dirs) {
+      const file = path.join(dir, 'cua-settings.json');
+      try {
+        const st = fs.lstatSync(file, { throwIfNoEntry: false });
+        if (!st) continue;
+        if (curUid !== null && !file.startsWith('/mnt/') && st.uid !== curUid) continue;
+        const r = readToolsEnabledFromFile(file);
+        if (r.exists && r.mtimeMs >= bestMtime) {
+          bestMtime = r.mtimeMs;
+          bestVal = r.enabled;
+        }
+      } catch {}
+    }
+    return bestVal === null ? true : bestVal;
+  }
+
   async function handleToolCall(name, rawArgs = {}) {
+    if (!isCuaToolsEnabled()) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: 'Prism 电脑操控工具当前已在工作台中设为休眠隐藏（零上下文损耗模式）；请在「Prism 工作台 → 电脑操控」开启 AI 操控工具开关后重试。'
+          }
+        ],
+        structuredContent: { ok: false, code: 'CUA_TOOLS_DISABLED', tool: name }
+      };
+    }
     const args = rawArgs && typeof rawArgs === 'object' ? rawArgs : {};
     if (name === 'cua_status') {
       return handleStatus(args);
@@ -1086,7 +1188,7 @@ export function createPrismCuaServer({
         return { jsonrpc: '2.0', id, result: {} };
       }
       if (method === 'tools/list') {
-        return { jsonrpc: '2.0', id, result: { tools: TOOLS } };
+        return { jsonrpc: '2.0', id, result: { tools: isCuaToolsEnabled() ? TOOLS : [] } };
       }
       if (method === 'tools/call') {
         const result = await handleToolCall(params?.name, params?.arguments || {});

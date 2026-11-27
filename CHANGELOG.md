@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.8.1 - 2026-11-27
+
+- **新增独立「Prism AI 可视化虚拟指针」与 Windows 四级无感防抢鼠路由（实测后台操作 `0px` 物理鼠标位移、零焦点抢占）**：
+  - **Windows 桌面透明穿透虚拟指针悬浮层（[PrismWinCua.cs](native/win-cua/PrismWinCua.cs) / [cua-broker.mjs](vendor/anti-claude/core/cua-broker.mjs)）**：新增 `64x64` 逐像素 Alpha 分层悬浮窗 `VirtualCursorForm`（`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST` + `UpdateLayeredWindow`），在 AI 执行点击、输入、滚动时平滑滑动带 `AI` 徽标与扩散波纹的专属虚拟指针，内核级 `100%` 鼠标穿透不挡用户点击，动作结束自动淡出隐藏并停止计时器（空闲 `0%` CPU，随 Job Object 自动回收绝无残影）；
+  - **浏览器页面内零常驻虚拟指针（[content-agent.js](extensions/chrome-cua-bridge/content-agent.js)）**：在 `ARMED` 标签页按需挂载 Shadow DOM 隔离的 GPU `transform` 虚拟指针与点击波纹，新增网页视口 `(x, y)` 坐标点击与右键支持，动作完成后 `1s` 自动移除节点（空闲 `0` 定时器、`0` DOM 残留）；
+  - **Windows 四级「不抢真鼠标优先」自适应动作路由**：移除原 `RunAct` 入口无条件抢焦点的 `SetForegroundWindow` 与全局 `SendInput`，改为按目标能力逐级无感派发：
+    1. **L1（已授权浏览器网页）**：DOM / 原生原型链 Setter + 页面虚拟指针，`100%` 不动系统鼠标与焦点；
+    2. **L2（桌面 `@wN` 与标准 UIA 控件）**：MTA 线程直调 `InvokePattern` / `TogglePattern` / `SelectionItemPattern` / `ExpandCollapsePattern` / `ValuePattern` / `ScrollPattern`（支持后台被最大化窗口遮挡的目标软件），实现 **`0px` 物理光标位移、`0` 前台焦点抢占**；
+    3. **L3（桌面传统 Win32 子句柄）**：通过 `RealChildWindowFromPoint` + `PostMessageW` / `SendMessageTimeoutW(WM_SETTEXT)` 定向后台投递鼠标与文本消息，同样不动真实鼠标；
+    4. **L4（Electron / 自绘无 UIA 窗口回退）**：默认 `courteous`（智能无感礼让）模式通过 `GetLastInputInfo` 检测用户物理键鼠静止 `>= 350ms`（用户正在拖拽鼠标时主动避让），在 `<12ms` 内完成瞬移点击并立即调用 `SetCursorPos` 将真实光标精准归位原坐标；若切换为 `strict_virtual`（严格后台零触鼠）模式，则对需借用物理输入的窗口直接返回 `PHYSICAL_CURSOR_REQUIRED` 安全拦截。
+- **工作台「`电脑操控`」页签新增 AI 工具休眠开关与虚拟鼠标双档策略切换（[app.html](plugin/ui/app.html) / [index.mjs](plugin/server/index.mjs) / [plugin-cua](plugin-cua/server/index.mjs)）**：
+  - 新增 **`🤖 AI 电脑操控工具按需开关`**（`cua_bridge_set_tools_enabled` + 宿主 `prism-cua` 实时开启态探测），支持在工作台内一键休眠/唤醒 `cua_*` 工具（休眠时 `tools/list` 零工具占用），并优化默认关闭（Default-Off）说明指引；
+  - 新增 **`✨ 智能无感礼让`** 与 **`🔒 严格后台零触鼠`** 一键切换按钮（`cua_bridge_set_mouse_mode` 同步 Broker 与 `0600` 权限 `cua-settings.json`），在 `cua_act` 中透传 `mouseMode`、`delivery` 与 `physicalCursorMoved` 审计字段；
+  - 修复工作台「账号接力 → 上游生态动态」展开后无法独立折叠收起的问题，并加固切号冷启动后登录欢迎框自动确认逻辑（兼容汉化「由您掌控」与异步延迟挂载）。
+- **修复顶栏「工作台」按钮误触左栏与左侧边栏条目随鼠标上下漂移问题（[prism-suite.js](extensions/prism-suite.js)）**：
+  - **根因修复**：① `isFullPageWorkbenchActive` 改用可见视口/输入框检测（过滤后台缓存的 `0x0` 会话节点），确保全局工作台已打开时再次点击能准确返回对话；② 顶栏 `工作台` 优先展开右侧 `切换侧边面板 / 切换辅助看板` 定位右侧分屏标签或 `界面扩展` 选择器，避免误跳左侧边栏；③ 彻底移除左栏及会话行上的无配对 `pointerdown`（改用纯 `safeClickElement` 并在下拉菜单触发器补齐成对 `pointerup`），根治宿主 `@dnd-kit` `PointerSensor` 被挂起导致左侧 `Prism 工作台` 条目粘在鼠标上跨列表漂移的问题。
+- **响应社区 Issue #1：新增纯前端轻量安装模式（`--no-plugin`）、顶栏工作台开关与细粒度上下文暴露控制**：
+  - [install.mjs](install.mjs) 新增 `--no-plugin`（一键部署内置 Anti-Claude 内核 + 前端棱镜扩展，跳过 `prism-files` 与 `prism-cua`）、`--no-file-card-rule`（不注入 `rules/AGENTS.md`）与 `--no-skills`；
+  - `✦ 棱镜` 控制面板新增 **`顶栏「工作台」快捷入口`** 显隐开关（`showWorkbenchBtn`，跨端口与重启持久保存）；
+  - 工作台「账号接力 → 上下文精简与插件组件开关」新增按组启用/隐藏模型可见 MCP 工具（文件卡片组 / 槽位记忆组 / 模型会诊组）、`rules/AGENTS.md` 与内置 Skills 的可视化开关，兼顾完整工作台界面与零冗余上下文。
+- **上游雷达巡检吸收、防限流双优化与基线同步（`agy-powertools v2.16.10` / `Windows-MCP` / `obsidian-prism`）**：
+  - [upstream-radar.mjs](plugin/server/upstream-radar.mjs) 新增两项无感防限流优化：① 未配置 `GITHUB_TOKEN` 时自动尝试单次 `gh auth token` 并仅缓存在进程内存中复用（不落盘、不打日志，失败静默回退匿名，避免共享出口 IP 匿名 `60/h` 耗尽）；② 对 `api.github.com` 请求增加 `ETag / If-None-Match` 本地 `0600` 缓存，利用 HTTP `304 Not Modified` 免扣 GitHub API 配额；
+  - Clean-Room 增加中文输入法 `compositionstart/compositionend` 组词期间后台 DOM 静默避让防闪烁，以及 macOS Keychain `>3KB` 大体积凭据 `-X <hex>` 防截断写入，并同步双端 `upstream.json` 基线。
+
 ## 0.8.0 - 2026-11-27
 
 - **窗口最小化恢复「零白屏」三层性能优化（实机热更新生效）**：

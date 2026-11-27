@@ -4091,7 +4091,7 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
           i18nExtraMode: ['off', 'zh-CN', 'zh-TW', 'en']
         };
         const BOOL_ALLOW = new Set([
-          'outline', 'usageExtra', 'inkStream', 'mascot', 'mascotRoam',
+          'showWorkbenchBtn', 'outline', 'usageExtra', 'inkStream', 'mascot', 'mascotRoam',
           'borderBeam', 'quotaRing', 'thinkingOrb', 'bubbleTint', 'compactLayout',
           'unreadBadge', 'keepOverviewOpen', 'alwaysOutlineRail', 'switchReturnHelper',
           'switchAutoReturn', 'autoDismissOnboarding', 'quotaHandoffAlert',

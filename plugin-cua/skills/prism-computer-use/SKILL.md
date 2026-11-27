@@ -18,11 +18,17 @@ Broker 维护四态受控状态机：
 三个模型可见工具：
 1. `cua_status`：查看 Broker 在线状态、当前授权档位、可观测桌面窗口清单与已标记 `ARMED` 的浏览器标签页。
 2. `cua_observe`：采集目标桌面窗口或 `ARMED` 浏览器标签页的精简控件树（`@wN` / `@eN`）、增量状态差异与按需截图。
-3. `cua_act`：执行 `1..12` 步纯声明式 `batch_actions`，内置前后置断言校验、80ms 最小步间节流与 `idempotencyKey` 5 分钟幂等去重。
+3. `cua_act`：执行 `1..12` 步纯声明式 `batch_actions`，内置前后置断言校验、80ms 最小步间节流、独立可视化虚拟指针与四级无感防抢鼠路由（`mouseMode`）及 `idempotencyKey` 5 分钟幂等去重。
 
-## 2. 桌面软件操控模式（Win32 / WPF vs Electron）
+## 2. 四级无感虚拟鼠标路由与桌面软件操控模式
 
-### 模式 A：原生 Win32 / WPF / 标准 UIA 窗口（语义 `@wN` 引用优先）
+Windows 与浏览器侧内置独立可视化 **Prism AI 虚拟指针**（透明鼠标穿透悬浮窗 / Shadow DOM 光标波纹），并按四级优先级路由，最大程度避免干扰用户真实物理鼠标：
+- **L1（浏览器 `ARMED` 标签页）**：DOM 原生原型链 Setter + 页面虚拟指针动画，100% 不动系统鼠标、不抢前台焦点。
+- **L2（桌面 `@wN` 标准控件）**：MTA 线程直调 UIA `InvokePattern` / `TogglePattern` / `SelectionItemPattern` / `ValuePattern` / `ScrollPattern`，**零物理鼠标位移、零焦点抢占**。
+- **L3（桌面传统子句柄）**：`RealChildWindowFromPoint` + `PostMessageW` / `WM_SETTEXT` 定向投递，同样不动真实鼠标。
+- **L4（Electron / 自绘画布窗口回退）**：`mouseMode: "courteous"`（默认）会先通过 `GetLastInputInfo` 检测用户物理键鼠静止 `>= 350ms` 礼让等待，在 `<12ms` 内完成点击并将真实光标精准归位原坐标；若设为 `mouseMode: "strict_virtual"`，则对需移动物理光标的自绘窗口直接返回 `PHYSICAL_CURSOR_REQUIRED` 拦截。
+
+### 模式 A：原生 Win32 / WPF / 标准 UIA 窗口（语义 `@wN` 引用优先 · 零抢鼠）
 1. 先调用 `cua_observe`（`target: "desktop"`，可通过 `windowId`、`processName` 或 `titleContains` 锁定目标窗口，默认无需开启截图以节省上下文）。
 2. 从返回的元素清单中定位交互控件的 `@wN` 引用（如 `@w3 [edit] "搜索词"`、`@w7 [button] "查询"`）。
 3. 在 `cua_act` 中直接使用 `ref: "@w3"` 配合 `type_text`、`click`、`select_option` 或 `focus_ref`，避免因窗口移动或 DPI 缩放产生偏移。
