@@ -3699,6 +3699,6 @@ test('ThinkingOrb fx module clean init (no bare onCleanup crash) and left-sideba
   assert.match(customJsSrc, /function syncSidebarWheelListener\(\)/);
   assert.match(customJsSrc, /function scheduleSidebarVirtualRowSync\(\)/);
   assert.match(customJsSrc, /mt\.closest\('\[data-testid="conversation-list-sidebar"\]'\)/);
-  assert.match(customCssSrc, /\[data-testid="conversation-list-sidebar"\]:not\(\[data-ag-sb-unified\] \*\)[\s\S]{0,120}contain:\s*layout style paint/);
-  assert.match(customCssSrc, /will-change:\s*scroll-position/);
+  assert.match(customCssSrc, /\[data-testid="conversation-list-sidebar"\]:not\(\[data-ag-sb-unified\] \*\)[\s\S]{0,120}contain:\s*layout style/);
+  assert.match(customCssSrc, /\[data-testid="overlay-scrollbar-thumb"\][\s\S]{0,80}will-change:\s*transform/);
 });

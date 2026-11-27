@@ -2771,10 +2771,13 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-claude-folder-badge[da
   min-height: 0 !important;
 }
 
-/* 原生侧栏虚拟滚动列表：提升为独立 GPU 滚动合成层并做布局/绘制隔离，避免滚动时连带重排右侧长对话 */
+/* 原生侧栏虚拟滚动列表与宿主覆盖滚动条滑块：做布局/样式隔离（避免与行内 mask-image 叠加离屏遮罩重绘），并为模拟滑块开启独立 GPU 位移层减少跟帧延迟 */
 .bg-sidebar [data-testid="conversation-list-sidebar"]:not([data-ag-sb-unified] *) {
-  contain: layout style paint;
-  will-change: scroll-position;
+  contain: layout style;
+}
+
+[data-testid="overlay-scrollbar-thumb"] {
+  will-change: transform;
 }
 
 /* 统一侧栏模式（unified）：原生虚拟列表仅承接顶部的置顶对话，高度严丝合缝，与下方全量「最近对话」共享外层单一滚动条 */

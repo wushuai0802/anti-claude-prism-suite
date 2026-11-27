@@ -19,10 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
 
@@ -47,7 +47,7 @@ jobs:
 
       - name: Create or update single upstream-watch Issue when HIGH or MEDIUM found
         if: steps.check.outputs.high > 0 || steps.check.outputs.medium > 0 || github.event.inputs.force_issue == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('node:fs');
