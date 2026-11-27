@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $SourceCs = Join-Path (Join-Path $RepoRoot "installer") (Join-Path "win" "PrismSuiteInstaller.cs")
+$AppIconIco = Join-Path (Join-Path $RepoRoot "installer") (Join-Path "win" "prism-suite.ico")
 $ExtDir = Join-Path $RepoRoot "extensions"
 $ChromeBridgeDir = Join-Path $ExtDir "chrome-cua-bridge"
 $PluginDir = Join-Path $RepoRoot "plugin"
@@ -16,6 +17,9 @@ $WinCuaCs = Join-Path (Join-Path $RepoRoot "native") (Join-Path "win-cua" "Prism
 
 if (-not (Test-Path -LiteralPath $SourceCs -PathType Leaf)) {
     throw "Missing installer source file: $SourceCs"
+}
+if (-not (Test-Path -LiteralPath $AppIconIco -PathType Leaf)) {
+    throw "Missing application icon file: $AppIconIco"
 }
 if (-not (Test-Path -LiteralPath $ExtDir -PathType Container)) {
     throw "Missing extensions directory: $ExtDir"
@@ -112,6 +116,7 @@ try {
         $CuaRspLines.Add("/optimize+")
         $CuaRspLines.Add("/codepage:65001")
         $CuaRspLines.Add("/utf8output")
+        $CuaRspLines.Add(('"/win32icon:{0}"' -f $AppIconIco))
         $CuaRspLines.Add(('"/out:{0}"' -f $CuaExeTemp))
         if (Test-Path -LiteralPath $WpfDir -PathType Container) {
             $CuaRspLines.Add(('"/lib:{0}"' -f $WpfDir))
@@ -154,7 +159,9 @@ try {
     $RspLines.Add("/optimize+")
     $RspLines.Add("/codepage:65001")
     $RspLines.Add("/utf8output")
+    $RspLines.Add(('"/win32icon:{0}"' -f $AppIconIco))
     $RspLines.Add(('"/out:{0}"' -f $OutExe))
+    $RspLines.Add(('"/resource:{0},payload.app.icon"' -f $AppIconIco))
     $RspLines.Add("/reference:System.Windows.Forms.dll")
     $RspLines.Add("/reference:System.Drawing.dll")
 

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -15,8 +16,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("Anti-Claude Prism Suite 一键安装器")]
 [assembly: AssemblyDescription("Anti-Claude Prism Suite Standalone All-in-One Installer (Kernel + Extensions + prism-files + prism-cua + chrome-bridge)")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.9.0.0")]
-[assembly: AssemblyFileVersion("0.9.0.0")]
+[assembly: AssemblyVersion("0.9.1.0")]
+[assembly: AssemblyFileVersion("0.9.1.0")]
 
 namespace AntiClaudePrismSuiteInstaller
 {
@@ -72,6 +73,8 @@ namespace AntiClaudePrismSuiteInstaller
         public bool NoWsl;
         public string TestUserDir;
         public string TestPluginsDir;
+        public string UiPreviewOut;
+        public float UiPreviewDpi;
     }
 
     internal sealed class WslDetectionResult
@@ -1839,46 +1842,47 @@ namespace AntiClaudePrismSuiteInstaller
                 }
 
                 bool foundForDistro = false;
-                string linuxHome = QueryWslHomeWithTimeout(distro, 3000);
-                if (!string.IsNullOrEmpty(linuxHome))
+                // Fast path (2ms when WSL is warm, 0 process spawn): check \\wsl.localhost\<distro>\home\* directly first
+                string homeRootFast = ResolveWslUncPath(distro, "home");
+                if (!string.IsNullOrEmpty(homeRootFast))
                 {
-                    string relHome = linuxHome.Trim().TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
-                    string uncUserHome = ResolveWslUncPath(distro, relHome);
-                    if (!string.IsNullOrEmpty(uncUserHome))
+                    try
                     {
-                        string target = TryBuildGeminiPluginTarget(uncUserHome);
-                        if (!string.IsNullOrEmpty(target))
+                        string[] userDirs = Directory.GetDirectories(homeRootFast);
+                        for (int u = 0; u < userDirs.Length; u++)
                         {
-                            foundForDistro = true;
-                            if (seenTargets.Add(target))
+                            string target = TryBuildGeminiPluginTarget(userDirs[u]);
+                            if (!string.IsNullOrEmpty(target))
                             {
-                                result.Targets.Add(target);
-                            }
-                        }
-                    }
-                }
-
-                // Fallback: scan /home/* if $HOME query failed or did not point to an existing .gemini directory.
-                if (!foundForDistro)
-                {
-                    string homeRoot = ResolveWslUncPath(distro, "home");
-                    if (!string.IsNullOrEmpty(homeRoot))
-                    {
-                        try
-                        {
-                            string[] userDirs = Directory.GetDirectories(homeRoot);
-                            for (int u = 0; u < userDirs.Length; u++)
-                            {
-                                string target = TryBuildGeminiPluginTarget(userDirs[u]);
-                                if (!string.IsNullOrEmpty(target) && seenTargets.Add(target))
+                                foundForDistro = true;
+                                if (seenTargets.Add(target))
                                 {
                                     result.Targets.Add(target);
                                 }
                             }
                         }
-                        catch
+                    }
+                    catch
+                    {
+                        // Fall through to explicit $HOME query
+                    }
+                }
+
+                // Fallback: query explicit $HOME (5s budget to accommodate cold WSL2 VM boot)
+                if (!foundForDistro)
+                {
+                    string linuxHome = QueryWslHomeWithTimeout(distro, 5000);
+                    if (!string.IsNullOrEmpty(linuxHome))
+                    {
+                        string relHome = linuxHome.Trim().TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
+                        string uncUserHome = ResolveWslUncPath(distro, relHome);
+                        if (!string.IsNullOrEmpty(uncUserHome))
                         {
-                            // Safely ignore inaccessible or stopped distro shares.
+                            string target = TryBuildGeminiPluginTarget(uncUserHome);
+                            if (!string.IsNullOrEmpty(target) && seenTargets.Add(target))
+                            {
+                                result.Targets.Add(target);
+                            }
                         }
                     }
                 }
@@ -2092,112 +2096,290 @@ namespace AntiClaudePrismSuiteInstaller
 
     internal sealed class MainForm : Form
     {
+        [DllImport("user32.dll")]
+        private static extern uint GetDpiForSystem();
+
+        private Panel header;
+        private TableLayoutPanel headerTextCol;
+        private Label lblTitle;
+        private Label lblSubtitle;
+        private Panel bodyScrollHost;
+        private TableLayoutPanel root;
+        private Panel cardComponents;
+        private TableLayoutPanel compLayout;
         private CheckBox chkExtensions;
         private CheckBox chkWinPlugin;
         private CheckBox chkWslPlugin;
         private Label lblWslStatus;
+        private Panel cardPaths;
+        private TableLayoutPanel pathLayout;
+        private Label lblExtDir;
         private TextBox txtExtDir;
         private Button btnBrowseExt;
+        private Label lblPluginDir;
         private TextBox txtPluginDir;
         private Button btnBrowsePlugin;
         private Button btnInstall;
         private Button btnUninstall;
         private Label lblStatus;
+        private Panel logCard;
         private TextBox txtLog;
+        private Icon customWindowIcon;
 
         private readonly List<PayloadEntry> manifestEntries;
+        private readonly float dpiScale;
+        private readonly float fontScale;
         private List<string> detectedWslTargets = new List<string>();
         private volatile bool isBusy;
 
         public MainForm(List<PayloadEntry> entries)
+            : this(entries, 0f)
+        {
+        }
+
+        public MainForm(List<PayloadEntry> entries, float simulatedDpiScale)
         {
             manifestEntries = entries;
+            float systemScale = DetectSystemDpiScale();
+            if (simulatedDpiScale > 0.5f)
+            {
+                dpiScale = Math.Max(1.0f, Math.Min(3.5f, simulatedDpiScale));
+                fontScale = dpiScale / Math.Max(0.75f, systemScale);
+            }
+            else
+            {
+                dpiScale = systemScale;
+                fontScale = 1.0f;
+            }
             InitializeUi();
             Shown += OnFormShown;
+            Resize += delegate { SyncResponsiveWrapWidths(); };
+        }
+
+        private static float DetectSystemDpiScale()
+        {
+            try
+            {
+                uint sysDpi = GetDpiForSystem();
+                if (sysDpi >= 72 && sysDpi <= 480)
+                {
+                    return Math.Max(1.0f, Math.Min(3.5f, sysDpi / 96f));
+                }
+            }
+            catch
+            {
+            }
+            try
+            {
+                using (Graphics g = Graphics.FromHwnd(IntPtr.Zero))
+                {
+                    if (g.DpiX > 0)
+                    {
+                        return Math.Max(1.0f, Math.Min(3.5f, g.DpiX / 96f));
+                    }
+                }
+            }
+            catch
+            {
+            }
+            return 1.0f;
+        }
+
+        private int S(int logicalPx)
+        {
+            return (int)Math.Round(logicalPx * dpiScale);
+        }
+
+        private Padding SPad(int left, int top, int right, int bottom)
+        {
+            return new Padding(S(left), S(top), S(right), S(bottom));
+        }
+
+        private Font MakeFont(float pointSize, FontStyle style)
+        {
+            return new Font("Microsoft YaHei UI", pointSize * fontScale, style, GraphicsUnit.Point);
+        }
+
+        private static Icon LoadEmbeddedOrExeIcon()
+        {
+            try
+            {
+                Assembly asm = Assembly.GetExecutingAssembly();
+                using (Stream s = asm.GetManifestResourceStream("payload.app.icon"))
+                {
+                    if (s != null)
+                    {
+                        return new Icon(s);
+                    }
+                }
+            }
+            catch
+            {
+            }
+            try
+            {
+                string exePath = Application.ExecutablePath;
+                if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
+                {
+                    return Icon.ExtractAssociatedIcon(exePath);
+                }
+            }
+            catch
+            {
+            }
+            return null;
         }
 
         private void InitializeUi()
         {
-            Text = "Anti-Claude Prism Suite 一键安装器 v0.9.0（独立完整版）";
-            Size = new Size(740, 660);
-            MinimumSize = new Size(660, 580);
+            SuspendLayout();
+
+            // Explicit DPI-exact scaling (prevents WinForms AutoScaleMode.Dpi 96-vs-192 mismatch on 150%/200%/250% displays)
+            AutoScaleMode = AutoScaleMode.None;
+            DoubleBuffered = true;
+            Text = "Anti-Claude Prism Suite 一键安装器 v0.9.1（独立完整版）";
             StartPosition = FormStartPosition.CenterScreen;
-            AutoScaleMode = AutoScaleMode.Dpi;
             BackColor = Color.FromArgb(248, 250, 252);
             ForeColor = Color.FromArgb(15, 23, 42);
-            Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Regular);
+            Font = MakeFont(9.2f, FontStyle.Regular);
 
-            // Header banner
-            Panel header = new Panel();
+            customWindowIcon = LoadEmbeddedOrExeIcon();
+            if (customWindowIcon != null)
+            {
+                Icon = customWindowIcon;
+            }
+
+            Rectangle workArea = Screen.PrimaryScreen != null
+                ? Screen.PrimaryScreen.WorkingArea
+                : new Rectangle(0, 0, S(1280), S(860));
+            try
+            {
+                Screen curScreen = Screen.FromPoint(Cursor.Position);
+                if (curScreen != null) workArea = curScreen.WorkingArea;
+            }
+            catch { }
+
+            int desiredClientW = S(780);
+            int desiredClientH = S(670);
+            int maxAllowedW = Math.Max(S(560), workArea.Width - S(40));
+            int maxAllowedH = Math.Max(S(420), workArea.Height - S(72));
+            ClientSize = new Size(
+                Math.Min(desiredClientW, maxAllowedW),
+                Math.Min(desiredClientH, maxAllowedH));
+            MinimumSize = new Size(
+                Math.Min(S(640), maxAllowedW),
+                Math.Min(S(500), maxAllowedH));
+
+            // 1. Flow-sized Header Banner with Bespoke Optical Prism Emblem (auto-expands vertically, zero text clipping)
+            header = new Panel();
             header.Dock = DockStyle.Top;
-            header.Height = 84;
-            header.BackColor = Color.FromArgb(15, 23, 42);
-            header.Padding = new Padding(22, 16, 22, 14);
+            header.AutoSize = true;
+            header.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            header.BackColor = Color.FromArgb(13, 21, 40);
+            header.Padding = SPad(20, 14, 20, 17);
             header.Paint += PaintHeaderAccent;
 
-            Label lblTitle = new Label();
-            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.9.0";
+            TableLayoutPanel headerGrid = new TableLayoutPanel();
+            headerGrid.Dock = DockStyle.Top;
+            headerGrid.AutoSize = true;
+            headerGrid.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            headerGrid.ColumnCount = 2;
+            headerGrid.RowCount = 1;
+            headerGrid.BackColor = Color.Transparent;
+            headerGrid.Margin = new Padding(0);
+            headerGrid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            headerGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+
+            PictureBox emblemBox = new PictureBox();
+            emblemBox.Size = new Size(S(46), S(46));
+            emblemBox.MinimumSize = new Size(S(46), S(46));
+            emblemBox.Margin = SPad(0, 2, 14, 0);
+            emblemBox.BackColor = Color.Transparent;
+            emblemBox.Paint += PaintPrismEmblem;
+
+            headerTextCol = new TableLayoutPanel();
+            headerTextCol.Dock = DockStyle.Fill;
+            headerTextCol.AutoSize = true;
+            headerTextCol.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            headerTextCol.ColumnCount = 1;
+            headerTextCol.RowCount = 2;
+            headerTextCol.BackColor = Color.Transparent;
+            headerTextCol.Margin = new Padding(0);
+            headerTextCol.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            headerTextCol.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            lblTitle = new Label();
+            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.9.1";
             lblTitle.ForeColor = Color.White;
-            lblTitle.Font = new Font("Microsoft YaHei UI", 13.5f, FontStyle.Bold);
+            lblTitle.Font = MakeFont(13f, FontStyle.Bold);
             lblTitle.AutoSize = true;
-            lblTitle.Location = new Point(22, 15);
+            lblTitle.Margin = SPad(0, 0, 0, 4);
 
-            Label lblSubtitle = new Label();
-            lblSubtitle.Text = "已内嵌 Anti-Claude v3.1.9 内核 + 棱镜扩展 + Prism 七合一工作台 + 受控电脑操控桥（零前置依赖）";
+            lblSubtitle = new Label();
+            lblSubtitle.Text = "已内嵌 Anti-Claude v3.1.9 内核 + 棱镜扩展 + Prism 七合一工作台 + 受控电脑操控桥（免装 Node.js · 零前置依赖）";
             lblSubtitle.ForeColor = Color.FromArgb(148, 163, 184);
-            lblSubtitle.Font = new Font("Microsoft YaHei UI", 8.8f, FontStyle.Regular);
+            lblSubtitle.Font = MakeFont(8.6f, FontStyle.Regular);
             lblSubtitle.AutoSize = true;
-            lblSubtitle.Location = new Point(22, 48);
+            lblSubtitle.Margin = new Padding(0);
 
-            header.Controls.Add(lblTitle);
-            header.Controls.Add(lblSubtitle);
+            headerTextCol.Controls.Add(lblTitle, 0, 0);
+            headerTextCol.Controls.Add(lblSubtitle, 0, 1);
+            headerGrid.Controls.Add(emblemBox, 0, 0);
+            headerGrid.Controls.Add(headerTextCol, 1, 0);
+            header.Controls.Add(headerGrid);
 
-            // Main container
-            TableLayoutPanel root = new TableLayoutPanel();
+            // 2. Scroll-safe responsive body host (no scrollbar on normal screens; graceful scroll on ultra-short laptops)
+            bodyScrollHost = new Panel();
+            bodyScrollHost.Dock = DockStyle.Fill;
+            bodyScrollHost.AutoScroll = true;
+            bodyScrollHost.BackColor = Color.FromArgb(248, 250, 252);
+
+            root = new TableLayoutPanel();
             root.Dock = DockStyle.Fill;
+            root.MinimumSize = new Size(0, S(510));
             root.ColumnCount = 1;
             root.RowCount = 4;
-            root.Padding = new Padding(18, 14, 18, 16);
+            root.Padding = SPad(18, 14, 18, 16);
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
 
             // Card 1: Components
-            Panel cardComponents = CreateCardPanel();
-            TableLayoutPanel compLayout = new TableLayoutPanel();
+            cardComponents = CreateCardPanel();
+            compLayout = new TableLayoutPanel();
             compLayout.Dock = DockStyle.Top;
             compLayout.AutoSize = true;
+            compLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             compLayout.ColumnCount = 1;
-            compLayout.Padding = new Padding(14, 12, 14, 12);
+            compLayout.Padding = SPad(14, 12, 14, 12);
 
             Label lblCompHeader = CreateSectionTitle("1. 选择安装 / 卸载组件");
             chkExtensions = new CheckBox();
-            chkExtensions.Text = "内置 Anti-Claude v3.1.9 内核 + 棱镜扩展套件（8套主题 / 大纲 / 12周热力图 / 像素伙伴 / 思考中译）";
+            chkExtensions.Text = "内置 Anti-Claude v3.1.9 内核 + 棱镜扩展套件（8套主题 / 全量轮次大纲 / 12周热力图 / 像素伙伴 / 思考中译）";
             chkExtensions.Checked = true;
             chkExtensions.AutoSize = true;
-            chkExtensions.Margin = new Padding(2, 6, 2, 4);
+            chkExtensions.Margin = SPad(2, 6, 2, 5);
 
             chkWinPlugin = new CheckBox();
-            chkWinPlugin.Text = "安装 Prism 工作台与受控电脑操控插件（prism-files + 默认关闭的 prism-cua）";
+            chkWinPlugin.Text = "安装 Prism 工作台与受控电脑操控插件（prism-files + 默认关闭零开销的 prism-cua）";
             chkWinPlugin.Checked = true;
             chkWinPlugin.AutoSize = true;
-            chkWinPlugin.Margin = new Padding(2, 4, 2, 4);
+            chkWinPlugin.Margin = SPad(2, 4, 2, 5);
 
             chkWslPlugin = new CheckBox();
             chkWslPlugin.Text = "同步安装至检测到的 WSL Antigravity 环境";
             chkWslPlugin.Checked = false;
             chkWslPlugin.Enabled = false;
             chkWslPlugin.AutoSize = true;
-            chkWslPlugin.Margin = new Padding(2, 4, 2, 2);
+            chkWslPlugin.Margin = SPad(2, 4, 2, 3);
 
             lblWslStatus = new Label();
             lblWslStatus.Text = "正在后台检测 WSL Antigravity 环境...";
             lblWslStatus.ForeColor = Color.FromArgb(100, 116, 139);
-            lblWslStatus.Font = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Regular);
+            lblWslStatus.Font = MakeFont(8.5f, FontStyle.Regular);
             lblWslStatus.AutoSize = true;
-            lblWslStatus.MaximumSize = new Size(650, 0);
-            lblWslStatus.Margin = new Padding(22, 0, 2, 2);
+            lblWslStatus.Margin = SPad(22, 0, 2, 2);
 
             compLayout.Controls.Add(lblCompHeader);
             compLayout.Controls.Add(chkExtensions);
@@ -2205,15 +2387,16 @@ namespace AntiClaudePrismSuiteInstaller
             compLayout.Controls.Add(chkWslPlugin);
             compLayout.Controls.Add(lblWslStatus);
             cardComponents.Controls.Add(compLayout);
-            cardComponents.Margin = new Padding(0, 0, 0, 10);
+            cardComponents.Margin = SPad(0, 0, 0, 10);
 
             // Card 2: Paths
-            Panel cardPaths = CreateCardPanel();
-            TableLayoutPanel pathLayout = new TableLayoutPanel();
+            cardPaths = CreateCardPanel();
+            pathLayout = new TableLayoutPanel();
             pathLayout.Dock = DockStyle.Top;
             pathLayout.AutoSize = true;
+            pathLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             pathLayout.ColumnCount = 2;
-            pathLayout.Padding = new Padding(14, 12, 14, 12);
+            pathLayout.Padding = SPad(14, 12, 14, 12);
             pathLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
             pathLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
@@ -2221,88 +2404,95 @@ namespace AntiClaudePrismSuiteInstaller
             pathLayout.SetColumnSpan(lblPathHeader, 2);
             pathLayout.Controls.Add(lblPathHeader, 0, 0);
 
-            Label lblExtDir = new Label();
+            lblExtDir = new Label();
             lblExtDir.Text = "Windows Anti-Claude 扩展目录（自动同步同级 runtime 内核）：";
             lblExtDir.AutoSize = true;
             lblExtDir.ForeColor = Color.FromArgb(51, 65, 85);
-            lblExtDir.Margin = new Padding(0, 6, 0, 2);
+            lblExtDir.Margin = SPad(0, 6, 0, 3);
             pathLayout.SetColumnSpan(lblExtDir, 2);
             pathLayout.Controls.Add(lblExtDir, 0, 1);
 
             txtExtDir = new TextBox();
             txtExtDir.Text = InstallerCore.GetDefaultExtensionsDir();
             txtExtDir.Dock = DockStyle.Fill;
-            txtExtDir.Margin = new Padding(0, 2, 8, 6);
+            txtExtDir.Margin = SPad(0, 2, 8, 8);
 
             btnBrowseExt = new Button();
             btnBrowseExt.Text = "浏览...";
             btnBrowseExt.AutoSize = true;
-            btnBrowseExt.Padding = new Padding(8, 2, 8, 2);
-            btnBrowseExt.Margin = new Padding(0, 1, 0, 6);
+            btnBrowseExt.MinimumSize = new Size(S(78), S(28));
+            btnBrowseExt.Padding = SPad(8, 1, 8, 1);
+            btnBrowseExt.Margin = SPad(0, 0, 0, 8);
             btnBrowseExt.Click += OnBrowseExtClick;
 
             pathLayout.Controls.Add(txtExtDir, 0, 2);
             pathLayout.Controls.Add(btnBrowseExt, 1, 2);
 
-            Label lblPluginDir = new Label();
+            lblPluginDir = new Label();
             lblPluginDir.Text = "Windows Antigravity 插件目录：";
             lblPluginDir.AutoSize = true;
             lblPluginDir.ForeColor = Color.FromArgb(51, 65, 85);
-            lblPluginDir.Margin = new Padding(0, 4, 0, 2);
+            lblPluginDir.Margin = SPad(0, 2, 0, 3);
             pathLayout.SetColumnSpan(lblPluginDir, 2);
             pathLayout.Controls.Add(lblPluginDir, 0, 3);
 
             txtPluginDir = new TextBox();
             txtPluginDir.Text = InstallerCore.GetDefaultPluginDir();
             txtPluginDir.Dock = DockStyle.Fill;
-            txtPluginDir.Margin = new Padding(0, 2, 8, 2);
+            txtPluginDir.Margin = SPad(0, 2, 8, 2);
 
             btnBrowsePlugin = new Button();
             btnBrowsePlugin.Text = "浏览...";
             btnBrowsePlugin.AutoSize = true;
-            btnBrowsePlugin.Padding = new Padding(8, 2, 8, 2);
-            btnBrowsePlugin.Margin = new Padding(0, 1, 0, 2);
+            btnBrowsePlugin.MinimumSize = new Size(S(78), S(28));
+            btnBrowsePlugin.Padding = SPad(8, 1, 8, 1);
+            btnBrowsePlugin.Margin = SPad(0, 0, 0, 2);
             btnBrowsePlugin.Click += OnBrowsePluginClick;
 
             pathLayout.Controls.Add(txtPluginDir, 0, 4);
             pathLayout.Controls.Add(btnBrowsePlugin, 1, 4);
 
             cardPaths.Controls.Add(pathLayout);
-            cardPaths.Margin = new Padding(0, 0, 0, 12);
+            cardPaths.Margin = SPad(0, 0, 0, 12);
 
             // Action bar
             TableLayoutPanel actionBar = new TableLayoutPanel();
             actionBar.Dock = DockStyle.Top;
             actionBar.AutoSize = true;
+            actionBar.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             actionBar.ColumnCount = 3;
             actionBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             actionBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             actionBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            actionBar.Margin = new Padding(0, 0, 0, 10);
+            actionBar.Margin = SPad(0, 0, 0, 10);
 
             btnInstall = new Button();
             btnInstall.Text = "一键安装 / 更新";
-            btnInstall.Size = new Size(168, 38);
+            btnInstall.AutoSize = true;
+            btnInstall.MinimumSize = new Size(S(176), S(40));
+            btnInstall.Padding = SPad(14, 4, 14, 4);
             btnInstall.BackColor = Color.FromArgb(37, 99, 235);
             btnInstall.ForeColor = Color.White;
             btnInstall.FlatStyle = FlatStyle.Flat;
             btnInstall.FlatAppearance.BorderSize = 0;
-            btnInstall.Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold);
+            btnInstall.Font = MakeFont(9.8f, FontStyle.Bold);
             btnInstall.Cursor = Cursors.Hand;
-            btnInstall.Margin = new Padding(0, 0, 10, 0);
+            btnInstall.Margin = SPad(0, 0, 10, 0);
             btnInstall.Click += OnInstallClick;
 
             btnUninstall = new Button();
             btnUninstall.Text = "干净卸载";
-            btnUninstall.Size = new Size(124, 38);
+            btnUninstall.AutoSize = true;
+            btnUninstall.MinimumSize = new Size(S(126), S(40));
+            btnUninstall.Padding = SPad(12, 4, 12, 4);
             btnUninstall.BackColor = Color.White;
             btnUninstall.ForeColor = Color.FromArgb(51, 65, 85);
             btnUninstall.FlatStyle = FlatStyle.Flat;
             btnUninstall.FlatAppearance.BorderColor = Color.FromArgb(203, 213, 225);
-            btnUninstall.FlatAppearance.BorderSize = 1;
-            btnUninstall.Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Regular);
+            btnUninstall.FlatAppearance.BorderSize = Math.Max(1, S(1));
+            btnUninstall.Font = MakeFont(9.2f, FontStyle.Regular);
             btnUninstall.Cursor = Cursors.Hand;
-            btnUninstall.Margin = new Padding(0, 0, 12, 0);
+            btnUninstall.Margin = SPad(0, 0, 12, 0);
             btnUninstall.Click += OnUninstallClick;
 
             lblStatus = new Label();
@@ -2316,13 +2506,14 @@ namespace AntiClaudePrismSuiteInstaller
             actionBar.Controls.Add(lblStatus, 2, 0);
 
             // Log area
-            Panel logCard = CreateCardPanel();
+            logCard = CreateCardPanel();
             logCard.Dock = DockStyle.Fill;
-            logCard.Padding = new Padding(12, 10, 12, 12);
+            logCard.MinimumSize = new Size(0, S(120));
+            logCard.Padding = SPad(12, 10, 12, 12);
 
             Label lblLogTitle = CreateSectionTitle("执行日志");
             lblLogTitle.Dock = DockStyle.Top;
-            lblLogTitle.Padding = new Padding(0, 0, 0, 6);
+            lblLogTitle.Padding = SPad(0, 0, 0, 6);
 
             txtLog = new TextBox();
             txtLog.Dock = DockStyle.Fill;
@@ -2333,7 +2524,7 @@ namespace AntiClaudePrismSuiteInstaller
             txtLog.BorderStyle = BorderStyle.FixedSingle;
             txtLog.BackColor = Color.FromArgb(248, 250, 252);
             txtLog.ForeColor = Color.FromArgb(30, 41, 59);
-            txtLog.Font = new Font("Microsoft YaHei UI", 8.8f, FontStyle.Regular);
+            txtLog.Font = MakeFont(8.6f, FontStyle.Regular);
 
             logCard.Controls.Add(txtLog);
             logCard.Controls.Add(lblLogTitle);
@@ -2343,17 +2534,130 @@ namespace AntiClaudePrismSuiteInstaller
             root.Controls.Add(actionBar, 0, 2);
             root.Controls.Add(logCard, 0, 3);
 
-            Controls.Add(root);
+            bodyScrollHost.Controls.Add(root);
+            Controls.Add(bodyScrollHost);
             Controls.Add(header);
+
+            ResumeLayout(true);
+            SyncResponsiveWrapWidths();
         }
 
-        private static void PaintHeaderAccent(object sender, PaintEventArgs e)
+        public void SyncResponsiveWrapWidths()
+        {
+            if (IsDisposed || ClientSize.Width <= 0) return;
+
+            int headerAvail = Math.Max(S(240), ClientSize.Width - S(40) - S(62));
+            if (lblTitle != null) lblTitle.MaximumSize = new Size(headerAvail, 0);
+            if (lblSubtitle != null) lblSubtitle.MaximumSize = new Size(headerAvail, 0);
+
+            int cardInnerAvail = Math.Max(S(240), ClientSize.Width - S(36) - S(34));
+            if (chkExtensions != null) chkExtensions.MaximumSize = new Size(cardInnerAvail, 0);
+            if (chkWinPlugin != null) chkWinPlugin.MaximumSize = new Size(cardInnerAvail, 0);
+            if (chkWslPlugin != null) chkWslPlugin.MaximumSize = new Size(cardInnerAvail, 0);
+            if (lblWslStatus != null) lblWslStatus.MaximumSize = new Size(Math.Max(S(200), cardInnerAvail - S(24)), 0);
+            if (lblExtDir != null) lblExtDir.MaximumSize = new Size(cardInnerAvail, 0);
+            if (lblPluginDir != null) lblPluginDir.MaximumSize = new Size(cardInnerAvail, 0);
+        }
+
+        private void PaintHeaderAccent(object sender, PaintEventArgs e)
         {
             Panel p = sender as Panel;
-            if (p == null) return;
-            using (SolidBrush b = new SolidBrush(Color.FromArgb(37, 99, 235)))
+            if (p == null || p.Width <= 0 || p.Height <= 0) return;
+            int barH = Math.Max(2, S(3));
+            Rectangle barRect = new Rectangle(0, p.Height - barH, p.Width, barH);
+            using (LinearGradientBrush lb = new LinearGradientBrush(
+                barRect,
+                Color.FromArgb(56, 189, 248),
+                Color.FromArgb(251, 146, 60),
+                LinearGradientMode.Horizontal))
             {
-                e.Graphics.FillRectangle(b, 0, p.Height - 3, p.Width, 3);
+                ColorBlend cb = new ColorBlend(3);
+                cb.Colors = new Color[] {
+                    Color.FromArgb(56, 189, 248),
+                    Color.FromArgb(99, 102, 241),
+                    Color.FromArgb(251, 146, 60)
+                };
+                cb.Positions = new float[] { 0f, 0.52f, 1f };
+                lb.InterpolationColors = cb;
+                e.Graphics.FillRectangle(lb, barRect);
+            }
+        }
+
+        private static void PaintPrismEmblem(object sender, PaintEventArgs e)
+        {
+            Control box = sender as Control;
+            if (box == null || box.Width < 16 || box.Height < 16) return;
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+
+            float W = box.Width;
+            float pad = W * 0.04f;
+            float tile = W - pad * 2f;
+            float rad = tile * 0.24f;
+            float d = rad * 2f;
+
+            using (GraphicsPath sq = new GraphicsPath())
+            {
+                sq.AddArc(pad, pad, d, d, 180, 90);
+                sq.AddArc(pad + tile - d, pad, d, d, 270, 90);
+                sq.AddArc(pad + tile - d, pad + tile - d, d, d, 0, 90);
+                sq.AddArc(pad, pad + tile - d, d, d, 90, 90);
+                sq.CloseFigure();
+
+                using (LinearGradientBrush bg = new LinearGradientBrush(
+                    new PointF(pad, pad),
+                    new PointF(W - pad, W - pad),
+                    Color.FromArgb(18, 30, 62),
+                    Color.FromArgb(30, 52, 104)))
+                {
+                    g.FillPath(bg, sq);
+                }
+
+                Region prevClip = g.Clip;
+                g.SetClip(sq, CombineMode.Intersect);
+
+                float rw = Math.Max(1.6f, W * 0.045f);
+                using (Pen inc = new Pen(Color.FromArgb(240, 249, 255), rw))
+                using (Pen r1 = new Pen(Color.FromArgb(56, 189, 248), rw))
+                using (Pen r2 = new Pen(Color.FromArgb(251, 146, 60), rw))
+                using (Pen r3 = new Pen(Color.FromArgb(168, 85, 247), rw))
+                {
+                    inc.StartCap = LineCap.Round; inc.EndCap = LineCap.Round;
+                    r1.StartCap = LineCap.Round; r1.EndCap = LineCap.Round;
+                    r2.StartCap = LineCap.Round; r2.EndCap = LineCap.Round;
+                    r3.StartCap = LineCap.Round; r3.EndCap = LineCap.Round;
+                    g.DrawLine(inc, W * 0.08f, W * 0.56f, W * 0.33f, W * 0.49f);
+                    g.DrawLine(r1, W * 0.56f, W * 0.42f, W * 0.91f, W * 0.31f);
+                    g.DrawLine(r2, W * 0.59f, W * 0.50f, W * 0.92f, W * 0.49f);
+                    g.DrawLine(r3, W * 0.62f, W * 0.57f, W * 0.90f, W * 0.66f);
+                }
+
+                PointF apex = new PointF(W * 0.46f, W * 0.19f);
+                PointF bL = new PointF(W * 0.19f, W * 0.78f);
+                PointF bM = new PointF(W * 0.45f, W * 0.82f);
+                PointF bR = new PointF(W * 0.72f, W * 0.75f);
+
+                using (LinearGradientBrush lf = new LinearGradientBrush(apex, bL, Color.FromArgb(224, 242, 254), Color.FromArgb(37, 99, 235)))
+                using (LinearGradientBrush rf = new LinearGradientBrush(apex, bR, Color.FromArgb(129, 140, 248), Color.FromArgb(30, 58, 138)))
+                {
+                    g.FillPolygon(lf, new PointF[] { apex, bL, bM });
+                    g.FillPolygon(rf, new PointF[] { apex, bM, bR });
+                }
+
+                using (Pen outline = new Pen(Color.FromArgb(235, 224, 242, 254), Math.Max(1.2f, W * 0.028f)))
+                using (Pen ridge = new Pen(Color.White, Math.Max(1.2f, W * 0.026f)))
+                {
+                    outline.LineJoin = LineJoin.Round;
+                    g.DrawPolygon(outline, new PointF[] { apex, bL, bM, bR });
+                    g.DrawLine(ridge, apex, bM);
+                }
+
+                g.SetClip(prevClip, CombineMode.Replace);
+                using (Pen rim = new Pen(Color.FromArgb(145, 125, 211, 252), Math.Max(1f, W * 0.024f)))
+                {
+                    g.DrawPath(rim, sq);
+                }
             }
         }
 
@@ -2362,24 +2666,26 @@ namespace AntiClaudePrismSuiteInstaller
             Panel p = new Panel();
             p.Dock = DockStyle.Top;
             p.AutoSize = true;
+            p.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             p.BackColor = Color.White;
             p.BorderStyle = BorderStyle.FixedSingle;
             return p;
         }
 
-        private static Label CreateSectionTitle(string text)
+        private Label CreateSectionTitle(string text)
         {
             Label lbl = new Label();
             lbl.Text = text;
             lbl.ForeColor = Color.FromArgb(15, 23, 42);
-            lbl.Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold);
+            lbl.Font = MakeFont(9.5f, FontStyle.Bold);
             lbl.AutoSize = true;
-            lbl.Margin = new Padding(0, 0, 0, 4);
+            lbl.Margin = SPad(0, 0, 0, 4);
             return lbl;
         }
 
         private void OnFormShown(object sender, EventArgs e)
         {
+            SyncResponsiveWrapWidths();
             AppendLog(string.Format("已载入内嵌资源清单：共 {0} 个文件（含内置 Anti-Claude v3.1.9 内核）。", manifestEntries.Count));
             AppendLog("正在检测 WSL Antigravity 环境（最多等待 3 秒）...");
 
@@ -2584,7 +2890,7 @@ namespace AntiClaudePrismSuiteInstaller
                         MessageBox.Show(
                             this,
                             isInstall
-                                ? "Anti-Claude Prism Suite v0.9.0（独立完整版）安装成功！\n\n已一并部署内置 Anti-Claude v3.1.9 增强内核、棱镜扩展套件、Chrome/Edge 扩展桥与双插件（prism-files + 默认关闭零开销的 prism-cua）。若 Antigravity 正在运行，重启一次应用即可全面生效。"
+                                ? "Anti-Claude Prism Suite v0.9.1（独立完整版）安装成功！\n\n已一并部署内置 Anti-Claude v3.1.9 增强内核、棱镜扩展套件、Chrome/Edge 扩展桥与双插件（prism-files + 默认关闭零开销的 prism-cua）。若 Antigravity 正在运行，重启一次应用即可全面生效。"
                                 : "已干净卸载选中的 Anti-Claude Prism Suite 组件。",
                             isInstall ? "安装成功" : "卸载完成",
                             MessageBoxButtons.OK,
@@ -2641,6 +2947,16 @@ namespace AntiClaudePrismSuiteInstaller
             }
             txtLog.AppendText(line);
         }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && customWindowIcon != null)
+            {
+                try { customWindowIcon.Dispose(); } catch { }
+                customWindowIcon = null;
+            }
+            base.Dispose(disposing);
+        }
     }
 
     internal static class Program
@@ -2648,19 +2964,30 @@ namespace AntiClaudePrismSuiteInstaller
         [DllImport("user32.dll")]
         private static extern bool SetProcessDPIAware();
 
+        [DllImport("user32.dll")]
+        private static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
+
         [STAThread]
         private static int Main(string[] args)
         {
             try
             {
-                SetProcessDPIAware();
+                // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+                if (!SetProcessDpiAwarenessContext(new IntPtr(-4)))
+                {
+                    SetProcessDPIAware();
+                }
             }
             catch
             {
-                // Ignore on unsupported environments.
+                try { SetProcessDPIAware(); } catch { }
             }
 
             CliOptions opts = ParseArgs(args);
+            if (!string.IsNullOrEmpty(opts.UiPreviewOut))
+            {
+                return RenderUiPreview(opts);
+            }
             if (opts.SilentInstall || opts.SilentUninstall)
             {
                 return RunSilent(opts);
@@ -2727,8 +3054,92 @@ namespace AntiClaudePrismSuiteInstaller
                 {
                     opts.TestPluginsDir = args[++i];
                 }
+                else if (a.StartsWith("--ui-preview-out=", StringComparison.OrdinalIgnoreCase))
+                {
+                    opts.UiPreviewOut = a.Substring("--ui-preview-out=".Length);
+                }
+                else if (a.StartsWith("--ui-preview-dpi=", StringComparison.OrdinalIgnoreCase))
+                {
+                    float parsedDpi = 0f;
+                    if (float.TryParse(a.Substring("--ui-preview-dpi=".Length), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out parsedDpi))
+                    {
+                        opts.UiPreviewDpi = parsedDpi;
+                    }
+                }
             }
             return opts;
+        }
+
+        private static void ForceCreateHandlesRecursive(Control ctrl)
+        {
+            if (ctrl == null) return;
+            IntPtr h = ctrl.Handle;
+            for (int i = 0; i < ctrl.Controls.Count; i++)
+            {
+                ForceCreateHandlesRecursive(ctrl.Controls[i]);
+            }
+        }
+
+        private static int RenderUiPreview(CliOptions opts)
+        {
+            try
+            {
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                List<PayloadEntry> entries = InstallerCore.LoadManifest();
+                using (MainForm form = new MainForm(entries, opts.UiPreviewDpi))
+                {
+                    form.StartPosition = FormStartPosition.Manual;
+                    form.Location = new Point(-16000, -16000);
+                    form.ShowInTaskbar = false;
+                    ForceCreateHandlesRecursive(form);
+                    form.Show();
+                    form.SyncResponsiveWrapWidths();
+                    form.PerformLayout();
+                    Application.DoEvents();
+                    // Sanitize preview paths so screenshots never contain local username
+                    foreach (Control c in form.Controls)
+                    {
+                        RedactPreviewTextBoxesRecursive(c);
+                    }
+                    Application.DoEvents();
+                    using (Bitmap bmp = new Bitmap(form.Width, form.Height))
+                    {
+                        form.DrawToBitmap(bmp, new Rectangle(0, 0, form.Width, form.Height));
+                        string dir = Path.GetDirectoryName(Path.GetFullPath(opts.UiPreviewOut));
+                        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                        {
+                            Directory.CreateDirectory(dir);
+                        }
+                        bmp.Save(opts.UiPreviewOut, System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                    form.Hide();
+                }
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("[PreviewError] " + ex.Message);
+                return 1;
+            }
+        }
+
+        private static void RedactPreviewTextBoxesRecursive(Control root)
+        {
+            if (root == null) return;
+            TextBox tb = root as TextBox;
+            if (tb != null && !tb.Multiline && !string.IsNullOrEmpty(tb.Text))
+            {
+                string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                if (!string.IsNullOrEmpty(profile))
+                {
+                    tb.Text = tb.Text.Replace(profile, @"C:\Users\DemoUser");
+                }
+            }
+            for (int i = 0; i < root.Controls.Count; i++)
+            {
+                RedactPreviewTextBoxesRecursive(root.Controls[i]);
+            }
         }
 
         private static int RunSilent(CliOptions opts)

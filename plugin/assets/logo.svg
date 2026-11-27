@@ -1,5 +1,54 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
-  <rect x="6" y="14" width="52" height="38" rx="9" fill="#2563EB" fill-opacity="0.14" stroke="#2563EB" stroke-width="3"/>
-  <path d="M6 22C6 17.5817 9.58172 14 14 14H24.6C26.4 14 28.05 14.95 28.98 16.5L31.4 20.5H50C54.4183 20.5 58 24.0817 58 28.5V43C58 47.4183 54.4183 51 50 51H14C9.58172 51 6 47.4183 6 43V22Z" fill="#2563EB" fill-opacity="0.18" stroke="#2563EB" stroke-width="3" stroke-linejoin="round"/>
-  <path d="M32 27L35.2 33.4L42 36.5L35.2 39.6L32 46L28.8 39.6L22 36.5L28.8 33.4L32 27Z" fill="#2563EB"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none">
+  <defs>
+    <linearGradient id="psTileBg" x1="8" y1="8" x2="120" y2="120" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0B1223"/>
+      <stop offset="55%" stop-color="#111D3C"/>
+      <stop offset="100%" stop-color="#1B2E5E"/>
+    </linearGradient>
+    <linearGradient id="psRim" x1="8" y1="8" x2="120" y2="120" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#7DD3FC" stop-opacity="0.72"/>
+      <stop offset="100%" stop-color="#6366F1" stop-opacity="0.45"/>
+    </linearGradient>
+    <linearGradient id="psLeftFacet" x1="59" y1="24" x2="24" y2="100" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#EBF8FF"/>
+      <stop offset="52%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+    <linearGradient id="psRightFacet" x1="59" y1="24" x2="92" y2="96" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#818CF8"/>
+      <stop offset="100%" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <linearGradient id="psInternalFan" x1="41" y1="62" x2="76" y2="63" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.62"/>
+      <stop offset="100%" stop-color="#FBBF24" stop-opacity="0.22"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Midnight-Sapphire Optical Squircle -->
+  <rect x="7" y="7" width="114" height="114" rx="26.5" fill="url(#psTileBg)" stroke="url(#psRim)" stroke-width="2.5"/>
+
+  <!-- Incident White-Silver Light Beam -->
+  <line x1="12" y1="71.5" x2="41.2" y2="62.2" stroke="#BAE6FD" stroke-opacity="0.36" stroke-width="9" stroke-linecap="round"/>
+  <line x1="12" y1="71.5" x2="41.2" y2="62.2" stroke="#F0F9FF" stroke-width="5.2" stroke-linecap="round"/>
+
+  <!-- Refracted 3-Spectrum Dispersion Rays (Cyan / Claude Terracotta-Amber / Prism Violet) -->
+  <line x1="71.5" y1="54" x2="115" y2="39.5" stroke="#38BDF8" stroke-opacity="0.34" stroke-width="9" stroke-linecap="round"/>
+  <line x1="71.5" y1="54" x2="115" y2="39.5" stroke="#38BDF8" stroke-width="5" stroke-linecap="round"/>
+
+  <line x1="75.2" y1="63.4" x2="117" y2="62" stroke="#FB923C" stroke-opacity="0.34" stroke-width="9" stroke-linecap="round"/>
+  <line x1="75.2" y1="63.4" x2="117" y2="62" stroke="#FB923C" stroke-width="5" stroke-linecap="round"/>
+
+  <line x1="78.7" y1="72.7" x2="114.5" y2="84.5" stroke="#A855F7" stroke-opacity="0.34" stroke-width="9" stroke-linecap="round"/>
+  <line x1="78.7" y1="72.7" x2="114.5" y2="84.5" stroke="#A855F7" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- 3D Faceted Crystal Prism -->
+  <polygon points="59,23.6 24.3,99.2 57.6,104.7" fill="url(#psLeftFacet)"/>
+  <polygon points="59,23.6 57.6,104.7 92.2,96.2" fill="url(#psRightFacet)"/>
+  <polygon points="41.2,62.2 71.5,54 78.7,72.7" fill="url(#psInternalFan)"/>
+  <polygon points="59,23.6 24.3,99.2 57.6,104.7 92.2,96.2" stroke="#E0F2FE" stroke-width="2.8" stroke-linejoin="round"/>
+  <line x1="59" y1="23.6" x2="57.6" y2="104.7" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round"/>
+
+  <!-- Refraction Spark & Signature 4-Point Glint -->
+  <circle cx="41.2" cy="62.2" r="3.4" fill="#FFFFFF"/>
+  <path d="M83.5 20L85.4 25.3L90.7 27.2L85.4 29.1L83.5 34.4L81.6 29.1L76.3 27.2L81.6 25.3L83.5 20Z" fill="#FFFFFF"/>
 </svg>

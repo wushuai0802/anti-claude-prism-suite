@@ -16,10 +16,10 @@ using System.Windows.Automation;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Prism Win32 CUA Helper & Native Messaging Bridge")]
-[assembly: AssemblyDescription("Anti-Claude Prism Suite v0.9.0 Controlled Desktop & Browser CUA Helper")]
+[assembly: AssemblyDescription("Anti-Claude Prism Suite v0.9.1 Controlled Desktop & Browser CUA Helper")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.9.0.0")]
-[assembly: AssemblyFileVersion("0.9.0.0")]
+[assembly: AssemblyVersion("0.9.1.0")]
+[assembly: AssemblyFileVersion("0.9.1.0")]
 
 namespace AntiClaudePrismWinCua
 {
@@ -4159,6 +4159,18 @@ namespace AntiClaudePrismWinCua
             object reqTabId = req != null && req.ContainsKey("tabId") ? req["tabId"] : null;
             int reqMinutes = JsonUtil.GetInt(req, "requestedMinutes", 15);
 
+            float dpi = 1.0f;
+            try
+            {
+                using (Graphics g = Graphics.FromHwnd(IntPtr.Zero))
+                {
+                    if (g.DpiX > 0) dpi = Math.Max(1.0f, Math.Min(3.5f, g.DpiX / 96f));
+                }
+            }
+            catch { }
+            Func<int, int> S = delegate(int px) { return (int)Math.Round(px * dpi); };
+
+            AutoScaleMode = AutoScaleMode.None;
             Text = "Prism CUA 受控授权确认";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
@@ -4166,13 +4178,22 @@ namespace AntiClaudePrismWinCua
             StartPosition = FormStartPosition.CenterScreen;
             TopMost = true;
             KeyPreview = true;
-            ClientSize = new Size(496, 384);
+            ClientSize = new Size(S(520), S(404));
             BackColor = Color.FromArgb(248, 250, 252);
             Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular);
+            try
+            {
+                string selfExe = Application.ExecutablePath;
+                if (!string.IsNullOrEmpty(selfExe) && File.Exists(selfExe))
+                {
+                    Icon = Icon.ExtractAssociatedIcon(selfExe);
+                }
+            }
+            catch { }
 
             Panel header = new Panel();
             header.Dock = DockStyle.Top;
-            header.Height = 62;
+            header.Height = S(68);
             header.BackColor = Color.FromArgb(24, 26, 34);
 
             Label lblHeaderTitle = new Label();
@@ -4180,14 +4201,15 @@ namespace AntiClaudePrismWinCua
             lblHeaderTitle.ForeColor = Color.FromArgb(248, 250, 252);
             lblHeaderTitle.Font = new Font("Microsoft YaHei UI", 11f, FontStyle.Bold);
             lblHeaderTitle.AutoSize = true;
-            lblHeaderTitle.Location = new Point(20, 12);
+            lblHeaderTitle.Location = new Point(S(20), S(12));
 
             Label lblHeaderSub = new Label();
             lblHeaderSub.Text = "已自动屏蔽 Antigravity 自身窗口、系统凭据与受保护密钥目录 · 执行中按 Esc 立即中断";
             lblHeaderSub.ForeColor = Color.FromArgb(148, 163, 184);
             lblHeaderSub.Font = new Font("Microsoft YaHei UI", 8f, FontStyle.Regular);
             lblHeaderSub.AutoSize = true;
-            lblHeaderSub.Location = new Point(20, 37);
+            lblHeaderSub.MaximumSize = new Size(S(480), 0);
+            lblHeaderSub.Location = new Point(S(20), S(38));
 
             header.Controls.Add(lblHeaderTitle);
             header.Controls.Add(lblHeaderSub);
@@ -4198,15 +4220,15 @@ namespace AntiClaudePrismWinCua
             lblWsTitle.ForeColor = Color.FromArgb(71, 85, 105);
             lblWsTitle.Font = new Font("Microsoft YaHei UI", 8.8f, FontStyle.Bold);
             lblWsTitle.AutoSize = true;
-            lblWsTitle.Location = new Point(20, 76);
+            lblWsTitle.Location = new Point(S(20), S(82));
             Controls.Add(lblWsTitle);
 
             Label lblWsVal = new Label();
             lblWsVal.Text = workspace;
             lblWsVal.ForeColor = Color.FromArgb(15, 23, 42);
             lblWsVal.AutoEllipsis = true;
-            lblWsVal.Size = new Size(380, 20);
-            lblWsVal.Location = new Point(92, 76);
+            lblWsVal.Size = new Size(S(396), S(22));
+            lblWsVal.Location = new Point(S(104), S(82));
             Controls.Add(lblWsVal);
 
             Label lblReasonTitle = new Label();
@@ -4214,7 +4236,7 @@ namespace AntiClaudePrismWinCua
             lblReasonTitle.ForeColor = Color.FromArgb(71, 85, 105);
             lblReasonTitle.Font = new Font("Microsoft YaHei UI", 8.8f, FontStyle.Bold);
             lblReasonTitle.AutoSize = true;
-            lblReasonTitle.Location = new Point(20, 104);
+            lblReasonTitle.Location = new Point(S(20), S(110));
             Controls.Add(lblReasonTitle);
 
             TextBox txtReason = new TextBox();
@@ -4225,8 +4247,8 @@ namespace AntiClaudePrismWinCua
             txtReason.BackColor = Color.White;
             txtReason.ForeColor = Color.FromArgb(30, 41, 59);
             txtReason.BorderStyle = BorderStyle.FixedSingle;
-            txtReason.Location = new Point(20, 126);
-            txtReason.Size = new Size(456, 52);
+            txtReason.Location = new Point(S(20), S(134));
+            txtReason.Size = new Size(S(480), S(56));
             txtReason.TabStop = false;
             Controls.Add(txtReason);
 
@@ -4235,13 +4257,13 @@ namespace AntiClaudePrismWinCua
             lblScope.ForeColor = Color.FromArgb(71, 85, 105);
             lblScope.Font = new Font("Microsoft YaHei UI", 8.8f, FontStyle.Bold);
             lblScope.AutoSize = true;
-            lblScope.Location = new Point(20, 190);
+            lblScope.Location = new Point(S(20), S(202));
             Controls.Add(lblScope);
 
             _cmbScope = new ComboBox();
             _cmbScope.DropDownStyle = ComboBoxStyle.DropDownList;
-            _cmbScope.Location = new Point(100, 187);
-            _cmbScope.Size = new Size(376, 26);
+            _cmbScope.Location = new Point(S(104), S(198));
+            _cmbScope.Size = new Size(S(396), S(28));
             PopulateScopeOptions(req, target, reqHwnd, reqTabId);
             Controls.Add(_cmbScope);
 
@@ -4250,20 +4272,20 @@ namespace AntiClaudePrismWinCua
             lblPerm.ForeColor = Color.FromArgb(71, 85, 105);
             lblPerm.Font = new Font("Microsoft YaHei UI", 8.8f, FontStyle.Bold);
             lblPerm.AutoSize = true;
-            lblPerm.Location = new Point(20, 226);
+            lblPerm.Location = new Point(S(20), S(238));
             Controls.Add(lblPerm);
 
             _rbReadOnly = new RadioButton();
             _rbReadOnly.Text = "仅允许只读观察（截图与控件树）";
             _rbReadOnly.AutoSize = true;
-            _rbReadOnly.Location = new Point(100, 224);
+            _rbReadOnly.Location = new Point(S(104), S(236));
             _rbReadOnly.Checked = !needAct;
             Controls.Add(_rbReadOnly);
 
             _rbInteractive = new RadioButton();
             _rbInteractive.Text = "允许观察与键鼠执行（按 Esc 可随时紧急中断）";
             _rbInteractive.AutoSize = true;
-            _rbInteractive.Location = new Point(100, 250);
+            _rbInteractive.Location = new Point(S(104), S(264));
             _rbInteractive.Checked = needAct;
             Controls.Add(_rbInteractive);
 
@@ -4272,13 +4294,13 @@ namespace AntiClaudePrismWinCua
             lblDuration.ForeColor = Color.FromArgb(71, 85, 105);
             lblDuration.Font = new Font("Microsoft YaHei UI", 8.8f, FontStyle.Bold);
             lblDuration.AutoSize = true;
-            lblDuration.Location = new Point(20, 286);
+            lblDuration.Location = new Point(S(20), S(300));
             Controls.Add(lblDuration);
 
             _cmbDuration = new ComboBox();
             _cmbDuration.DropDownStyle = ComboBoxStyle.DropDownList;
-            _cmbDuration.Location = new Point(100, 283);
-            _cmbDuration.Size = new Size(210, 26);
+            _cmbDuration.Location = new Point(S(104), S(296));
+            _cmbDuration.Size = new Size(S(220), S(28));
             _cmbDuration.Items.Add("5 分钟");
             _cmbDuration.Items.Add("15 分钟 (推荐)");
             _cmbDuration.Items.Add("30 分钟");
@@ -4289,8 +4311,8 @@ namespace AntiClaudePrismWinCua
 
             _btnReject = new Button();
             _btnReject.Text = "拒绝 (45s)";
-            _btnReject.Size = new Size(126, 36);
-            _btnReject.Location = new Point(212, 332);
+            _btnReject.Size = new Size(S(130), S(38));
+            _btnReject.Location = new Point(S(226), S(348));
             _btnReject.FlatStyle = FlatStyle.Flat;
             _btnReject.BackColor = Color.FromArgb(241, 245, 249);
             _btnReject.ForeColor = Color.FromArgb(51, 65, 85);
@@ -4299,8 +4321,8 @@ namespace AntiClaudePrismWinCua
 
             _btnApprove = new Button();
             _btnApprove.Text = "授权开启";
-            _btnApprove.Size = new Size(126, 36);
-            _btnApprove.Location = new Point(350, 332);
+            _btnApprove.Size = new Size(S(134), S(38));
+            _btnApprove.Location = new Point(S(366), S(348));
             _btnApprove.FlatStyle = FlatStyle.Flat;
             _btnApprove.BackColor = Color.FromArgb(37, 99, 235);
             _btnApprove.ForeColor = Color.White;
@@ -4504,8 +4526,20 @@ namespace AntiClaudePrismWinCua
         private int _dragStartMouseX;
         private int _dragStartFormX;
 
+        private float _pillDpi = 1.0f;
+        private int SP(int px) { return (int)Math.Round(px * _pillDpi); }
+
         public OverlayPillForm()
         {
+            try
+            {
+                using (Graphics g = Graphics.FromHwnd(IntPtr.Zero))
+                {
+                    if (g.DpiX > 0) _pillDpi = Math.Max(1.0f, Math.Min(3.5f, g.DpiX / 96f));
+                }
+            }
+            catch { }
+            AutoScaleMode = AutoScaleMode.None;
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             TopMost = true;
@@ -4513,8 +4547,8 @@ namespace AntiClaudePrismWinCua
             DoubleBuffered = true;
             BackColor = Color.FromArgb(22, 25, 34);
             ForeColor = Color.White;
-            Height = 28;
-            Width = 310;
+            Height = SP(30);
+            Width = SP(316);
 
             PositionTopCenterRight();
             ApplyRoundedRegion();
@@ -4560,7 +4594,7 @@ namespace AntiClaudePrismWinCua
 
         private void ApplyRoundedRegion()
         {
-            IntPtr hRgn = NativeMethods.CreateRoundRectRgn(0, 0, Width + 1, Height + 1, 28, 28);
+            IntPtr hRgn = NativeMethods.CreateRoundRectRgn(0, 0, Width + 1, Height + 1, SP(30), SP(30));
             if (hRgn != IntPtr.Zero)
             {
                 Region prevRegion = Region;
@@ -4601,15 +4635,15 @@ namespace AntiClaudePrismWinCua
             int center = Left + oldWidth / 2;
             if (_visualState == "PAUSED_HANDOFF")
             {
-                Width = 356;
+                Width = SP(362);
             }
             else if (_visualState == "EXECUTING")
             {
-                Width = 330;
+                Width = SP(338);
             }
             else
             {
-                Width = 286;
+                Width = SP(292);
             }
             if (Width != oldWidth)
             {
@@ -4657,22 +4691,28 @@ namespace AntiClaudePrismWinCua
 
             using (Brush dotBrush = new SolidBrush(dotColor))
             {
-                g.FillEllipse(dotBrush, 11, 9, 10, 10);
+                int dotD = SP(10);
+                g.FillEllipse(dotBrush, SP(11), (Height - dotD) / 2, dotD, dotD);
             }
 
             using (Font fText = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Regular))
             using (Font fBtn = new Font("Microsoft YaHei UI", 8f, FontStyle.Bold))
             using (Brush fgText = new SolidBrush(Color.FromArgb(241, 245, 249)))
             {
-                g.DrawString(statusText, fText, fgText, 26, 5);
+                SizeF txtSz = g.MeasureString(statusText, fText);
+                g.DrawString(statusText, fText, fgText, SP(26), Math.Max(1f, (Height - txtSz.Height) / 2f));
+
+                int btnW = SP(54);
+                int btnH = SP(22);
+                int btnY = (Height - btnH) / 2;
 
                 if (_visualState == "PAUSED_HANDOFF")
                 {
-                    _btnSecondaryRect = new Rectangle(Width - 118, 4, 52, 20);
+                    _btnSecondaryRect = new Rectangle(Width - btnW * 2 - SP(14), btnY, btnW, btnH);
                     _btnSecondaryAction = "RESUME";
                     DrawPillButton(g, _btnSecondaryRect, "继续", Color.FromArgb(34, 197, 94), fBtn);
 
-                    _btnPrimaryRect = new Rectangle(Width - 60, 4, 52, 20);
+                    _btnPrimaryRect = new Rectangle(Width - btnW - SP(8), btnY, btnW, btnH);
                     _btnPrimaryAction = "REVOKE";
                     DrawPillButton(g, _btnPrimaryRect, "终止", Color.FromArgb(239, 68, 68), fBtn);
                 }
@@ -4680,7 +4720,7 @@ namespace AntiClaudePrismWinCua
                 {
                     string btnLabel = _visualState == "EXECUTING" ? "中断" : "收回";
                     Color btnColor = _visualState == "EXECUTING" ? Color.FromArgb(59, 130, 246) : Color.FromArgb(71, 85, 105);
-                    _btnPrimaryRect = new Rectangle(Width - 60, 4, 52, 20);
+                    _btnPrimaryRect = new Rectangle(Width - btnW - SP(8), btnY, btnW, btnH);
                     _btnPrimaryAction = "REVOKE";
                     DrawPillButton(g, _btnPrimaryRect, btnLabel, btnColor, fBtn);
                 }
@@ -5064,7 +5104,7 @@ namespace AntiClaudePrismWinCua
             {
                 Dictionary<string, object> ver = new Dictionary<string, object>();
                 ver["ok"] = true;
-                ver["version"] = "0.9.0";
+                ver["version"] = "0.9.1";
                 ver["platform"] = "win32";
                 WriteJsonLine(ver);
                 return 0;

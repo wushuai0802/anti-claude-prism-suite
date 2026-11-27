@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.1 - 2026-11-27
+
+- **修复 Windows 安装器与 CUA 弹窗高分屏（150% / 200% / 250% DPI）布局裁切 Bug，并新增项目专属「光学色散水晶棱镜」多尺寸图标（[PrismSuiteInstaller.cs](installer/win/PrismSuiteInstaller.cs) / [prism-suite.ico](installer/win/prism-suite.ico) / [PrismWinCua.cs](native/win-cua/PrismWinCua.cs) / [build-win-exe.ps1](scripts/build-win-exe.ps1)）**：
+  - **高分屏精确流式自适应重构**：启用 `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2` 并移除旧版 `AutoScaleMode.Dpi` 未设置 96 DPI 基准导致的「字号放大而窗体与顶栏锁死 96 DPI 物理尺寸」缺陷；顶栏改为自适应纵向流式网格（不再硬编码 `84px` 高度，彻底解决高分屏副标题拦腰截断），组件复选框与路径标签随窗口宽度动态计算 `MaximumSize` 自动折行（解决右侧裁切），窗体尺寸自适应当前显示器工作区并内置超小屏滚动兜底，确保「一键安装 / 更新」按钮与执行日志在任意缩放倍率与笔记本分辨率下开屏完整可见；同步对 `prism-win-cua.exe` 的受控授权确认窗与顶部状态胶囊完成同等高分屏缩放加固；
+  - **专属光学棱镜多尺寸图标体系**：新增可复现矢量超采样生成的 7 帧标准图标 `installer/win/prism-suite.ico`（含 `16/20/24/32/48/64` 32-bit BGRA DIB 小尺寸笔画锐化帧与 `256` 高清 PNG 帧），通过 `/win32icon` 与内嵌资源同步注入 `Anti-Claude-Prism-Suite-Setup.exe`、`prism-win-cua.exe`、安装器与授权窗左上角标题栏、顶栏左侧抗锯齿光学徽章、工作台 [logo.svg](plugin/assets/logo.svg) 及 Chrome/Edge 扩展桥图标；
+  - **WSL 目标探测加速与冷启动容错**：`DetectWslPluginTargets` 优先通过 `\\wsl.localhost\<distro>\home` 零进程开销直读已运行发行版，冷启动回退查询超时提升至 `5s`。
+
 ## 0.9.0 - 2026-11-27
 
 - **免预装系统 Node.js 零门槛运行支持与 Windows 全链路杀软零误报卫生重构（[PrismSuiteInstaller.cs](installer/win/PrismSuiteInstaller.cs) / [ms-lnk.mjs](vendor/anti-claude/core/ms-lnk.mjs) / [install.mjs](install.mjs) / [daemon.mjs](vendor/anti-claude/core/daemon.mjs)）**：

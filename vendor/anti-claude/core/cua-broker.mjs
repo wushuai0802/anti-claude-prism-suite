@@ -1,5 +1,5 @@
 /**
- * Anti-Claude Prism Suite v0.9.0 — core/cua-broker.mjs
+ * Anti-Claude Prism Suite v0.9.1 — core/cua-broker.mjs
  * Zero-dependency Controlled Desktop & Browser CUA Session Broker + Native Messaging HTTP Relay.
  *
  * Security invariants:
@@ -26,7 +26,7 @@ const SUITE_ROOT_CANDIDATE = path.resolve(__dirname, '..', '..', '..');
 
 export const CUA_EXTENSION_ID = 'lbmibnghmlnidfiihkegicaejaacmkca';
 export const CUA_NM_HOST_NAME = 'com.prism.cua.bridge';
-export const CUA_VERSION = '0.9.0';
+export const CUA_VERSION = '0.9.1';
 export const MAX_CUA_BODY_BYTES = 2 * 1024 * 1024;
 
 export const CUA_STATES = Object.freeze({
