@@ -1237,10 +1237,24 @@ function extractAnthropicJsonFallback(json) {
 function isFallbackEligibleError(err) {
   if (!err || typeof err !== 'object') return false;
   if (err.callerAborted) return false;
+  const msg = String(err.message || '');
+  // Never fail over on content policy / safety refusals
+  if (/(?:safety|content[._ -]?filter|moderation|policy[._ -]?violation)/i.test(msg)) {
+    return false;
+  }
   if (err.retriable === true) return true;
   const status = Number(err.status);
   if (Number.isFinite(status) && status > 0) {
-    return RETRIABLE_HTTP_STATUSES.has(status);
+    if (RETRIABLE_HTTP_STATUSES.has(status)) return true;
+    // Allow 1-hop failover on transient upstream proxy region / account-pool exhaustion 400s
+    // without masking genuine client schema/context/parameter 400 errors.
+    if (
+      status === 400 &&
+      /(?:User location is not supported|FAILED_PRECONDITION.*location|auth_unavailable|no auth available|no available channel|channel.*unavailable|model is currently overloaded|temporarily unavailable)/i.test(msg)
+    ) {
+      return true;
+    }
+    return false;
   }
   if (err.isStreamError && !NON_RETRIABLE_AUTH_STATUSES.has(status)) {
     return true;
@@ -1602,7 +1616,8 @@ export function createModelHub({
           reasoningChars: fallbackParsed.reasoningChars,
           usage: fallbackParsed.usage,
           ttftMs: ttftMs ?? totalMs,
-          totalMs
+          totalMs,
+          deltaCount: 1
         };
       }
 
@@ -1617,6 +1632,7 @@ export function createModelHub({
       const textParts = [];
       let reasoningChars = 0;
       let usage = null;
+      let deltaCount = 0;
 
       for await (const sseEvent of parseSseEvents(response, {
         firstByteTimeoutMs: streamFirstChunkBudgetMs,
@@ -1642,13 +1658,16 @@ export function createModelHub({
           const delta = choice?.delta || choice?.message || {};
           if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) {
             markFirstToken();
+            deltaCount++;
             reasoningChars += delta.reasoning_content.length;
           } else if (typeof delta.reasoning === 'string' && delta.reasoning.length > 0) {
             markFirstToken();
+            deltaCount++;
             reasoningChars += delta.reasoning.length;
           }
           if (typeof delta.content === 'string' && delta.content.length > 0) {
             markFirstToken();
+            deltaCount++;
             textParts.push(delta.content);
             if (typeof onDelta === 'function') onDelta(delta.content);
           } else if (Array.isArray(delta.content)) {
@@ -1656,6 +1675,7 @@ export function createModelHub({
               const piece = typeof part === 'string' ? part : (part?.text ?? '');
               if (piece) {
                 markFirstToken();
+                deltaCount++;
                 textParts.push(piece);
                 if (typeof onDelta === 'function') onDelta(piece);
               }
@@ -1668,6 +1688,7 @@ export function createModelHub({
             const deltaText = typeof payload.delta === 'string' ? payload.delta : '';
             if (deltaText) {
               markFirstToken();
+              deltaCount++;
               textParts.push(deltaText);
               if (typeof onDelta === 'function') onDelta(deltaText);
             }
@@ -1675,8 +1696,9 @@ export function createModelHub({
             evtType === 'response.reasoning_summary_text.delta' ||
             evtType === 'response.reasoning.delta'
           ) {
-            if (typeof payload.delta === 'string') {
+            if (typeof payload.delta === 'string' && payload.delta.length > 0) {
               markFirstToken();
+              deltaCount++;
               reasoningChars += payload.delta.length;
             }
           } else if (evtType === 'response.completed' || evtType === 'response.done') {
@@ -1696,6 +1718,7 @@ export function createModelHub({
               const extracted = extractOpenAiResponsesJsonFallback(respObj);
               if (extracted.text) {
                 markFirstToken();
+                deltaCount++;
                 textParts.push(extracted.text);
                 if (typeof onDelta === 'function') onDelta(extracted.text);
               }
@@ -1708,6 +1731,7 @@ export function createModelHub({
             const initText = payload?.content_block?.type === 'text' ? payload.content_block.text : '';
             if (typeof initText === 'string' && initText.length > 0) {
               markFirstToken();
+              deltaCount++;
               textParts.push(initText);
               if (typeof onDelta === 'function') onDelta(initText);
             }
@@ -1715,10 +1739,12 @@ export function createModelHub({
             const delta = payload?.delta;
             if (delta?.type === 'text_delta' && typeof delta.text === 'string' && delta.text.length > 0) {
               markFirstToken();
+              deltaCount++;
               textParts.push(delta.text);
               if (typeof onDelta === 'function') onDelta(delta.text);
-            } else if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+            } else if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string' && delta.thinking.length > 0) {
               markFirstToken();
+              deltaCount++;
               reasoningChars += delta.thinking.length;
             }
           } else if (evtType === 'message_delta') {
@@ -1737,7 +1763,8 @@ export function createModelHub({
         reasoningChars,
         usage,
         ttftMs: ttftMs ?? totalMs,
-        totalMs
+        totalMs,
+        deltaCount
       };
     } catch (err) {
       if (timedOutErr) throw timedOutErr;
@@ -1797,15 +1824,20 @@ export function createModelHub({
     };
 
     const tierOrder = { T1: 1, T2: 2, T3: 3, T4: 4 };
+    const profileOrderMap = new Map(publicProfile.models.map((m, idx) => [m.id, idx]));
+    const NON_FAV_RANK = 1_000_000;
     const sortedModels = filtered
       .slice()
       .sort((a, b) => {
-        const aFav = favoriteIndexMap.has(a.id) ? favoriteIndexMap.get(a.id) : Number.POSITIVE_INFINITY;
-        const bFav = favoriteIndexMap.has(b.id) ? favoriteIndexMap.get(b.id) : Number.POSITIVE_INFINITY;
+        const aFav = favoriteIndexMap.has(a.id) ? favoriteIndexMap.get(a.id) : NON_FAV_RANK;
+        const bFav = favoriteIndexMap.has(b.id) ? favoriteIndexMap.get(b.id) : NON_FAV_RANK;
         if (aFav !== bFav) return aFav - bFav;
         const aTier = tierOrder[a.tier] ?? 99;
         const bTier = tierOrder[b.tier] ?? 99;
         if (aTier !== bTier) return aTier - bTier;
+        const aPos = profileOrderMap.get(a.id) ?? NON_FAV_RANK;
+        const bPos = profileOrderMap.get(b.id) ?? NON_FAV_RANK;
+        if (aPos !== bPos) return aPos - bPos;
         return a.id.localeCompare(b.id);
       })
       .map(toSafeMcpItem);
@@ -2024,26 +2056,35 @@ export function createModelHub({
     const checkedAt = new Date().toISOString();
 
     try {
+      const probeMaxTokens = Math.min(Math.max(Number(model.maxTokens) || 1024, 256), 1024);
       const res = await invokeSingleModel({
         model,
         provider,
-        prompt: 'Reply with OK',
+        prompt: 'Output integers 1 to 24 separated by single spaces only.',
         systemPrompt: '',
-        maxTokens: 8,
+        maxTokens: probeMaxTokens,
         timeouts: {
-          firstByteTimeoutMs: options.firstByteTimeoutMs ?? 15_000,
-          idleChunkTimeoutMs: options.idleChunkTimeoutMs ?? 15_000,
-          totalTimeoutMs: options.totalTimeoutMs ?? 25_000
+          firstByteTimeoutMs: options.firstByteTimeoutMs ?? 20_000,
+          idleChunkTimeoutMs: options.idleChunkTimeoutMs ?? 20_000,
+          totalTimeoutMs: options.totalTimeoutMs ?? 30_000
         }
       });
 
-      const completionToks = Number(
-        res.usage?.completion_tokens ??
-        res.usage?.output_tokens ??
-        Math.max(1, Math.ceil((res.text.length + res.reasoningChars) / 4))
-      );
-      const durationSec = Math.max(0.001, res.totalMs / 1000);
-      const tokPerSec = Math.round((completionToks / durationSec) * 100) / 100;
+      const cjkCount = (res.text.match(/[\u4e00-\u9fff]/g) || []).length;
+      const visibleNonCjk = Math.max(0, res.text.length - cjkCount);
+      const visibleToks = Math.max(1, Math.ceil(cjkCount * 1.2 + visibleNonCjk / 4));
+      const estimatedTotalToks = Math.max(1, Math.ceil(cjkCount * 1.2 + (visibleNonCjk + res.reasoningChars) / 4));
+      const reportedToks = Number(res.usage?.completion_tokens ?? res.usage?.output_tokens ?? 0);
+      // If upstream hid <thinking> tokens before ttftMs (reasoningChars === 0 but usage >> visibleToks),
+      // use post-TTFT visible streamed tokens so pre-TTFT hidden thinking never inflates decode tok/s.
+      const streamedToks = res.reasoningChars > 0
+        ? (reportedToks > 0 ? reportedToks : estimatedTotalToks)
+        : (reportedToks > 0 && reportedToks <= visibleToks * 2 ? reportedToks : visibleToks);
+      const decodeMs = Math.max(0, res.totalMs - res.ttftMs);
+      const rawTps = (res.deltaCount ?? 0) >= 3 && streamedToks >= 6 && decodeMs >= 80
+        ? Math.round(((streamedToks - 1) / (decodeMs / 1000)) * 10) / 10
+        : null;
+      const tokPerSec = rawTps !== null && rawTps <= 450 ? rawTps : null;
 
       const recorded = profileManager.recordModelSpeed(model.id, {
         ok: true,
@@ -2082,8 +2123,23 @@ export function createModelHub({
 
   function classifyDiscoveredModel(rawId) {
     const clean = String(rawId || '').trim().replace(/^models\//i, '');
-    const lower = clean.toLowerCase();
-    const isNonChat = /(?:embedding|text-embedding|tts|whisper|moderation|rerank|babbage|davinci-002|dall-e|imagen|flux|stable-diffusion|veo|sora|audio-preview-tts)/i.test(lower);
+    let decoded = clean;
+    let routeSuffix = '';
+    const obfMatch = clean.match(/^claude-fable-5-dd-([^/]+)(?:\/(.+))?$/i);
+    if (obfMatch) {
+      decoded = obfMatch[1].split('').reverse().join('');
+      const rawRoute = obfMatch[2] || '';
+      const revRoute = rawRoute ? rawRoute.split('').reverse().join('') : '';
+      if (/paw/i.test(revRoute) || /waP/i.test(rawRoute)) {
+        routeSuffix = '-paw';
+      } else if (revRoute) {
+        const slug = revRoute.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        if (slug) routeSuffix = `-${slug}`;
+      }
+    }
+    const suggestedId = `${decoded}${routeSuffix}`;
+    const lower = decoded.toLowerCase();
+    const isNonChat = /(?:embedding|text-embedding|tts|whisper|moderation|rerank|babbage|davinci-002|dall-e|imagen|flux|stable-diffusion|veo|sora|audio-preview-tts|gpt-image|(?:^|[-_.])image(?:$|[-_.0-9]))/i.test(lower);
 
     let vendor = 'other';
     if (/(?:claude|anthropic|sonnet|opus|haiku)/i.test(lower)) vendor = 'anthropic';
@@ -2093,17 +2149,20 @@ export function createModelHub({
     else if (/(?:\bgpt|\bo1\b|\bo3\b|\bo4\b|codex|chatgpt|astra)/i.test(lower)) vendor = 'openai';
 
     let tier = 'T2';
-    if (/(?:opus|gpt-6\.2-astra|gpt-6-astra|gpt-5-pro|\bo1-pro\b|\bo3-pro\b|carbon|xhigh|reasoner|r1\b|v4-pro)/i.test(lower)) {
+    if (/(?:opus|gpt-6\.2-astra|gpt-6-astra|gpt-5-pro|\bo1-pro\b|\bo3-pro\b|carbon|xhigh|orchestrator-g1-pro|reasoner|r1\b)/i.test(lower)) {
       tier = 'T1';
-    } else if (/(?:flash-lite|haiku|mini\b|nano\b|glm-.*-flash|3\.5-turbo)/i.test(lower)) {
+    } else if (/(?:flash-lite|haiku|mini\b|nano\b|glm-.*-flash|3\.5-turbo|gpt-oss-120b|v4-pro)/i.test(lower) || /gemini-3\.8-flash/i.test(lower)) {
       tier = 'T4';
     } else if (/(?:flash|hydrogen|deepseek-v4\.1|glm-5|qwen)/i.test(lower)) {
+      tier = 'T3';
+    }
+    if (/hydrogen-.*xhigh/i.test(lower)) {
       tier = 'T3';
     }
 
     return {
       upstreamModel: String(rawId || '').trim(),
-      suggestedId: clean,
+      suggestedId,
       vendor,
       tier,
       isChat: !isNonChat

@@ -1366,6 +1366,9 @@ export function createPrismProfileManager({
       const vendor = normalizeVendor(raw.vendor, 'other', false);
       const alias = stripControlChars(raw.alias || candidateId, 120) || candidateId;
       const roleHint = stripControlChars(raw.roleHint || '', 240);
+      const defaultMaxTokens = (tier === 'T1' || tier === 'T2' || /(?:high|thinking|pro|reasoner)/i.test(candidateId))
+        ? 16384
+        : 8192;
       profile.models.push({
         id: candidateId,
         alias,
@@ -1376,7 +1379,7 @@ export function createPrismProfileManager({
         roleHint,
         fallbackModelId: '',
         enabled: true,
-        maxTokens: 4096,
+        maxTokens: defaultMaxTokens,
         lastSpeed: null
       });
       existingIds.add(candidateId);

@@ -1323,6 +1323,17 @@ export function createAccountVault(options = {}) {
     try {
       if (backendInfo.backend === 'win32-credman' || backendInfo.backend === 'wsl-wincred') {
         buf = readWinCredBuffer(providerSecretTargetName(cleanId));
+        // Cross-bridge Windows host <-> WSL distro provider namespaces on the same machine
+        if (!buf || !buf.length) {
+          if (backendInfo.backend === 'win32-credman') {
+            for (const dName of ['Ubuntu', 'Ubuntu-24.04', 'Ubuntu-22.04', 'Debian']) {
+              buf = readWinCredBuffer(`${PRISM_WSL_PREFIX}${dName}:provider:${cleanId}`);
+              if (buf && buf.length) break;
+            }
+          } else {
+            buf = readWinCredBuffer(`${PRISM_PROVIDER_PREFIX}${cleanId}`);
+          }
+        }
       } else if (backendInfo.backend === 'darwin-keychain') {
         buf = readKeychainBuffer('prism-suite-provider', cleanId);
       } else if (backendInfo.backend === 'linux-secret-service') {

@@ -1528,7 +1528,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.9.4');
+    assert.equal(pkgJson.version, '0.9.5');
     assert.equal(pluginJson.version, pkgJson.version);
     assert.ok(Array.isArray(pluginJson.suggested_prompts) && pluginJson.suggested_prompts.length <= 3);
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
@@ -4578,8 +4578,8 @@ test('v0.9.3 Anti-Claude v3.1.10 compat, placeholder-masked thought translation,
   const parsedUp = JSON.parse(rootUp);
   assert.equal(parsedUp.upstreams.antiClaude.baselineTag, 'v3.1.10');
   assert.equal(parsedUp.upstreams.antiClaude.baselineCommit, 'c49103c');
-  assert.equal(parsedUp.upstreams.agyPowertools.baselineTag, 'v2.17.0');
-  assert.equal(parsedUp.upstreams.agyPowertools.baselineCommit, '6e2354b');
+  assert.equal(parsedUp.upstreams.agyPowertools.baselineTag, 'v2.17.1');
+  assert.equal(parsedUp.upstreams.agyPowertools.baselineCommit, 'a08b1f2');
 
   const daemonSrc = fs.readFileSync(path.join(REPO, 'vendor', 'anti-claude', 'core', 'daemon.mjs'), 'utf8');
   const customSrc = fs.readFileSync(path.join(REPO, 'vendor', 'anti-claude', 'user', 'custom.js'), 'utf8');
@@ -4624,11 +4624,12 @@ test('v0.9.4 behavioral security & data-integrity suite: GBK non-corruption, _ap
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-v094-audit-'));
   try {
     // 1. Single-source version parity across all 17 derived files
+    const curVer = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')).version;
     const syncOut = execFileSync(process.execPath, [path.join(REPO, 'scripts', 'sync-version.mjs'), '--check'], {
       cwd: REPO,
       encoding: 'utf8'
     });
-    assert.match(syncOut, /OK: all \d+ versioned files match v0\.9\.4/);
+    assert.match(syncOut, new RegExp(`OK: all \\d+ versioned files match v${curVer.replace(/\./g, '\\.')}`));
 
     // 2. [B-03] GBK file readable preview + strict save block (zero byte corruption) + UTF-8 BOM preservation
     const srv = createPrismFilesServer({
@@ -4795,4 +4796,273 @@ test('v0.9.4 behavioral security & data-integrity suite: GBK non-corruption, _ap
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test('multi-model council polish: honest streaming decode tok/s, route-region 400 failover, profile-order MCP listing, and daemon anthropic+vault T4 prediction', async () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-mhub-polish-'));
+  try {
+    const profilePath = path.join(tmp, 'prism-profile.json');
+    const { createPrismProfileManager } = await import(pathToFileURL(path.join(repoRoot, 'plugin', 'server', 'prism-profile.mjs')).href);
+    const { createModelHub } = await import(pathToFileURL(path.join(repoRoot, 'plugin', 'server', 'model-hub.mjs')).href);
+    const { predictNextPromptAction } = await import(pathToFileURL(path.join(repoRoot, 'vendor', 'anti-claude', 'core', 'daemon.mjs')).href);
+
+    const memVault = new Map([
+      ['cpa-main', 'vault-key-main'],
+      ['cpa-pub', 'vault-key-pub']
+    ]);
+    const pm = createPrismProfileManager({
+      profilePath,
+      secretStore: {
+        getSecret: (id) => memVault.get(id) || '',
+        setSecret: (id, v) => memVault.set(id, v),
+        deleteSecret: (id) => memVault.delete(id)
+      }
+    });
+
+    pm.upsertProvider({ id: 'cpa-main', label: 'Main', protocol: 'anthropic-messages', baseUrl: 'https://gw1.example.test/v1', apiKey: 'vault-key-main' });
+    pm.upsertProvider({ id: 'cpa-pub', label: 'Pub', protocol: 'anthropic-messages', baseUrl: 'https://gw2.example.test/v1', apiKey: 'vault-key-pub' });
+
+    // Order in profile: primary Neon BEFORE backup Sonnet (even though backup-sonnet < gemini-neon alphabetically)
+    pm.upsertModel({ id: 'gpt-6.2-astra', providerId: 'cpa-main', upstreamModel: 'claude-fable-5-dd-artsa-2.6-tpg', tier: 'T1', vendor: 'openai', favorite: true });
+    pm.upsertModel({ id: 'gemini-4-neon-high', providerId: 'cpa-main', upstreamModel: 'claude-fable-5-dd-hgih-noen-4-inimeg', tier: 'T2', vendor: 'google', fallbackModelId: 'claude-sonnet-5-5-backup' });
+    pm.upsertModel({ id: 'claude-sonnet-5-5-backup', providerId: 'cpa-pub', upstreamModel: 'claude-sonnet-5-5-high', tier: 'T2', vendor: 'anthropic' });
+    pm.upsertModel({ id: 'gemini-3.8-flash-high', providerId: 'cpa-main', upstreamModel: 'claude-fable-5-dd-hgih-hsalf-8.3-inimeg', tier: 'T4', vendor: 'google' });
+    pm.upsertModel({ id: 'gemini-3.5-flash-lite', providerId: 'cpa-main', upstreamModel: 'claude-fable-5-dd-etil-hsalf-5.3-inimeg', tier: 'T4', vendor: 'google' });
+    pm.recordModelSpeed('gemini-3.5-flash-lite', { ok: true, ttftMs: 790, totalMs: 990, tokPerSec: 45, checkedAt: new Date().toISOString() });
+
+    // 1) listModelsForMcp preserves curated profile order within T2 (gemini-4-neon-high BEFORE claude-sonnet-5-5-backup)
+    const hub = createModelHub({
+      profileManager: pm,
+      fetchFn: async (url) => {
+        if (String(url).endsWith('/models')) {
+          return new Response(JSON.stringify({
+            data: [
+              { id: 'claude-fable-5-dd-hgihx-noen-4-inimeg' },
+              { id: 'claude-fable-5-dd-artsa-2.6-tpg/waP-IPA2buS' },
+              { id: 'claude-fable-5-dd-6.2-egami-tpg' }
+            ]
+          }), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        if (String(url).includes('gw1.example.test')) {
+          return new Response(JSON.stringify({ error: { message: 'User location is not supported for the API use.' } }), {
+            status: 400,
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        // Multi-delta SSE stream on backup gateway for honest decode tok/s & failover verification
+        const encoder = new TextEncoder();
+        const chunks = [
+          'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"1 2 3 4 "}}\n\n',
+          'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"5 6 7 8 "}}\n\n',
+          'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"9 10 11 12"}}\n\n',
+          'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":12}}\n\n',
+          'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+        ];
+        const stream = new ReadableStream({
+          async start(ctrl) {
+            for (let i = 0; i < chunks.length; i++) {
+              if (i > 0) await new Promise((r) => setTimeout(r, 25));
+              ctrl.enqueue(encoder.encode(chunks[i]));
+            }
+            ctrl.close();
+          }
+        });
+        return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      }
+    });
+
+    const mcpList = hub.listModelsForMcp({ tier: 'T2' });
+    assert.deepEqual(
+      mcpList.models.map((m) => m.id),
+      ['gemini-4-neon-high', 'claude-sonnet-5-5-backup'],
+      'listModelsForMcp must preserve profile.models priority order instead of sorting backup lines alphabetically ahead of primaries'
+    );
+
+    // 2) Route-region HTTP 400 ("User location is not supported") triggers 1-hop failover cleanly, while safety 400 never fails over
+    const askFailover = await hub.askModel({ model: 'gemini-4-neon-high', prompt: 'Check diff' });
+    assert.equal(askFailover.usedFallback, true);
+    assert.equal(askFailover.actualModelId, 'claude-sonnet-5-5-backup');
+
+    const safetyHub = createModelHub({
+      profileManager: pm,
+      fetchFn: async () => new Response(JSON.stringify({ error: { message: 'Blocked by content_filter safety policy' } }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' }
+      })
+    });
+    await assert.rejects(
+      () => safetyHub.askModel({ model: 'gemini-4-neon-high', prompt: 'test' }),
+      /content_filter/i,
+      'Safety/policy 400 must never silently fail over to another model'
+    );
+
+    // 3) Discovery decodes claude-fable-5-dd-* reversed IDs, appends -paw route suffix, and filters image endpoints as isChat=false
+    const disc = await hub.discoverProviderModels('cpa-main');
+    assert.equal(disc.ok, true);
+    const byUp = new Map(disc.models.map((m) => [m.upstreamModel, m]));
+    assert.equal(byUp.get('claude-fable-5-dd-hgihx-noen-4-inimeg')?.suggestedId, 'gemini-4-neon-xhigh');
+    assert.equal(byUp.get('claude-fable-5-dd-hgihx-noen-4-inimeg')?.vendor, 'google');
+    assert.equal(byUp.get('claude-fable-5-dd-artsa-2.6-tpg/waP-IPA2buS')?.suggestedId, 'gpt-6.2-astra-paw');
+    assert.equal(byUp.get('claude-fable-5-dd-6.2-egami-tpg')?.isChat, false);
+
+    // 4) Streaming probeModelSpeed computes genuine decode tokPerSec (> 10 tok/s) on multi-delta stream, and null on 1-chunk buffered response
+    const probeOk = await hub.probeModelSpeed('claude-sonnet-5-5-backup');
+    assert.equal(probeOk.ok, true);
+    assert.ok(probeOk.tokPerSec !== null && probeOk.tokPerSec > 10, `Expected realistic decode tokPerSec > 10, got ${probeOk.tokPerSec}`);
+
+    const bufferedHub = createModelHub({
+      profileManager: pm,
+      fetchFn: async () => new Response(JSON.stringify({ content: [{ type: 'text', text: 'OK' }], usage: { output_tokens: 1 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    });
+    const probeBuf = await bufferedHub.probeModelSpeed('claude-sonnet-5-5-backup');
+    assert.equal(probeBuf.ok, true);
+    assert.equal(probeBuf.tokPerSec, null, '1-token or non-streaming buffered response must not report distorted tokPerSec');
+
+    // 5) Daemon predictNextPromptAction supports anthropic-messages + vault secret + selects non-thinking T4 gemini-3.5-flash-lite (never T1 Astra) + caches result
+    const daemonCalls = [];
+    const pred1 = await predictNextPromptAction(
+      { lastUserText: '帮我编排模型中枢', lastAssistantText: '已完成 23 款模型编排，是否需要测试下一步建议？' },
+      {
+        profileFile: profilePath,
+        vaultSecretResolver: async (id) => memVault.get(id) || '',
+        fetchFn: async (url, init) => {
+          daemonCalls.push({ url: String(url), headers: init.headers, body: JSON.parse(init.body) });
+          return new Response(JSON.stringify({
+            content: [{ type: 'text', text: '运行一次全量测速看看最新吞吐表现' }]
+          }), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+      }
+    );
+    assert.equal(pred1.source, 'ai');
+    assert.equal(pred1.suggestion, '运行一次全量测速看看最新吞吐表现');
+    assert.equal(daemonCalls.length, 1);
+    assert.equal(daemonCalls[0].url, 'https://gw1.example.test/v1/messages');
+    assert.equal(daemonCalls[0].headers['x-api-key'], 'vault-key-main');
+    assert.equal(daemonCalls[0].body.model, 'claude-fable-5-dd-etil-hsalf-5.3-inimeg', 'Must pick non-thinking T4 flash-lite instead of T1 flagship');
+
+    const pred2 = await predictNextPromptAction(
+      { lastUserText: '帮我编排模型中枢', lastAssistantText: '已完成 23 款模型编排，是否需要测试下一步建议？' },
+      { profileFile: profilePath, fetchFn: async () => { throw new Error('Should hit LRU cache'); } }
+    );
+    assert.equal(pred2.cached, true);
+    assert.equal(pred2.suggestion, '运行一次全量测速看看最新吞吐表现');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('v0.9.5 CUA includeTree=false explicit notice + scoped ref preservation, Clean-Room UTF-16 emoji & placeholder safe translation chunking, and SERVER_INFO parity', async () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const { createPrismCuaServer, SERVER_INFO: CUA_SERVER_INFO } = await import(
+    pathToFileURL(path.join(repoRoot, 'plugin-cua', 'server', 'index.mjs')).href
+  );
+  const { clipUtf16Safe, splitTextForTranslation, translateThoughtText } = await import(
+    pathToFileURL(path.join(repoRoot, 'vendor', 'anti-claude', 'core', 'daemon.mjs')).href
+  );
+
+  // 1) SERVER_INFO version parity on plugin-cua
+  assert.equal(CUA_SERVER_INFO.version, '0.9.5');
+
+  // 2) cua_observe({ includeTree: false }) forwards includeElements=false, prints explicit [includeTree=false] notice, and preserves prior @w1 observation
+  const observePayloads = [];
+  const actPayloads = [];
+  const fakeBroker = {
+    getStatus: async () => ({ ok: true, state: 'ARMED_ACT', escArmed: true }),
+    requestConsent: async () => ({ ok: true, granted: true, state: 'ARMED_ACT' }),
+    pauseHandoff: async () => ({ ok: true }),
+    setMouseMode: async () => ({ ok: true }),
+    observe: async (params) => {
+      observePayloads.push(params);
+      if (params.includeTree === false) {
+        return {
+          ok: true,
+          hwnd: '0x1020',
+          processName: 'notepad.exe',
+          title: '草稿 - 记事本',
+          elements: [],
+          screenshotBase64: Buffer.from('fake-png-bytes').toString('base64'),
+          mimeType: 'image/png'
+        };
+      }
+      return {
+        ok: true,
+        hwnd: '0x1020',
+        processName: 'notepad.exe',
+        title: '草稿 - 记事本',
+        elements: [{ ref: '@w1', role: 'button', name: '保存', bounds: { x: 40, y: 60 } }]
+      };
+    },
+    act: async (step, meta) => {
+      actPayloads.push({ step, meta });
+      return { ok: true, executed: true };
+    }
+  };
+
+  const cuaSrv = createPrismCuaServer({ brokerClient: fakeBroker, minPacingMs: 0 });
+  const fullObs = await cuaSrv.handleToolCall('cua_observe', { target: 'desktop', hwnd: '0x1020' });
+  assert.match(fullObs.content[0].text, /@w1 \[button\] "保存"/);
+
+  const shotOnlyObs = await cuaSrv.handleToolCall('cua_observe', {
+    target: 'desktop',
+    hwnd: '0x1020',
+    includeTree: false
+  });
+  assert.equal(observePayloads[1].includeTree, false);
+  assert.equal(observePayloads[1].includeElements, false);
+  assert.equal(observePayloads[1].includeScreenshot, true, 'includeTree=false should default includeScreenshot to true when omitted');
+  assert.match(shotOnlyObs.content[0].text, /\[includeTree=false\]/);
+  assert.doesNotMatch(shotOnlyObs.content[0].text, /无可枚举 @ref 子控件/);
+  assert.equal(shotOnlyObs.content[1]?.type, 'image');
+
+  const actAfterShotOnly = await cuaSrv.handleToolCall('cua_act', {
+    target: 'desktop',
+    hwnd: '0x1020',
+    actions: [{ op: 'click', ref: '@w1', expectBefore: { refExists: '@w1' } }]
+  });
+  assert.equal(actAfterShotOnly.structuredContent.ok, true, 'Screenshot-only observe must not wipe prior @w1 scoped observation');
+  assert.equal(actPayloads.length, 1);
+
+  // 3) UTF-16 surrogate pair (Emoji) & protected placeholder ⟪P12⟫ non-splitting + blank translation rejection
+  const emojiBoundary = `${'a'.repeat(899)}🚀${'b'.repeat(40)}⟪P12⟫${'c'.repeat(905)}🧪end`;
+  const clippedAtSurrogate = clipUtf16Safe(`${'x'.repeat(9)}🚀tail`, 10);
+  assert.equal(clippedAtSurrogate, 'x'.repeat(9), 'clipUtf16Safe must back off 1 code unit rather than leaving an orphan high surrogate');
+  assert.equal(clippedAtSurrogate.isWellFormed(), true);
+
+  const splitChunks = splitTextForTranslation(emojiBoundary, 900);
+  assert.ok(splitChunks.length >= 2);
+  for (const ch of splitChunks) {
+    assert.equal(ch.isWellFormed(), true, `Chunk contains lone UTF-16 surrogate: ${ch}`);
+    assert.ok(ch.length <= 900, `Chunk exceeded 900 UTF-16 code units: ${ch.length}`);
+  }
+  assert.equal(splitChunks.join(''), emojiBoundary, 'Contiguous UTF-16 safe split must preserve every emoji and placeholder intact');
+  assert.ok(splitChunks.some((ch) => ch.includes('⟪P12⟫')), 'Protected placeholder ⟪P12⟫ must never be torn across chunks');
+
+  let callCount = 0;
+  const trRes = await translateThoughtText(
+    `Let us verify the pipeline ${'step '.repeat(210)}🚀 \`/etc/hosts\` carefully.`,
+    'zh-CN',
+    {
+      fetchFn: async (url) => {
+        callCount += 1;
+        // First call returns whitespace-only on tier-1 gtx endpoint -> must reject and fall back to clients5!
+        if (String(url).includes('translate.googleapis.com') && callCount === 1) {
+          return new Response(JSON.stringify([[['   ', 'src']]]), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        if (String(url).includes('clients5.google.com')) {
+          return new Response(JSON.stringify(['第一段 🚀 译文']), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        return new Response(JSON.stringify([[['第二段 `/etc/hosts` 译文', 'src']]]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+    }
+  );
+  assert.equal(trRes.ok, true);
+  assert.match(trRes.translated, /🚀/);
+  assert.match(trRes.translated, /`\/etc\/hosts`/);
 });

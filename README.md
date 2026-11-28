@@ -1,7 +1,7 @@
 # Anti-Claude Prism Suite
 
 <p align="left">
-  <img src="https://img.shields.io/badge/version-v0.9.4-2563eb?style=flat-square" alt="Version v0.9.4" />
+  <img src="https://img.shields.io/badge/version-v0.9.5-2563eb?style=flat-square" alt="Version v0.9.5" />
   <img src="https://img.shields.io/badge/edition-All--in--One%20Standalone-059669?style=flat-square" alt="Standalone Edition" />
   <img src="https://img.shields.io/badge/kernel-Anti--Claude%20v3.1.10%20Bundled-7c3aed?style=flat-square" alt="Bundled Anti-Claude v3.1.10" />
   <img src="https://img.shields.io/badge/dependencies-0%20npm%20packages-d97706?style=flat-square" alt="Zero Runtime Dependencies" />
@@ -115,7 +115,7 @@
 
 ```mermaid
 flowchart TB
-  subgraph PKG["Anti-Claude Prism Suite v0.9.4（单包独立完整版 · 零外部 npm 依赖）"]
+  subgraph PKG["Anti-Claude Prism Suite v0.9.5（单包独立完整版 · 零外部 npm 依赖）"]
     K["第 1 层 · 内置增强内核与本地 CUA Broker<br/>vendor/anti-claude/ + native/win-cua/ (v3.1.10 + 四级防抢鼠执行器 + 全局 Esc 急刹)"]
     E["第 2 层 · 棱镜前端扩展 & Chrome/Edge MV3 扩展桥<br/>extensions/prism-suite*.{css,js} + extensions/chrome-cua-bridge/"]
     P["第 3 层 · Prism 七合一工作台 & 双插件 MCP/Skills<br/>plugin/ (8 常驻工具) + plugin-cua/ (默认关闭 3 操控工具)"]

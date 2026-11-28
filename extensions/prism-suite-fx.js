@@ -1,5 +1,5 @@
 /* ============================================================================
- * Anti-Claude Prism Suite v0.9.4 — Visual FX & Layout Polish (Clean-Room, MIT)
+ * Anti-Claude Prism Suite v0.9.5 — Visual FX & Layout Polish (Clean-Room, MIT)
  * Architecture:
  *   - Joins window.__agPrismBus (Frozen v4) safely regardless of script order
  *   - Single shared requestAnimationFrame scheduler (true 0fps idle/hidden/reduced)
@@ -3808,39 +3808,98 @@
       return raw.replace(/\u200B|\n/g, '').trim().length === 0;
     }
 
+    function extractCleanMessageText(rootEl) {
+      if (!rootEl) return '';
+      if (typeof rootEl.cloneNode === 'function') {
+        try {
+          const clone = rootEl.cloneNode(true);
+          if (typeof clone.querySelectorAll === 'function') {
+            const drop = clone.querySelectorAll(
+              'style, script, noscript, template, svg, [data-testid*="thinking"], .ag-bilingual-thought'
+            );
+            for (let i = 0; i < drop.length; i++) drop[i].remove();
+            const blocks = clone.querySelectorAll('br, p, li, pre, h1, h2, h3, h4, blockquote, tr');
+            for (let i = 0; i < blocks.length; i++) {
+              const b = blocks[i];
+              if (b.tagName === 'BR') b.replaceWith('\n');
+              else b.append('\n');
+            }
+          }
+          return (clone.textContent || '')
+            .replace(/[ \t\f\v]+/g, ' ')
+            .replace(/ *\n */g, '\n')
+            .replace(/\n{2,}/g, '\n')
+            .trim();
+        } catch {}
+      }
+      return (rootEl.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function hasVisibleAncestorChain(el) {
+      let cur = el ? el.parentElement : null;
+      for (let depth = 0; cur && depth < 4; depth++, cur = cur.parentElement) {
+        if (cur.getAttribute && cur.getAttribute('aria-hidden') === 'true') return false;
+        const st = window.getComputedStyle ? window.getComputedStyle(cur) : null;
+        if (st && (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    function hasVisibleComposerPopup() {
+      const popups = document.querySelectorAll(
+        '[role="listbox"], [data-lexical-menu], [data-radix-popper-content-wrapper] [role="option"]'
+      );
+      for (let i = 0; i < popups.length; i++) {
+        if (isElementActuallyVisible(popups[i], 8) && hasVisibleAncestorChain(popups[i])) return true;
+      }
+      return false;
+    }
+
     function extractIntentTurnContext() {
       const nav = safeGetConversationNav();
       const domTurns = nav && Array.isArray(nav.domTurns) && nav.domTurns.length ? nav.domTurns : getUserTurns();
       const rawTurns = nav && nav.total > 0 ? nav.total : domTurns.length;
       let lastUserText = '';
       if (domTurns.length > 0) {
-        lastUserText = getTurnPreviewText(domTurns[domTurns.length - 1]);
+        lastUserText = extractCleanMessageText(domTurns[domTurns.length - 1]) || getTurnPreviewText(domTurns[domTurns.length - 1]);
       } else if (nav && nav.total > 0 && typeof nav.getPreview === 'function') {
         lastUserText = nav.getPreview(nav.total - 1) || '';
       }
 
       const vp = safeGetViewportEl() || document;
-      let respNodes = vp.querySelectorAll('[data-testid="planner-response-text"], [data-testid="agent-response"]');
-      if (!respNodes.length) {
-        respNodes = vp.querySelectorAll('[data-markdown-root]');
-      }
-      let lastAssistantText = '';
-      for (let i = respNodes.length - 1; i >= 0; i--) {
-        const rn = respNodes[i];
-        if (!rn || !rn.isConnected) continue;
-        if (rn.closest && rn.closest('[data-testid="user-message"], [data-testid="user-input-step"], [data-testid="thinking-collapsible"]')) {
-          continue;
+      const pickLastCleanText = (nodeList) => {
+        for (let i = nodeList.length - 1; i >= 0; i--) {
+          const rn = nodeList[i];
+          if (!rn || !rn.isConnected) continue;
+          if (
+            rn.closest &&
+            rn.closest('[data-testid="user-message"], [data-testid="user-input-step"], [data-testid="thinking-collapsible"], [data-testid*="thinking"]')
+          ) {
+            continue;
+          }
+          const txt = extractCleanMessageText(rn);
+          if (txt) return txt.slice(-1600);
         }
-        const txt = (rn.textContent || '').replace(/\s+/g, ' ').trim();
-        if (txt) {
-          lastAssistantText = txt.slice(-1600);
-          break;
-        }
+        return '';
+      };
+
+      let lastAssistantText = pickLastCleanText(vp.querySelectorAll('[data-testid="agent-response"]'));
+      if (!lastAssistantText) {
+        lastAssistantText = pickLastCleanText(vp.querySelectorAll('[data-testid="planner-response-text"]'));
       }
+      if (!lastAssistantText) {
+        lastAssistantText = pickLastCleanText(vp.querySelectorAll('[data-markdown-root]'));
+      }
+
+      const cleanUser = String(lastUserText || '').trim().slice(-1200);
       const turnCount = rawTurns > 0 ? rawTurns : (lastAssistantText ? 1 : 0);
+      const contextSig = `${turnCount}|${cleanUser.slice(-96)}|${lastAssistantText.slice(-160)}`;
       return {
         turnCount,
-        lastUserText: String(lastUserText || '').trim().slice(-1200),
+        contextSig,
+        lastUserText: cleanUser,
         lastAssistantText
       };
     }
@@ -3912,9 +3971,9 @@
       const boxEl = boxOverride || safeGetComposerEl();
       if (!boxEl || !isComposerEmpty(boxEl)) return false;
       const convKey = String(window.location.pathname || '');
-      const { turnCount } = extractIntentTurnContext();
+      const { contextSig } = extractIntentTurnContext();
       const entry = intentCacheByConv.get(convKey);
-      const sug = entry && entry.turnCount === turnCount && !entry.dismissed ? entry.suggestion : '';
+      const sug = entry && entry.contextSig === contextSig && !entry.dismissed ? entry.suggestion : '';
       if (!sug) return false;
       const ed = getComposerEditable(boxEl);
       if (!ed) return false;
@@ -4070,9 +4129,9 @@
         return;
       }
       const convKey = String(window.location.pathname || '');
-      const { turnCount } = extractIntentTurnContext();
+      const { contextSig } = extractIntentTurnContext();
       const entry = intentCacheByConv.get(convKey);
-      if (entry && entry.turnCount === turnCount && !entry.dismissed && entry.suggestion) {
+      if (entry && entry.contextSig === contextSig && !entry.dismissed && entry.suggestion) {
         renderIntentGhost(boxEl, entry.suggestion, false);
         return;
       }
@@ -4092,10 +4151,10 @@
         return;
       }
       const convKey = String(window.location.pathname || '');
-      const { turnCount, lastUserText, lastAssistantText } = extractIntentTurnContext();
+      const { turnCount, contextSig, lastUserText, lastAssistantText } = extractIntentTurnContext();
       if (turnCount < 1 || (!lastUserText && !lastAssistantText)) return;
       const existing = intentCacheByConv.get(convKey);
-      if (existing && existing.turnCount === turnCount && (existing.suggestion || existing.dismissed)) {
+      if (existing && existing.contextSig === contextSig && (existing.suggestion || existing.dismissed)) {
         syncIntentGhostVisibility(boxEl);
         return;
       }
@@ -4114,7 +4173,7 @@
 
       const hasProjectRpc = typeof window.__agProjectCall === 'function';
       const reqPromise = hasProjectRpc
-        ? Promise.resolve(window.__agProjectCall('predictNextPrompt', { lastUserText, lastAssistantText }, 4000))
+        ? Promise.resolve(window.__agProjectCall('predictNextPrompt', { lastUserText, lastAssistantText }, 6000))
         : Promise.resolve({ ok: true, suggestion: INTENT_FALLBACK_PROMPT });
 
       reqPromise
@@ -4145,9 +4204,10 @@
             hideIntentGhost();
             return;
           }
-          const latestTurns = Math.max(turnCount, extractIntentTurnContext().turnCount);
+          const latestCtx = extractIntentTurnContext();
           setIntentConvEntry(convKey, {
-            turnCount: latestTurns,
+            turnCount: Math.max(turnCount, latestCtx.turnCount),
+            contextSig: latestCtx.contextSig || contextSig,
             suggestion: sug,
             dismissed: false
           });
@@ -4203,8 +4263,8 @@
       }
       if (reason === 'init' || reason === 'prefs') {
         const entry = intentCacheByConv.get(curConvKey);
-        const { turnCount } = extractIntentTurnContext();
-        if (turnCount >= 1 && (!entry || entry.turnCount !== turnCount)) {
+        const { turnCount, contextSig } = extractIntentTurnContext();
+        if (turnCount >= 1 && (!entry || entry.contextSig !== contextSig)) {
           scheduleIntentPrediction(140);
           return;
         }
@@ -4224,17 +4284,17 @@
         return;
       }
       const convKey = String(window.location.pathname || '');
-      const { turnCount } = extractIntentTurnContext();
+      const { turnCount, contextSig } = extractIntentTurnContext();
       if (turnCount < 1) return;
       const entry = intentCacheByConv.get(convKey);
-      if (entry && entry.turnCount === turnCount) {
+      if (entry && entry.contextSig === contextSig) {
         if (!entry.dismissed && entry.suggestion) {
           syncIntentGhostVisibility(boxEl);
         }
         return;
       }
       if (!intentInFlight || intentInFlightConv !== convKey) {
-        scheduleIntentPrediction(160);
+        scheduleIntentPrediction(120);
       }
     }
 
@@ -4255,6 +4315,9 @@
       }
 
       if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        if (hasVisibleComposerPopup()) {
+          return;
+        }
         if (acceptIntentSuggestion(boxEl)) {
           e.preventDefault();
           e.stopPropagation();
@@ -4267,11 +4330,12 @@
         if (!ghostVisible && !intentInFlight && !intentGraceTimer) return;
         cancelIntentInFlight();
         const convKey = String(window.location.pathname || '');
-        const { turnCount } = extractIntentTurnContext();
+        const { turnCount, contextSig } = extractIntentTurnContext();
         const prev = intentCacheByConv.get(convKey);
         setIntentConvEntry(convKey, {
           turnCount: Math.max(1, turnCount),
-          suggestion: prev && prev.turnCount === turnCount ? prev.suggestion : '',
+          contextSig,
+          suggestion: prev && prev.contextSig === contextSig ? prev.suggestion : '',
           dismissed: true
         });
         hideIntentGhost();
@@ -4365,6 +4429,9 @@
       const busy = safeIsBusy();
       const prevBusy = lastBusy;
       lastBusy = busy;
+      if (document.documentElement) {
+        setAttr(document.documentElement, 'data-ag-ps-generating', busy ? '1' : '0');
+      }
 
       if (prevBusy && !busy) {
         orbDoneUntil = nowMs + ORB_CONVERGE_MS;
@@ -5229,6 +5296,7 @@
         html.removeAttribute('data-ag-ps-bubble-contrast');
         html.removeAttribute('data-ag-ps-compact');
         html.removeAttribute('data-ag-ps-sidebar-sessions');
+        html.removeAttribute('data-ag-ps-generating');
         html.style.removeProperty('--ag-ps-chat-font');
         html.style.removeProperty('--ag-ps-code-font');
         html.style.removeProperty('--ag-ps-bubble-color');

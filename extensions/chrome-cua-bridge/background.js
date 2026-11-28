@@ -186,7 +186,7 @@ function sendSyncArmedTabs() {
   postNativeSafe({
     type: 'sync_armed_tabs',
     extensionId: chrome.runtime.id,
-    version: '0.9.4',
+    version: '0.9.5',
     ts: Date.now(),
     tabs: list,
     armedTabs: list
@@ -237,7 +237,7 @@ function disconnectNativeIfIdle() {
       nativePort.postMessage({
         type: 'sync_armed_tabs',
         extensionId: chrome.runtime.id,
-        version: '0.9.4',
+        version: '0.9.5',
         ts: Date.now(),
         tabs: [],
         armedTabs: []
@@ -355,7 +355,7 @@ async function armTabByUserGesture(tab) {
 async function ensureContentAgentLoaded(tabId) {
   const probe = await chrome.scripting.executeScript({
     target: { tabId },
-    func: () => Boolean(window.__prismCuaContentAgent && window.__prismCuaContentAgent.version === '0.9.4')
+    func: () => Boolean(window.__prismCuaContentAgent && window.__prismCuaContentAgent.version === '0.9.5')
   });
   const alreadyLoaded = Boolean(probe && probe[0] && probe[0].result === true);
   if (!alreadyLoaded) {
@@ -491,7 +491,7 @@ async function handleNativeMessage(msg) {
       ok: true,
       pong: true,
       extensionId: chrome.runtime.id,
-      version: '0.9.4',
+      version: '0.9.5',
       armedCount: armedTabs.size,
       tabs: list,
       armedTabs: list
@@ -713,7 +713,7 @@ async function probeNativeHostTransient() {
     });
 
     try {
-      tempPort.postMessage({ type: 'get_status', id: 'probe-1', extensionId: chrome.runtime.id, version: '0.9.4', ts: Date.now() });
+      tempPort.postMessage({ type: 'get_status', id: 'probe-1', extensionId: chrome.runtime.id, version: '0.9.5', ts: Date.now() });
     } catch {}
 
     // If Native Messaging host stayed alive for 220ms without immediate lastError disconnect, it is registered & reachable
@@ -784,7 +784,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
       postNativeSafe({
         type: 'heartbeat',
         extensionId: chrome.runtime.id,
-        version: '0.9.4',
+        version: '0.9.5',
         ts: Date.now(),
         armedCount: armedTabs.size,
         tabs: list,
@@ -835,7 +835,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         reason: 'USER_ESC_ABORTED',
         tabId: senderTabId,
         extensionId: chrome.runtime.id,
-        version: '0.9.4',
+        version: '0.9.5',
         ts: Date.now()
       });
       sendResponse({ ok: true, emergencyStopped: true });
@@ -858,7 +858,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({
         ok: true,
         extensionId: chrome.runtime.id,
-        version: '0.9.4',
+        version: '0.9.5',
         activeTab: activeTab
           ? {
               tabId,

@@ -16,8 +16,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("Anti-Claude Prism Suite 一键安装器")]
 [assembly: AssemblyDescription("Anti-Claude Prism Suite Standalone All-in-One Installer (Kernel + Extensions + prism-files + prism-cua + chrome-bridge)")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.9.4.0")]
-[assembly: AssemblyFileVersion("0.9.4.0")]
+[assembly: AssemblyVersion("0.9.5.0")]
+[assembly: AssemblyFileVersion("0.9.5.0")]
 
 namespace AntiClaudePrismSuiteInstaller
 {
@@ -2572,7 +2572,7 @@ namespace AntiClaudePrismSuiteInstaller
             // Explicit DPI-exact scaling (prevents WinForms AutoScaleMode.Dpi 96-vs-192 mismatch on 150%/200%/250% displays)
             AutoScaleMode = AutoScaleMode.None;
             DoubleBuffered = true;
-            Text = "Anti-Claude Prism Suite 一键安装器 v0.9.4（独立完整版）";
+            Text = "Anti-Claude Prism Suite 一键安装器 v0.9.5（独立完整版）";
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = Color.FromArgb(248, 250, 252);
             ForeColor = Color.FromArgb(15, 23, 42);
@@ -2644,7 +2644,7 @@ namespace AntiClaudePrismSuiteInstaller
             headerTextCol.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             lblTitle = new Label();
-            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.9.4";
+            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.9.5";
             lblTitle.ForeColor = Color.White;
             lblTitle.Font = MakeFont(13f, FontStyle.Bold);
             lblTitle.AutoSize = true;
@@ -3251,7 +3251,7 @@ namespace AntiClaudePrismSuiteInstaller
                         MessageBox.Show(
                             this,
                             isInstall
-                                ? "Anti-Claude Prism Suite v0.9.4 安装成功！\n\n快速上手三步指引：\n1. 若 Antigravity 正在打开，请先关闭并重新启动一次；\n2. 点击窗口右上角「✦ 棱镜」，一键选择喜欢的主题配色与体验模式；\n3. 点击顶栏「工作台」，即可使用文件浏览、历史检索与多账号一键切换！"
+                                ? "Anti-Claude Prism Suite v0.9.5 安装成功！\n\n快速上手三步指引：\n1. 若 Antigravity 正在打开，请先关闭并重新启动一次；\n2. 点击窗口右上角「✦ 棱镜」，一键选择喜欢的主题配色与体验模式；\n3. 点击顶栏「工作台」，即可使用文件浏览、历史检索与多账号一键切换！"
                                 : "已干净卸载选中的 Anti-Claude Prism Suite 组件。",
                             isInstall ? "安装成功" : "卸载完成",
                             MessageBoxButtons.OK,

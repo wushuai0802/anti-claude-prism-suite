@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Prism Files MCP App Server (Clean-Room Original, MIT, Zero External Dependencies)
- * Part of Anti-Claude Prism Suite v0.9.4
+ * Part of Anti-Claude Prism Suite v0.9.5
  *
  * Implements MCP stdio JSON-RPC 2.0 + SEP-1865 MCP Apps UI resources:
  *   - Model-visible tools (strictly 8):
@@ -54,7 +54,7 @@ export const APP_URI = 'ui://prism-files/app.html';
 export const INLINE_URI = 'ui://prism-files/inline.html';
 export const APP_MIME_TYPE = 'text/html;profile=mcp-app';
 export const CUA_EXTENSION_ID = 'lbmibnghmlnidfiihkegicaejaacmkca';
-const SERVER_INFO = { name: 'prism-files', version: '0.9.4' };
+const SERVER_INFO = { name: 'prism-files', version: '0.9.5' };
 const MAX_TEXT_PREVIEW_BYTES = 256 * 1024;
 const MAX_IMAGE_PREVIEW_BYTES = 4 * 1024 * 1024;
 const MAX_SAVE_BYTES = 512 * 1024;
@@ -4079,7 +4079,8 @@ export function createPrismFilesServer({
         systemPrompt: args.systemPrompt || '',
         webSearch: args.webSearch,
         maxTokens: args.maxTokens,
-        temperature: args.temperature
+        temperature: args.temperature,
+        totalTimeoutMs: args.timeoutMs ?? 165_000
       });
       const fbBanner = askRes.usedFallback
         ? `[answered by ${askRes.actualModelId} (fallback from ${askRes.requestedModelId}: ${askRes.fallbackReason}) | TTFT ${askRes.ttftMs}ms | ${askRes.totalMs}ms]\n`
@@ -4898,7 +4899,15 @@ if (isMain) {
       }
       Promise.resolve(server.handleRpc(parsed))
         .then(sendLine)
-        .catch(() => {});
+        .catch((err) => {
+          if (parsed && parsed.id !== undefined && parsed.id !== null) {
+            sendLine({
+              jsonrpc: '2.0',
+              id: parsed.id,
+              error: { code: -32000, message: String(err?.message || 'Internal error') }
+            });
+          }
+        });
     }
   });
   process.stdin.resume();

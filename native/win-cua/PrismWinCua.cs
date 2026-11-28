@@ -16,10 +16,10 @@ using System.Windows.Automation;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Prism Win32 CUA Helper & Native Messaging Bridge")]
-[assembly: AssemblyDescription("Anti-Claude Prism Suite v0.9.4 Controlled Desktop & Browser CUA Helper")]
+[assembly: AssemblyDescription("Anti-Claude Prism Suite v0.9.5 Controlled Desktop & Browser CUA Helper")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.9.4.0")]
-[assembly: AssemblyFileVersion("0.9.4.0")]
+[assembly: AssemblyVersion("0.9.5.0")]
+[assembly: AssemblyFileVersion("0.9.5.0")]
 
 namespace AntiClaudePrismWinCua
 {
@@ -5265,7 +5265,7 @@ namespace AntiClaudePrismWinCua
             {
                 Dictionary<string, object> ver = new Dictionary<string, object>();
                 ver["ok"] = true;
-                ver["version"] = "0.9.4";
+                ver["version"] = "0.9.5";
                 ver["platform"] = "win32";
                 WriteJsonLine(ver);
                 return 0;

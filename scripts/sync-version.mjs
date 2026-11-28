@@ -39,7 +39,7 @@ const RULES = [
   },
   {
     rel: 'plugin-cua/server/index.mjs',
-    apply: (s) => s.replace(/(\bSERVER_INFO\s*=\s*\{[\s\S]{0,80}?version:\s*')(\d+\.\d+\.\d+)(')/, `$1${ver}$3`)
+    apply: (s) => s.replace(/(\bSERVER_INFO\s*=\s*(?:Object\.freeze\(\s*)?\{[\s\S]{0,80}?version:\s*')(\d+\.\d+\.\d+)(')/, `$1${ver}$3`)
   },
   {
     rel: 'vendor/anti-claude/core/cua-broker.mjs',

@@ -1,5 +1,5 @@
 /* ============================================================================
- * Anti-Claude Prism Suite v0.9.4 — Workflow & i18n Module (Clean-Room, MIT)
+ * Anti-Claude Prism Suite v0.9.5 — Workflow & i18n Module (Clean-Room, MIT)
  * Zero external dependencies. Joins Frozen Bus v4 safely regardless of load order.
  *
  * Features:

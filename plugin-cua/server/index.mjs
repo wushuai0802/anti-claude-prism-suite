@@ -41,7 +41,7 @@ const MAX_STDIN_BUFFER_BYTES = 16 * 1024 * 1024;
 
 export const SERVER_INFO = Object.freeze({
   name: 'prism-cua_control',
-  version: '0.9.3'
+  version: '0.9.5'
 });
 
 const ASSERTION_SCHEMA = {
@@ -122,6 +122,10 @@ export const TOOLS = Object.freeze([
         includeScreenshot: {
           type: 'boolean',
           description: '是否附带当前窗口/标签页截图（Electron 自绘界面或需视觉核验时开启）'
+        },
+        includeTree: {
+          type: 'boolean',
+          description: '是否枚举桌面 UIA / 网页 DOM 控件树（默认 true；仅需纯截图视觉观察时可设为 false 以省去遍历耗时）'
         },
         gridOverlay: {
           type: 'boolean',
@@ -317,6 +321,9 @@ function extractCleanScreenshot(obsOrPayload) {
 
 function formatCompactElementList(obs, maxItems = 80) {
   if (!obs || typeof obs !== 'object') return ['(无控件节点)'];
+  if (obs.includeTree === false || obs.treeOmitted === true) {
+    return ['(本次观察已跳过 UI 控件树枚举 [includeTree=false]，未列出 @ref 节点；如需控件引用请将 includeTree 设为 true)'];
+  }
   const items = [];
 
   const visit = (arr) => {
@@ -845,6 +852,10 @@ export function createPrismCuaServer({
       }
     }
 
+    const includeTree = args.includeTree !== false;
+    const includeScreenshot = args.includeScreenshot !== undefined
+      ? Boolean(args.includeScreenshot)
+      : !includeTree;
     const obsResp = await broker.observe({
       target: args.target || 'auto',
       windowId: args.windowId,
@@ -852,7 +863,9 @@ export function createPrismCuaServer({
       processName: args.processName,
       titleContains: args.titleContains,
       tabId: args.tabId,
-      includeScreenshot: Boolean(args.includeScreenshot),
+      includeScreenshot,
+      includeTree,
+      includeElements: includeTree,
       gridOverlay: Boolean(args.gridOverlay),
       maxElements: Number.isInteger(args.maxElements) ? args.maxElements : 120
     });
@@ -968,8 +981,23 @@ export function createPrismCuaServer({
     }
 
     const sanitizedObs = sanitizeObservationTree(rawObs);
-    const prevTargetObs = recordScopedObservation(sanitizedObs, args);
-    const diff = computeObservationDiff(prevTargetObs, sanitizedObs);
+    const treeSkipped = !includeTree || rawObs?.includeTree === false || rawObs?.treeOmitted === true;
+    if (treeSkipped) {
+      sanitizedObs.includeTree = false;
+      sanitizedObs.treeOmitted = true;
+      if (Array.isArray(sanitizedObs.elements)) sanitizedObs.elements = [];
+      if (Array.isArray(sanitizedObs.nodes)) sanitizedObs.nodes = [];
+      if ('tree' in sanitizedObs) sanitizedObs.tree = [];
+    }
+    const prevTargetObs = treeSkipped ? null : recordScopedObservation(sanitizedObs, args);
+    const diff = treeSkipped
+      ? {
+          changed: false,
+          lines: [],
+          counts: { added: 0, removed: 0, updated: 0 },
+          text: '(已跳过控件树增量对比 [includeTree=false])'
+        }
+      : computeObservationDiff(prevTargetObs, sanitizedObs);
 
     return {
       content: buildObservationContent(sanitizedObs, diff, 'mode: observe', rawObs),

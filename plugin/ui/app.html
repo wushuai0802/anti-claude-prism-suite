@@ -3012,7 +3012,7 @@
               <button type="button" id="btn-mhub-add-model" class="ctrl-btn is-primary" title="手动编排或收起模型表单（再次点击关闭）">+ 模型</button>
               <button type="button" id="btn-mhub-ai-setup" class="ctrl-btn" title="复制不含任何密钥的 AI 自动部署口令，粘贴给当前 AI 即可代填网关与模型">🤖 AI 代配</button>
               <button type="button" id="btn-mhub-reveal-profile" class="ctrl-btn" title="在系统文件管理器中定位本机 prism-profile.json 配置文件">📂 配置文件</button>
-              <button type="button" id="btn-mhub-probe-favs" class="ctrl-btn" title="对常用收藏模型依次执行极简流式 TTFT 测速">⚡ 测速</button>
+              <button type="button" id="btn-mhub-probe-favs" class="ctrl-btn" title="点击测速全部常用模型 · Shift+点击测速全部已启用模型（测速中再次点击可中止）">⚡ 批量测速</button>
             </div>
           </div>
           <div id="models-filter-bar" class="toolbar mhub-filter-toolbar" hidden>
@@ -5978,7 +5978,7 @@
       }
 
       function buildZeroSecretAiSetupPrompt(profilePath) {
-        const targetPath = profilePath || '~/.gemini/antigravity/prism-files/prism-profile.json';
+        const targetPath = profilePath || '~/.gemini/antigravity/anti-claude/prism-profile.json';
         return [
           '请帮我配置 Prism Suite 模型会诊中枢（零明文密钥安全模式）：',
           `1. 读取并更新本机配置文件 \`${targetPath}\`（保持文件权限 0600，绝不写入任何明文 API Key，仅绑定环境变量名 \`apiKeyEnv\` 或免密本地端点 \`allowKeyless: true\`）；`,
@@ -6017,8 +6017,10 @@
           btnMhubAddModel.setAttribute('aria-pressed', addModActive ? 'true' : 'false');
         }
         if (btnMhubProbeFavs) {
-          btnMhubProbeFavs.disabled = st.batchProbing || models.length === 0;
-          btnMhubProbeFavs.textContent = st.batchProbing ? '测速中…' : '⚡ 测速';
+          btnMhubProbeFavs.disabled = models.length === 0;
+          btnMhubProbeFavs.textContent = st.batchProbing
+            ? `⚡ ${st.batchProgressText || '测速中…'} (点此中止)`
+            : '⚡ 批量测速';
         }
 
         const qRaw = String(st.query || '');
@@ -6070,7 +6072,7 @@
         }
 
         const parts = [];
-        const profilePath = d?.profilePath || '~/.gemini/antigravity/prism-files/prism-profile.json';
+        const profilePath = d?.profilePath || '~/.gemini/antigravity/anti-claude/prism-profile.json';
         if (!isGuideDismissed('guide:models:v1')) {
           const hasHiddenAny = (appState.prefs.dismissedGuides || []).length > 0;
           parts.push(
@@ -6164,11 +6166,18 @@
             models.filter((m) => m.providerId === curDiscProv).map((m) => String(m.upstreamModel || m.id))
           );
           const dq = String(st.discoverQuery || '').trim().toLowerCase();
+          const dqNorm = dq.replace(/[\s_.-]+/g, '');
+          const matchDiscoverItem = (it) => {
+            if (!dq) return true;
+            const hay = [it.suggestedId, it.upstreamModel, it.vendor, it.tier]
+              .filter(Boolean)
+              .join(' ')
+              .toLowerCase();
+            return hay.includes(dq) || (dqNorm && hay.replace(/[\s_.-]+/g, '').includes(dqNorm));
+          };
           const discFiltered = (st.discoverItems || []).filter((it) => {
             if (st.discoverChatOnly && it.isChat === false) return false;
-            if (!dq) return true;
-            const labelId = String(it.upstreamModel || it.suggestedId || '').toLowerCase();
-            return labelId.includes(dq) || String(it.vendor || '').toLowerCase().includes(dq);
+            return matchDiscoverItem(it);
           });
           const isItemAlreadyImported = (it) => {
             const up = String(it.upstreamModel || it.suggestedId || '');
@@ -6718,7 +6727,7 @@
           accountsWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.9.4，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.9.5，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
                 `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
                 `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
               `</article>`
@@ -7520,7 +7529,7 @@
               ? `<span class="pill pill-warn">新版本 ${escapeHtml(suInfo.latestTag)}</span>`
               : st.radarLoading
                 ? '<span class="pill">检查中</span>'
-                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.9.4</span>');
+                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.9.5</span>');
         const expSnap = st.exposure || null;
         const expMcp = expSnap?.mcpExposure || appState.prefs?.mcpExposure || { fileTools: true, memoryTools: true, modelHubTools: true };
         const activeMcpCnt = (expMcp.fileTools !== false ? 2 : 0) + (expMcp.memoryTools !== false ? 4 : 0) + (expMcp.modelHubTools !== false ? 2 : 0);
@@ -7731,7 +7740,7 @@
           cuaWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-cua-action="refresh">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.9.4，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程；请在 Plugins Manager 重载插件或重启一次 Antigravity。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.9.5，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程；请在 Plugins Manager 重载插件或重启一次 Antigravity。</p>` +
               `</article>`
             : `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">读取电脑操控状态失败</span><button type="button" class="mini-btn is-primary" data-cua-action="refresh">重试</button></div>` +
@@ -8760,7 +8769,7 @@
             appState.accounts.selfUpdateChecking = false;
             appState.accounts.selfUpdateInfo = info;
             renderAccounts();
-            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.9.4'}`);
+            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.9.5'}`);
           } else if (act === 'self-update-repair-ask') {
             appState.accounts.selfUpdateConfirmRepair = true;
             renderAccounts();
@@ -9020,27 +9029,46 @@
         });
       }
       if (btnMhubProbeFavs) {
-        btnMhubProbeFavs.addEventListener('click', async () => {
+        btnMhubProbeFavs.addEventListener('click', async (event) => {
+          if (appState.models.batchProbing) {
+            appState.models.cancelBatchProbe = true;
+            return;
+          }
           const d = appState.models.data;
-          const targets = (d?.favorites?.length ? d.favorites : (d?.models || []).map((m) => m.id)).slice(0, 6);
-          if (!targets.length || appState.models.batchProbing) return;
+          const allEnabledIds = (d?.models || []).filter((m) => m.enabled !== false).map((m) => m.id);
+          const favIds = (d?.favorites || []).filter((id) => allEnabledIds.includes(id));
+          const targets = event?.shiftKey || !favIds.length ? allEnabledIds : favIds;
+          if (!targets.length) return;
           appState.models.batchProbing = true;
+          appState.models.cancelBatchProbe = false;
+          appState.models.batchProgressText = `0/${targets.length}`;
           renderModels();
           let okCnt = 0;
+          let doneCnt = 0;
           for (const id of targets) {
+            if (appState.models.cancelBatchProbe) break;
             appState.models.probingIds[id] = true;
+            appState.models.batchProgressText = `${doneCnt + 1}/${targets.length}`;
             renderModels();
             try {
               const r = await callServerTool('model_hub_probe_speed', { modelId: id });
               if (r?.profile) appState.models.data = r.profile;
               if (r?.ok) okCnt++;
             } catch {}
+            doneCnt++;
             delete appState.models.probingIds[id];
             renderModels();
           }
+          const wasCancelled = Boolean(appState.models.cancelBatchProbe);
           appState.models.batchProbing = false;
+          appState.models.cancelBatchProbe = false;
+          appState.models.batchProgressText = '';
           renderModels();
-          showToast(`批量测速完成：${okCnt}/${targets.length} 可用`);
+          showToast(
+            wasCancelled
+              ? `已中止批量测速（已完成 ${okCnt}/${doneCnt} 可用）`
+              : `批量测速完成：${okCnt}/${targets.length} 可用`
+          );
         });
       }
 
@@ -9247,12 +9275,16 @@
               const existingModels = Array.isArray(st.data?.models) ? st.data.models : [];
               const existingUpstreams = new Set(existingModels.filter((m) => m.providerId === pid).map((m) => String(m.upstreamModel || m.id)));
               const dq = String(st.discoverQuery || '').trim().toLowerCase();
+              const dqNorm = dq.replace(/[\s_.-]+/g, '');
               for (const it of st.discoverItems || []) {
                 const keyId = String(it.upstreamModel || it.suggestedId || '');
                 const sgId = String(it.suggestedId || keyId);
                 if (!keyId) continue;
                 if (st.discoverChatOnly && it.isChat === false) continue;
-                if (dq && !keyId.toLowerCase().includes(dq) && !String(it.vendor || '').toLowerCase().includes(dq)) continue;
+                if (dq) {
+                  const hay = [sgId, keyId, it.vendor, it.tier].filter(Boolean).join(' ').toLowerCase();
+                  if (!hay.includes(dq) && !(dqNorm && hay.replace(/[\s_.-]+/g, '').includes(dqNorm))) continue;
+                }
                 if (it.alreadyAdded || existingUpstreams.has(keyId) || existingModels.some((m) => m.id === sgId || m.id === keyId)) continue;
                 const tierSel = modelsWrap.querySelector(`select[data-disc-tier-for="${safeCssEscape(keyId)}"]`);
                 st.discoverSelected[keyId] = tierSel?.value || it.tier || 'T2';
@@ -10303,7 +10335,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.9.4' },
+            appInfo: { name: 'prism-files', version: '0.9.5' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};

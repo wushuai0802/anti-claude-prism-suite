@@ -1,5 +1,5 @@
 /* ============================================================================
- * Anti-Claude Prism Suite v0.9.4 (Clean-Room Original, MIT)
+ * Anti-Claude Prism Suite v0.9.5 (Clean-Room Original, MIT)
  * Performance-first architecture:
  *   - Zero document.body MutationObserver (0.0ms typing latency in composer)
  *   - Stream ink observer attaches ONLY to [data-testid="autoscroll-viewport"]
@@ -12,7 +12,7 @@
     try { window.__agPrismSuiteDispose(); } catch {}
   }
 
-  const SUITE_VERSION = '0.9.4';
+  const SUITE_VERSION = '0.9.5';
   const REPO_RELEASES_API = 'https://api.github.com/repos/wushuai0802/anti-claude-prism-suite/releases/latest';
   const REPO_RELEASES_URL = 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/latest';
   const STORAGE_KEY = 'ag_prism_suite_prefs_v1';

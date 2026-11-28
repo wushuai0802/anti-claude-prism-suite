@@ -3971,8 +3971,24 @@ function unmaskThoughtProtectedSpans(text, originals) {
   });
 }
 
-function splitTextForTranslation(text, maxChunkLen = 950) {
-  const paragraphs = text.split(/\n{2,}/);
+export function clipUtf16Safe(text, maxUnits) {
+  const s = String(text ?? '');
+  const limit = Math.max(0, Math.floor(Number(maxUnits) || 0));
+  if (s.length <= limit) return s;
+  let end = limit;
+  if (end > 0 && end < s.length) {
+    const prev = s.charCodeAt(end - 1);
+    const next = s.charCodeAt(end);
+    if (prev >= 0xd800 && prev <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+      end -= 1;
+    }
+  }
+  return s.slice(0, end);
+}
+
+export function splitTextForTranslation(text, maxChunkLen = 900) {
+  const limit = Math.max(2, Math.floor(Number(maxChunkLen) || 900));
+  const paragraphs = String(text ?? '').split(/\n{2,}/);
   const chunks = [];
   let cur = '';
   const pushCur = () => {
@@ -3982,8 +3998,8 @@ function splitTextForTranslation(text, maxChunkLen = 950) {
   for (const para of paragraphs) {
     const p = para.trim();
     if (!p) continue;
-    if (p.length <= maxChunkLen) {
-      if (cur && cur.length + 2 + p.length > maxChunkLen) pushCur();
+    if (p.length <= limit) {
+      if (cur && cur.length + 2 + p.length > limit) pushCur();
       cur = cur ? `${cur}\n\n${p}` : p;
       continue;
     }
@@ -3991,8 +4007,8 @@ function splitTextForTranslation(text, maxChunkLen = 950) {
     const sentences = p.split(/(?<=[.!?\n])\s+/);
     let buf = '';
     for (const sent of sentences) {
-      if (sent.length <= maxChunkLen) {
-        if (buf && buf.length + 1 + sent.length > maxChunkLen) {
+      if (sent.length <= limit) {
+        if (buf && buf.length + 1 + sent.length > limit) {
           chunks.push(buf.trim());
           buf = '';
         }
@@ -4002,8 +4018,30 @@ function splitTextForTranslation(text, maxChunkLen = 950) {
           chunks.push(buf.trim());
           buf = '';
         }
-        for (let i = 0; i < sent.length; i += maxChunkLen) {
-          chunks.push(sent.slice(i, i + maxChunkLen));
+        let i = 0;
+        while (i < sent.length) {
+          let end = Math.min(sent.length, i + limit);
+          if (end < sent.length) {
+            const prev = sent.charCodeAt(end - 1);
+            const next = sent.charCodeAt(end);
+            if (prev >= 0xd800 && prev <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+              end = end > i + 1 ? end - 1 : Math.min(sent.length, end + 1);
+            }
+          }
+          if (end < sent.length) {
+            const scanStart = Math.max(i, end - 12);
+            const relOpen = sent.slice(scanStart, end).lastIndexOf('⟪');
+            if (relOpen !== -1) {
+              const openIdx = scanStart + relOpen;
+              const closeIdx = sent.indexOf('⟫', openIdx);
+              if (closeIdx >= end && closeIdx - openIdx <= 12) {
+                end = openIdx > i ? openIdx : Math.min(sent.length, closeIdx + 1);
+              }
+            }
+          }
+          const slice = sent.slice(i, end);
+          if (slice) chunks.push(slice);
+          i = end;
         }
       }
     }
@@ -4024,7 +4062,7 @@ async function translateChunk(chunk, tl, fetchFn = fetch) {
     if (!res.ok) throw new Error(`http_${res.status}`);
     const data = await res.json();
     const translated = Array.isArray(data?.[0]) ? data[0].map((seg) => (Array.isArray(seg) ? seg[0] || '' : '')).join('') : '';
-    if (!translated) throw new Error('empty_translation');
+    if (!translated.trim()) throw new Error('empty_translation');
     setBounded(translateChunkCache, cKey, translated, 384);
     return translated;
   } catch (err) {
@@ -4044,7 +4082,7 @@ async function translateChunk(chunk, tl, fetchFn = fetch) {
     : data2?.sentences
       ? data2.sentences.map((s) => s?.trans || '').join('')
       : '';
-  if (!translated2) throw tier1Err || new Error('empty_translation');
+  if (!translated2.trim()) throw tier1Err || new Error('empty_translation');
   setBounded(translateChunkCache, cKey, translated2, 384);
   return translated2;
 }
@@ -4053,9 +4091,9 @@ export async function translateThoughtText(rawText, targetLang = 'zh-CN', opts =
   const rawTrimmed = String(rawText || '').trim();
   if (!rawTrimmed) return { ok: true, translated: '', skipped: true };
   ensureTranslateCacheLoaded();
-  const preClipped = rawTrimmed.length > 14000 ? rawTrimmed.slice(0, 14000) : rawTrimmed;
+  const preClipped = clipUtf16Safe(rawTrimmed, 14000);
   const redacted = redactSensitiveOutboundText(preClipped);
-  const clipped = redacted.length > 10000 ? redacted.slice(0, 10000) : redacted;
+  const clipped = clipUtf16Safe(redacted, 10000);
   const tl = /^[a-zA-Z-]{2,10}$/.test(String(targetLang || '')) ? String(targetLang) : 'zh-CN';
   const cacheKey = `${tl}:${crypto.createHash('sha1').update(clipped).digest('hex')}`;
   const cachedHit = getTranslateCacheEntry(cacheKey);
@@ -4073,7 +4111,7 @@ export async function translateThoughtText(rawText, targetLang = 'zh-CN', opts =
 
   const fetchFn = typeof opts?.fetchFn === 'function' ? opts.fetchFn : fetch;
   try {
-    const chunks = splitTextForTranslation(masked, 950);
+    const chunks = splitTextForTranslation(masked, 900);
     const out = [];
     for (const ch of chunks) {
       out.push(await translateChunk(ch, tl, fetchFn));
@@ -4228,6 +4266,95 @@ function predictNextPromptHeuristic(lastAssistantText) {
   return '继续检查还有没有遗漏细节需要优化';
 }
 
+const daemonPredictLruCache = new Map(); // sig -> { suggestion, expiresAt }
+const daemonProviderCooldownMap = new Map(); // providerKey -> cooldownUntilMs
+const daemonVaultSecretCache = new Map(); // providerId -> { secret, expiresAt, profileUpdatedAt }
+let daemonVaultStorePromise = null;
+
+async function resolveDaemonVaultSecret(providerId, profileUpdatedAt = '') {
+  const cleanId = typeof providerId === 'string' ? providerId.trim() : '';
+  if (!cleanId || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(cleanId)) return '';
+  const now = Date.now();
+  const hit = daemonVaultSecretCache.get(cleanId);
+  if (hit && now < hit.expiresAt && hit.profileUpdatedAt === profileUpdatedAt) {
+    return hit.secret;
+  }
+  try {
+    if (!daemonVaultStorePromise) {
+      daemonVaultStorePromise = (async () => {
+        const { fileURLToPath, pathToFileURL } = await import('node:url');
+        const candidates = [
+          path.join(os.homedir(), '.gemini', 'config', 'plugins', 'prism-files', 'server', 'account-vault.mjs'),
+          path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'plugin', 'server', 'account-vault.mjs')
+        ];
+        for (const cand of candidates) {
+          if (fs.existsSync(cand)) {
+            const mod = await import(pathToFileURL(cand).href);
+            if (typeof mod?.createAccountVault === 'function') {
+              return mod.createAccountVault();
+            }
+          }
+        }
+        return null;
+      })().catch(() => null);
+    }
+    const vault = await daemonVaultStorePromise;
+    const secret = vault && typeof vault.getProviderSecret === 'function'
+      ? String(vault.getProviderSecret(cleanId) || '').trim()
+      : '';
+    daemonVaultSecretCache.set(cleanId, {
+      secret,
+      expiresAt: now + (secret ? 10 * 60_000 : 60_000),
+      profileUpdatedAt
+    });
+    return secret;
+  } catch {
+    daemonVaultSecretCache.set(cleanId, { secret: '', expiresAt: now + 60_000, profileUpdatedAt });
+    return '';
+  }
+}
+
+function selectFastPredictionModels(rawModels) {
+  const FAST_HINT_RE = /(?:flash-lite|flash|hsalf|mini|haiku|oss-120b|b021-sso|lite|etil|nano)/i;
+  const THINKING_HEAVY_RE = /(?:xhigh|hgihx|thinking|gnikniht|reasoner|opus|astra|artsa|carbon|nobrac)/i;
+  const eligible = [];
+
+  for (const m of rawModels) {
+    if (typeof m === 'string') {
+      const s = m.trim();
+      if (s && FAST_HINT_RE.test(s) && !THINKING_HEAVY_RE.test(s)) {
+        eligible.push({ upstream: s, tierRank: 1, subRank: 1, ttftMs: 99_999 });
+      }
+      continue;
+    }
+    if (!m || typeof m !== 'object' || m.enabled === false) continue;
+    const upstream = String(m.upstreamModel || m.modelId || m.model || m.name || m.id || '').trim();
+    if (!upstream) continue;
+    const labelHay = `${m.id || ''} ${m.alias || ''} ${upstream}`;
+    const tier = String(m.tier || '').toUpperCase();
+    const isLightTier = tier === 'T4' || tier === 'T3';
+    const isFastNamed = FAST_HINT_RE.test(labelHay);
+    if (!isLightTier && !isFastNamed) continue;
+    if (tier === 'T1' || tier === 'T2') continue;
+
+    const tierRank = tier === 'T4' ? 0 : 1;
+    // Prefer native non-thinking flash-lite / glm-flash / deepseek-flash first, then high-thinking flash, then oss
+    const subRank = /(?:flash-lite|etil-hsalf|glm-.*-flash|hsalf-.*-mlg|hsalf-1\.4v-keespeed)/i.test(labelHay)
+      ? 0
+      : /(?:oss-120b|b021-sso)/i.test(labelHay)
+        ? 2
+        : 1;
+    const spd = m.lastSpeed;
+    const ttftMs = spd && spd.ok && Number.isFinite(Number(spd.ttftMs)) && Number(spd.ttftMs) > 0
+      ? Number(spd.ttftMs)
+      : 50_000;
+    eligible.push({ upstream, tierRank, subRank, ttftMs });
+  }
+
+  eligible.sort((a, b) => (a.tierRank - b.tierRank) || (a.subRank - b.subRank) || (a.ttftMs - b.ttftMs));
+  return eligible.slice(0, 2).map((x) => x.upstream);
+}
+
 export async function predictNextPromptAction(payload, opts = {}) {
   const rawUserTail = String(payload?.lastUserText || '').trim().slice(-4000);
   const rawAssistantTail = String(payload?.lastAssistantText || '').trim().slice(-6000);
@@ -4235,10 +4362,21 @@ export async function predictNextPromptAction(payload, opts = {}) {
   const lastAssistantText = redactSensitiveOutboundText(rawAssistantTail).slice(-1400);
 
   if (lastAssistantText || lastUserText) {
+    const cacheSig = crypto.createHash('sha1').update(`${lastUserText}\n---\n${lastAssistantText}`).digest('hex');
+    const now = Date.now();
+    const cachedHit = daemonPredictLruCache.get(cacheSig);
+    if (cachedHit && now < cachedHit.expiresAt) {
+      return { ok: true, suggestion: cachedHit.suggestion, source: 'ai', cached: true };
+    }
+    if (cachedHit) daemonPredictLruCache.delete(cacheSig);
+
     const profileFile = opts.profileFile || process.env.PRISM_PROFILE_PATH || PRISM_PROFILE_FILE;
     const hubFile = opts.modelHubFile || process.env.PRISM_MODEL_HUB_FILE || MODEL_HUB_CONFIG_FILE;
     const env = opts.env || process.env;
     const fetchFn = typeof opts.fetchFn === 'function' ? opts.fetchFn : fetch;
+    const sysInstruction =
+      '基于最后一轮问答（重点依据助手回复末尾的最新结论或提问，忽略前文已完结的历史背景），站在用户角度预测用户下一步最可能输入的一句简短中文指令（10~24字，直接输出指令本身，不要引号、句号或解释）。';
+    const userTurnContent = `${lastUserText ? `【用户上一句】\n${lastUserText}\n\n` : ''}【助手最新回复】\n${lastAssistantText}`;
 
     const configSources = [
       { kind: 'profile', raw: readJsonOrFallback(profileFile, null) },
@@ -4247,6 +4385,7 @@ export async function predictNextPromptAction(payload, opts = {}) {
 
     for (const { kind, raw: rawHub } of configSources) {
       if (!rawHub || typeof rawHub !== 'object') continue;
+      const profileUpdatedAt = String(rawHub.updatedAt || '');
       const candidates = Array.isArray(rawHub)
         ? rawHub
         : Array.isArray(rawHub.endpoints)
@@ -4260,75 +4399,134 @@ export async function predictNextPromptAction(payload, opts = {}) {
 
       for (const ep of candidates) {
         if (!ep || typeof ep !== 'object' || ep.enabled === false) continue;
-        if (ep.protocol && !/^openai/i.test(String(ep.protocol))) continue;
+        const protocol = String(ep.protocol || 'openai-chat').trim().toLowerCase();
+        const isAnthropic = protocol === 'anthropic-messages' || protocol === 'anthropic';
+        const isResponses = protocol === 'openai-responses';
+        const isOpenAiChat = !isAnthropic && !isResponses && /^openai/i.test(protocol);
+        if (!isAnthropic && !isResponses && !isOpenAiChat) continue;
+
         const baseUrl = String(ep.baseUrl || '').trim().replace(/\/+$/, '');
         if (!baseUrl) continue;
+        const cooldownKey = `${kind}:${ep.id || baseUrl}`;
+        const cooldownUntil = daemonProviderCooldownMap.get(cooldownKey) || 0;
+        if (opts.ignoreCooldown !== true && Date.now() < cooldownUntil) continue;
 
         const authMode = String(ep.authMode || '').trim().toLowerCase();
+        const allowKeylessLocal = Boolean(ep.allowKeyless) || authMode === 'none';
         const envKeyName = typeof ep.apiKeyEnv === 'string' ? ep.apiKeyEnv.trim() : '';
         const envApiKey = envKeyName && isSafeLlmApiKeyEnvName(envKeyName) ? String(env[envKeyName] || '').trim() : '';
         const directApiKey = kind === 'legacy' && typeof ep.apiKey === 'string' ? ep.apiKey.trim() : '';
-        const apiKey = envApiKey || directApiKey;
-        const allowKeylessLocal = authMode === 'none';
+        let apiKey = envApiKey || directApiKey;
+        if (!apiKey && ep.hasVaultKey) {
+          apiKey = typeof opts.vaultSecretResolver === 'function'
+            ? String((await opts.vaultSecretResolver(ep.id)) || '').trim()
+            : await resolveDaemonVaultSecret(ep.id, profileUpdatedAt);
+        }
         if (!apiKey && !allowKeylessLocal) continue;
 
-        const chatUrl = /\/chat\/completions$/i.test(baseUrl) ? baseUrl : `${baseUrl}/chat/completions`;
-        if (!isAllowedModelHubEndpointUrl(chatUrl)) continue;
+        const endpointUrl = isAnthropic
+          ? (/\/messages$/i.test(baseUrl) ? baseUrl : `${baseUrl}/messages`)
+          : isResponses
+            ? (/\/responses$/i.test(baseUrl) ? baseUrl : `${baseUrl}/responses`)
+            : (/\/chat\/completions$/i.test(baseUrl) ? baseUrl : `${baseUrl}/chat/completions`);
+        if (!isAllowedModelHubEndpointUrl(endpointUrl)) continue;
 
         const rawModels = Array.isArray(ep.models)
           ? ep.models
           : ep.id
             ? topModels.filter((m) => m && m.providerId === ep.id && m.enabled !== false)
             : topModels;
-        const modelIds = rawModels
-          .filter((m) => (typeof m === 'string' ? true : m && m.enabled !== false))
-          .map((m) =>
-            typeof m === 'string'
-              ? m.trim()
-              : String(m.upstreamModel || m.modelId || m.model || m.name || m.id || '').trim()
-          )
-          .filter(Boolean);
-        const chosenModel = modelIds.find((id) => /flash|mini|haiku/i.test(id)) || modelIds[0] || '';
-        if (!chosenModel) continue;
+        const chosenModels = selectFastPredictionModels(rawModels);
+        if (!chosenModels.length) continue;
 
         const headers = { 'Content-Type': 'application/json' };
-        if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-
-        try {
-          const res = await fetchFn(chatUrl, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-              model: chosenModel,
-              max_tokens: 42,
-              temperature: 0.3,
-              messages: [
-                {
-                  role: 'system',
-                  content:
-                    '基于最后一轮问答（重点依据助手回复末尾的最新结论或提问，忽略前文已完结的历史背景），站在用户角度预测用户下一步最可能输入的一句简短中文指令（10~24字，直接输出指令本身，不要引号、句号或解释）。'
-                },
-                {
-                  role: 'user',
-                  content: `${lastUserText ? `【用户上一句】\n${lastUserText}\n\n` : ''}【助手最新回复】\n${lastAssistantText}`
-                }
-              ]
-            }),
-            signal: AbortSignal.timeout(2800),
-            redirect: 'error'
-          });
-          if (!res.ok) continue;
-          const data = await res.json();
-          const rawContent = String(data?.choices?.[0]?.message?.content || '')
-            .replace(/<think>[\s\S]*?<\/think>/gi, '')
-            .replace(/[\r\n]+/g, ' ')
-            .replace(/\s+/g, ' ')
-            .replace(/^[\s"'“”‘’「」『』`]+|[\s"'“”‘’「」『』`。！.!]+$/g, '')
-            .trim();
-          if (rawContent.length >= 4 && rawContent.length <= 48) {
-            return { ok: true, suggestion: rawContent, source: 'ai' };
+        if (apiKey) {
+          if (isAnthropic) {
+            headers['x-api-key'] = apiKey;
+            headers['anthropic-version'] = '2023-06-01';
+          } else {
+            headers.Authorization = `Bearer ${apiKey}`;
           }
-        } catch {}
+        }
+
+        let allFailed = true;
+        for (const chosenModel of chosenModels) {
+          const reqBody = isAnthropic
+            ? {
+                model: chosenModel,
+                max_tokens: 128,
+                temperature: 0.3,
+                system: sysInstruction,
+                messages: [{ role: 'user', content: userTurnContent }]
+              }
+            : isResponses
+              ? {
+                  model: chosenModel,
+                  max_output_tokens: 128,
+                  temperature: 0.3,
+                  instructions: sysInstruction,
+                  input: userTurnContent
+                }
+              : {
+                  model: chosenModel,
+                  max_tokens: 128,
+                  temperature: 0.3,
+                  messages: [
+                    { role: 'system', content: sysInstruction },
+                    { role: 'user', content: userTurnContent }
+                  ]
+                };
+
+          try {
+            const res = await fetchFn(endpointUrl, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(reqBody),
+              signal: AbortSignal.timeout(5000),
+              redirect: 'error'
+            });
+            if (!res.ok) continue;
+            allFailed = false;
+            const data = await res.json();
+            let extracted = '';
+            if (isAnthropic) {
+              if (Array.isArray(data?.content)) {
+                extracted = data.content
+                  .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+                  .map((b) => b.text)
+                  .join(' ');
+              }
+            } else if (isResponses) {
+              extracted = typeof data?.output_text === 'string'
+                ? data.output_text
+                : Array.isArray(data?.output)
+                  ? data.output
+                      .flatMap((it) => (Array.isArray(it?.content) ? it.content : []))
+                      .map((c) => (typeof c?.text === 'string' ? c.text : ''))
+                      .join(' ')
+                  : '';
+            } else {
+              extracted = String(data?.choices?.[0]?.message?.content || '');
+            }
+            const rawContent = String(extracted || '')
+              .replace(/<think>[\s\S]*?<\/think>/gi, '')
+              .replace(/[\r\n]+/g, ' ')
+              .replace(/\s+/g, ' ')
+              .replace(/^[\s"'“”‘’「」『』`]+|[\s"'“”‘’「」『』`。！.!]+$/g, '')
+              .trim();
+            if (rawContent.length >= 4 && rawContent.length <= 48) {
+              daemonProviderCooldownMap.delete(cooldownKey);
+              setBounded(daemonPredictLruCache, cacheSig, {
+                suggestion: rawContent,
+                expiresAt: Date.now() + 10 * 60_000
+              }, 64);
+              return { ok: true, suggestion: rawContent, source: 'ai', model: chosenModel };
+            }
+          } catch {}
+        }
+        if (allFailed) {
+          daemonProviderCooldownMap.set(cooldownKey, Date.now() + 45_000);
+        }
       }
     }
   }

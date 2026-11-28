@@ -1,7 +1,7 @@
 {
   "name": "prism-cua",
   "displayName": "Prism 电脑操控 (Computer Use)",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "description": "按需启用的桌面与已登录浏览器受控自动化插件（默认关闭不占上下文）：内置独立可视化 AI 虚拟指针、四级无感防抢鼠路由、显式授权窗、Codex 式单键 Esc 急刹、声明式 batch_actions 与敏感区硬护栏。",
   "logo": "assets/logo.svg",
   "disabled": true,

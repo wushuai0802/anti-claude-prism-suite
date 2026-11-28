@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.5 - 2026-11-28
+
+- **模型中枢真实流式 `tok/s` 测速校准、混淆 ID 自动解码、地域路由 `400` 容灾降级与批量进度测速（[model-hub.mjs](plugin/server/model-hub.mjs) / [prism-profile.mjs](plugin/server/prism-profile.mjs) / [account-vault.mjs](plugin/server/account-vault.mjs) / [index.mjs](plugin/server/index.mjs) / [app.html](plugin/ui/app.html)）**：
+  - **首字后真实流式解码吞吐率统计**：`probeModelSpeed` 升级为纯流式多块采样，当上游未回传显式思考字符时剔除首字前隐藏推理 Token 虚高干扰，自动过滤 `> 450 tok/s` 代理缓冲假象与单 Token 失真，并放宽思考模型测速预算以防 `502 unexpected EOF`；
+  - **发现模型自动解码与批量进度测速**：`classifyDiscoveredModel` 自动反转还原 `claude-fable-5-dd-*` 混淆模型名（含 `/waP-IPA2buS` 备用路由后缀识别）并过滤生图端点（`isChat: false`）；「发现模型」搜索与全选支持原名/解码名分隔符不敏感双向匹配；工作台顶栏升级为可显示实时进度与单击中止的 `⚡ 批量测速`（默认测收藏模型，`Shift+点击` 测全部启用模型），批量导入按梯队自适应分配 `16384 / 8192` 输出上限；
+  - **瞬态地域/号池 `HTTP 400` 单跳降级、编排保序与双端凭据互通**：`isFallbackEligibleError` 白名单放行上游地域路由瞬态 `400`（如 `User location is not supported`）自动切备用线路，同时严格拒绝对 `safety / content_filter` 静默降级；`listModelsForMcp` 保留 `prism-profile.json` 主备编排顺序（修复 `-backup` 字母序排在主力前的问题）；`prism_ask_model` 默认 `165s` 超时早于宿主 `180s` 硬断连并补齐 JSON-RPC 错误兜底；`account-vault.mjs` 打通同机 Windows 与 WSL 双命名空间密钥互读。
+- **输入框 `Tab` 真 AI 续写预测闭环、隐藏节点防误拦与底栏 `tok/s` 动静双态胶囊（[daemon.mjs](vendor/anti-claude/core/daemon.mjs) / [prism-suite-fx.js](extensions/prism-suite-fx.js) / [prism-suite-fx.css](extensions/prism-suite-fx.css)）**：
+  - **三协议 + 系统保险箱 + `T4` 极速模型优先预测**：`predictNextPromptAction` 完整打通 `anthropic-messages`、`openai-chat` 与 `openai-responses` 三协议及系统凭据库惰性读取，严格优选非思考 `T4/T3` 快模型（`flash-lite / flash` 优先、同网关前 2 款快模型顺延重试，绝不误调 `T1` 重型旗舰），内置 64 条会话级 LRU 缓存与 `45s` 失败退避；
+  - **修复隐藏 `listbox` 吞 `Tab` 与回复内嵌 `<style>` 污染**：`hasVisibleComposerPopup` 增加真实可见尺寸（`> 8px`）校验以排除宿主常驻 `0×0` `<div role="listbox">` 误拦截；`extractCleanMessageText` 优先读取 `[data-testid="agent-response"]` 并剥离内嵌 `<style>` 源码与思考块，改按对话内容签名刷新预测以免疫长对话虚拟滚动；
+  - **底栏实时速率胶囊动静分离**：生成期间高亮显示 `⚡ N tok/s · TTFT ...`，任务停止或完成后自动转为柔和静息态 `上轮 N tok/s · TTFT ...`（悬停卡片同步标注当前状态）。
+- **CUA 纯截图跳过控件树显式提示、思考翻译 UTF-16 Emoji 无损切块与上游基线同步（[plugin-cua/server/index.mjs](plugin-cua/server/index.mjs) / [daemon.mjs](vendor/anti-claude/core/daemon.mjs) / [sync-version.mjs](scripts/sync-version.mjs) / [upstream.json](upstream.json)）**：
+  - **`cua_observe` 支持 `includeTree: false` 纯截图极速观察**：跳过桌面 UIA / 网页 DOM 遍历时保留既有 `@wN/@eN` 观察缓存不被空树覆盖，并在返回块显式输出 `[includeTree=false]` 跳过说明，防止模型误判窗口为空；
+  - **思考双语翻译 UTF-16 代理对与占位符无损分块**：新增 Clean-Room `clipUtf16Safe` 并升级 `splitTextForTranslation`（`900` 单元上限），确保绝不在 Emoji 高低代理项（`0xD800..0xDFFF`）或 `⟪P…⟫` 代码保护占位符中间硬切，同时拒绝纯空白译文回包；修正 `sync-version.mjs` 对 `plugin-cua` 冻结头部的版本同步并推进全部上游监控基线归零。
+
 ## 0.9.4 - 2026-11-28
 
 - **输入框 `Tab` 下一步提问建议零重影、单次防重填入与模型中枢正式打通（[prism-suite-fx.css](extensions/prism-suite-fx.css) / [prism-suite-fx.js](extensions/prism-suite-fx.js) / [daemon.mjs](vendor/anti-claude/core/daemon.mjs)）**：
