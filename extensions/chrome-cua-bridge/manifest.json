@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Prism CUA 浏览器受控桥",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "description": "Anti-Claude Prism Suite 受控浏览器桥：仅对用户显式点击授权（ARMED）的同源标签页提供脱敏快照与受控操作，跨源自动撤权，零空闲开销。",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuu8AuqZqQpuCoZ5f19rT/LbxVrGGnvMbNYK8te6d8TZAMVzqx0SL5zs9Pw+1pr89AqlxD7PKuDFiLafoXdmluV+QrD0kX5LpOLptaG/CYxyqivarSxWBdUT9LZBOmWtjY0tIJh91ofQUS9enEdOcshK8sRxbI1Ykkk6WxK4geR4C2M3/DNoUZypqxgqCdm7trjPSNtrooOziPPDhdSHRcIVkmNNTko4r0d5waPgAVQ80KthDtqIryyXZiLxPCtKzJN5yusbNcR1lDJ348U2efVFZJrd0f1G4g6ds/DPPmIw7RTgMvXnVp0mAleWVp9K+MzccRqOMZPShpp6hpYzO/wIDAQAB",
   "permissions": [

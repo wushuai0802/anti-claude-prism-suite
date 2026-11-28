@@ -12,7 +12,7 @@
     try { window.__agPrismSuiteDispose(); } catch {}
   }
 
-  const SUITE_VERSION = '0.9.2';
+  const SUITE_VERSION = '0.9.3';
   const REPO_RELEASES_API = 'https://api.github.com/repos/wushuai0802/anti-claude-prism-suite/releases/latest';
   const REPO_RELEASES_URL = 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/latest';
   const STORAGE_KEY = 'ag_prism_suite_prefs_v1';
@@ -59,7 +59,7 @@
     return s;
   }
 
-  // Full 42-key schema across prism-suite, prism-suite-fx, and prism-suite-workflow
+  // Full 54-key schema across prism-suite, prism-suite-fx, and prism-suite-workflow
   const PREF_VALIDATORS = Object.freeze({
     lightPalette: enumValidator(['default', 'crystal', 'alabaster', 'sage']),
     darkPalette: enumValidator(['default', 'obsidian', 'basalt', 'marine']),
@@ -84,6 +84,9 @@
     compactQuotaPill: boolValidator,
     composerBorderFx: enumValidator(['off', 'smart', 'beam', 'static']),
     outlineRailMode: enumValidator(['smart', 'right', 'off']),
+    outlinePreviewStyle: enumValidator(['detailed', 'compact']),
+    tokenUnit: enumValidator(['wan', 'kmb']),
+    composerIntentSuggest: boolValidator,
     borderBeam: boolValidator,
     borderBeamMode: enumValidator(['always', 'busy']),
     borderBeamPalette: enumValidator(['theme', 'gemini', 'aurora', 'prism', 'neon', 'quota']),
@@ -219,13 +222,29 @@
     semanticAfterglow: true,
     compactQuotaPill: true,
     composerBorderFx: 'smart',
-    outlineRailMode: 'smart'
+    outlineRailMode: 'smart',
+    outlinePreviewStyle: 'detailed',
+    tokenUnit: 'wan',
+    composerIntentSuggest: false
   };
 
   const registeredDefaults = Object.assign({}, DEFAULT_PREFS);
   const prefs = {};
 
+  function syncTokenUnitBridge(dispatchEvent = true) {
+    const unit = prefs.tokenUnit === 'kmb' ? 'kmb' : 'wan';
+    try {
+      localStorage.setItem('ag-prism-token-unit', unit);
+    } catch {}
+    if (dispatchEvent) {
+      try {
+        window.dispatchEvent(new CustomEvent('ag-prism-token-unit-change', { detail: { unit } }));
+      } catch {}
+    }
+  }
+
   function replacePrefsInPlace(cand) {
+    const prevTokenUnit = prefs.tokenUnit;
     const next = Object.assign({}, registeredDefaults, cand ? cand.clean : null, {
       _ts: cand ? cand.ts : 0,
       _tsOrigin: cand && cand.explicit ? 'explicit' : 'legacy'
@@ -234,6 +253,7 @@
       if (!hasOwn(next, k)) delete prefs[k];
     }
     Object.assign(prefs, next);
+    syncTokenUnitBridge(prevTokenUnit !== prefs.tokenUnit);
   }
 
   function persistPrefsMirrors(prefsObj) {
@@ -315,6 +335,11 @@
   function fmtTokens(n) {
     const v = Number(n) || 0;
     if (!Number.isFinite(v) || v <= 0) return '0';
+    if (prefs.tokenUnit !== 'kmb') {
+      if (v >= 100_000_000) return `${(v / 100_000_000).toFixed(2).replace(/\.?0+$/, '')}亿`;
+      if (v >= 10_000) return `${(v / 10_000).toFixed(1).replace(/\.0$/, '')}万`;
+      return String(Math.round(v));
+    }
     if (v >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(2).replace(/\.?0+$/, '')}B`;
     if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
     if (v >= 1000) return `${(v / 1000).toFixed(1).replace(/\.0$/, '')}k`;
@@ -442,9 +467,101 @@
       palette,
       lightPalette: prefs.lightPalette || 'default',
       darkPalette: prefs.darkPalette || 'default',
+      tierBadgeMode: getPrismTierBadgeMode(),
       tokens: group[palette]
     };
   }
+
+  const PRISM_TIER_BADGE_KEY = 'ag-prism-tier-badge-mode';
+  const PRISM_TIER_MODES = ['badge', 'icon', 'text'];
+  let prismTierBadgePop = false;
+
+  function getPrismTierBadgeMode() {
+    try {
+      const m = localStorage.getItem(PRISM_TIER_BADGE_KEY);
+      if (m && PRISM_TIER_MODES.includes(m)) return m;
+    } catch {}
+    return 'badge';
+  }
+
+  function setPrismTierBadgeMode(next, source = 'suite') {
+    if (!PRISM_TIER_MODES.includes(next)) return;
+    try { localStorage.setItem(PRISM_TIER_BADGE_KEY, next); } catch {}
+    prismTierBadgePop = true;
+    try {
+      window.dispatchEvent(new CustomEvent('ag-prism-tier-badge-change', { detail: { mode: next, source } }));
+    } catch {}
+    if (typeof broadcastThemeToFrames === 'function') {
+      try { broadcastThemeToFrames(); } catch {}
+    }
+    const pop = document.getElementById('ag-ps-popover');
+    if (pop && pop.getAttribute('data-open') === '1') {
+      renderPopoverContent(pop);
+    }
+    setTimeout(() => { prismTierBadgePop = false; }, 240);
+  }
+
+  function cyclePrismTierBadgeMode() {
+    const cur = getPrismTierBadgeMode();
+    const next = PRISM_TIER_MODES[(PRISM_TIER_MODES.indexOf(cur) + 1) % PRISM_TIER_MODES.length];
+    setPrismTierBadgeMode(next, 'suite');
+    return next;
+  }
+
+  function renderPrismTierBadgeHtml(rawTier) {
+    const full = String(rawTier || '').trim();
+    if (!full) return '';
+    let kind = 'starter';
+    let shortLabel = full.replace(/^Google\s+AI\s+/i, '').trim() || full;
+    let gemSvg = '<svg class="ag-tier-gem" viewBox="0 0 14 14" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M7 2 12 7 7 12 2 7 7 2z"/></svg>';
+    if (/ultra/i.test(full)) {
+      kind = 'ultra';
+      shortLabel = 'ULTRA';
+      gemSvg = '<svg class="ag-tier-gem" viewBox="0 0 14 14" width="10" height="10" fill="currentColor" aria-hidden="true"><path d="M3.7 2.1h6.6l2.4 3.2L7 12.4 1.3 5.3l2.4-3.2z"/></svg>';
+    } else if (/\bpro\b/i.test(full)) {
+      kind = 'pro';
+      shortLabel = 'PRO';
+      gemSvg = '<svg class="ag-tier-gem" viewBox="0 0 14 14" width="10" height="10" fill="currentColor" aria-hidden="true"><path d="M7 1.3 12.7 7 7 12.7 1.3 7 7 1.3z"/></svg>';
+    } else if (/\b(team|enterprise|business)\b/i.test(full)) {
+      kind = 'team';
+      shortLabel = /enterprise/i.test(full) ? 'ENT' : 'TEAM';
+      gemSvg = '<svg class="ag-tier-gem" viewBox="0 0 14 14" width="10" height="10" fill="currentColor" aria-hidden="true"><path d="M7 1l1.8 4.2L13 7l-4.2 1.8L7 13 5.2 8.8 1 7l4.2-1.8L7 1z"/></svg>';
+    } else if (/\b(plus|advanced)\b/i.test(full)) {
+      kind = 'plus';
+      shortLabel = 'PLUS';
+      gemSvg = '<svg class="ag-tier-gem" viewBox="0 0 14 14" width="10" height="10" fill="currentColor" aria-hidden="true"><path d="M7 1.5l1.5 4L12.5 7l-4 1.5L7 12.5l-1.5-4L1.5 7l4-1.5L7 1.5z"/></svg>';
+    } else if (/starter/i.test(full)) {
+      shortLabel = 'STARTER';
+    } else if (/free/i.test(full)) {
+      shortLabel = 'FREE';
+    } else {
+      shortLabel = shortLabel.slice(0, 10).toUpperCase();
+    }
+    const mode = getPrismTierBadgeMode();
+    const popCls = prismTierBadgePop ? ' is-pop' : '';
+    const tip = `${full} · 点击切换徽章 / 图标 / 文字`;
+    if (mode === 'text') {
+      const txt = formatShortTierName(full) || full;
+      return `<span class="ag-ps-qchip ag-tier-badge${popCls}" data-ps-tier-toggle="1" data-tier-mode="text" data-tier-kind="${kind}" role="button" tabindex="0" data-ag-ps-tip="${escapeHtml(tip)}" style="cursor:pointer;">${escapeHtml(txt)}</span>`;
+    }
+    if (mode === 'icon') {
+      return `<span class="ag-tier-badge${popCls}" data-ps-tier-toggle="1" data-tier-mode="icon" data-tier-kind="${kind}" role="button" tabindex="0" data-ag-ps-tip="${escapeHtml(tip)}" aria-label="${escapeHtml(full)}">${gemSvg}</span>`;
+    }
+    return `<span class="ag-tier-badge${popCls}" data-ps-tier-toggle="1" data-tier-mode="badge" data-tier-kind="${kind}" role="button" tabindex="0" data-ag-ps-tip="${escapeHtml(tip)}">${gemSvg}<span class="ag-tier-txt">${escapeHtml(shortLabel)}</span></span>`;
+  }
+
+  const onExternalTierBadgeChange = (ev) => {
+    if (ev && ev.detail && ev.detail.source === 'suite') return;
+    if (typeof broadcastThemeToFrames === 'function') {
+      try { broadcastThemeToFrames(); } catch {}
+    }
+    const pop = document.getElementById('ag-ps-popover');
+    if (pop && pop.getAttribute('data-open') === '1') {
+      renderPopoverContent(pop);
+    }
+  };
+  window.addEventListener('ag-prism-tier-badge-change', onExternalTierBadgeChange);
+  onCleanup(() => window.removeEventListener('ag-prism-tier-badge-change', onExternalTierBadgeChange));
 
   function applyPalettes() {
     const html = document.documentElement;
@@ -1352,7 +1469,7 @@
     const scopeTokens = bookScopeIdx === 0 ? data.totalWindowTokens : (data.today ? data.today.totalTokens : 0);
     const scopeLbl = bookScopeIdx === 0 ? '近12周' : '今日';
     const bookText = pickBookYardstick(scopeTokens);
-    const sig = `${data.todayDate}|${data.totalWindowTokens}|${data.today?.totalTokens}|${data.partial ? 1 : 0}|${bookScopeIdx}`;
+    const sig = `${data.todayDate}|${data.totalWindowTokens}|${data.today?.totalTokens}|${data.partial ? 1 : 0}|${bookScopeIdx}|${prefs.tokenUnit || 'wan'}`;
 
     if (existing && existing.getAttribute('data-sig') === sig) return;
 
@@ -3462,14 +3579,52 @@
   /* ==========================================================================
    * 6. Thought Process Live Chinese Translation
    *    - Waits until generation settles (no repeated RPC every tick while streaming)
-   *    - Cleans up cleanly when thinking block collapses
-   *    - Per-block "看原文 / 看译文" peek toggle in immersive mode
+   *    - Viewport-lazy translation + passive viewport scroll trigger
+   *    - Cleans up cleanly when thinking block collapses or mode turns off
+   *    - Flush-left per-block "原文 / 译文" peek toggle in both bilingual & immersive modes
    * ========================================================================== */
   const thoughtInFlight = new WeakSet();
-  const thoughtTextMemo = new WeakMap(); // bodyEl -> { src, zh, ver }
-  const thoughtPeekOriginal = new WeakSet(); // bodyEl user chose to peek original
+  let thoughtTextMemo = new WeakMap(); // bodyEl -> { src, zh, ver }
+  let thoughtPeekOriginal = new WeakSet(); // bodyEl user chose to peek original
   const thoughtBoxByTrigger = new WeakMap(); // triggerBtn -> { box, bodyEl }
   let thoughtSeq = 0;
+  let thoughtWatchedVp = null;
+  let thoughtScrollTimer = 0;
+
+  function onThoughtViewportScroll() {
+    if (disposed || prefs.thoughtMode === 'off' || document.hidden || thoughtScrollTimer) return;
+    thoughtScrollTimer = setTimeout(() => {
+      thoughtScrollTimer = 0;
+      if (!disposed && prefs.thoughtMode !== 'off' && !document.hidden) {
+        syncThoughtBlocks(isAgentGenerating());
+      }
+    }, 140);
+  }
+
+  function detachThoughtScrollWatcher() {
+    if (thoughtScrollTimer) {
+      clearTimeout(thoughtScrollTimer);
+      thoughtScrollTimer = 0;
+    }
+    if (thoughtWatchedVp) {
+      try { thoughtWatchedVp.removeEventListener('scroll', onThoughtViewportScroll); } catch {}
+      thoughtWatchedVp = null;
+    }
+  }
+
+  function syncThoughtScrollWatcher() {
+    if (disposed || prefs.thoughtMode === 'off') {
+      detachThoughtScrollWatcher();
+      return;
+    }
+    const vp = getActiveViewportEl();
+    if (vp === thoughtWatchedVp) return;
+    detachThoughtScrollWatcher();
+    if (vp) {
+      thoughtWatchedVp = vp;
+      vp.addEventListener('scroll', onThoughtViewportScroll, { passive: true });
+    }
+  }
 
   function looksMostlyEnglish(text) {
     const s = String(text || '').trim();
@@ -3620,18 +3775,22 @@
       bodyEl.parentElement.insertBefore(box, bodyEl.nextSibling);
     }
     const effectiveImmersive = mode === 'immersive' && !peeking;
+    const bilingualPeekSrcOnly = mode === 'bilingual' && peeking;
     box.setAttribute('data-mode', effectiveImmersive ? 'immersive' : 'bilingual');
     const renderSig = `${mode}|${peeking ? '1' : '0'}|${zhText}`;
     if (box.getAttribute('data-render-sig') !== renderSig) {
       box.setAttribute('data-render-sig', renderSig);
       const hdrHtml = mode === 'immersive'
-        ? `<div class="ag-ps-thought-zh-hdr"><button type="button" class="ag-ps-thought-peek">${peeking ? '隐藏原文' : '查看原文'}</button></div>`
-        : `<div class="ag-ps-thought-zh-hdr"><span>译文</span></div>`;
-      box.innerHTML = `${hdrHtml}<div>${renderThoughtTextWithFileRefs(zhText)}</div>`;
+        ? `<div class="ag-ps-thought-zh-hdr"><button type="button" class="ag-ps-thought-peek">${peeking ? '仅看译文' : '查看原文'}</button></div>`
+        : `<div class="ag-ps-thought-zh-hdr"><span>译文对照</span><button type="button" class="ag-ps-thought-peek">${peeking ? '恢复双语' : '仅看原文'}</button></div>`;
+      const bodyStyle = bilingualPeekSrcOnly ? ' style="display:none"' : '';
+      box.innerHTML = `${hdrHtml}<div${bodyStyle}>${renderThoughtTextWithFileRefs(zhText)}</div>`;
     }
     if (effectiveImmersive) {
       bodyEl.classList.add('ag-ps-thought-src-hidden');
       bodyEl.classList.remove('ag-ps-thought-src-dim');
+    } else if (bilingualPeekSrcOnly) {
+      bodyEl.classList.remove('ag-ps-thought-src-hidden', 'ag-ps-thought-src-dim');
     } else {
       bodyEl.classList.remove('ag-ps-thought-src-hidden');
       bodyEl.classList.add('ag-ps-thought-src-dim');
@@ -3706,6 +3865,7 @@
   }
 
   function syncThoughtBlocks(isBusy) {
+    syncThoughtScrollWatcher();
     const triggers = document.querySelectorAll('[data-testid="thinking-collapsible-trigger"]');
     for (let i = 0; i < triggers.length; i++) {
       const trig = triggers[i];
@@ -3723,7 +3883,7 @@
       }
       // Only defer the actively streaming last thinking block (which has no completed duration yet)
       const trigTxt = (trig.textContent || '').trim();
-      const isCompleted = /\d+\s*s\b|\d+\s*秒|已思考|Thought\s+for/i.test(trigTxt);
+      const isCompleted = /\d+\s*(?:h|m|s)\b|\d+\s*(?:小时|分|秒)|已思考|Thought\s+for/i.test(trigTxt);
       if (isBusy && i === triggers.length - 1 && !isCompleted) {
         const memo = thoughtTextMemo.get(bodyEl);
         if (memo && memo.zh) {
@@ -3732,10 +3892,13 @@
         }
         continue;
       }
+      const r = (bodyEl.getBoundingClientRect().height > 0 ? bodyEl : trig).getBoundingClientRect();
+      if (r.bottom < -180 || r.top > (window.innerHeight || 1080) + 280) continue;
       translateThoughtContainer(bodyEl, trig);
     }
   }
   onCleanup(() => {
+    detachThoughtScrollWatcher();
     document.querySelectorAll('.ag-ps-thought-zh').forEach((n) => n.remove());
     document.querySelectorAll('.ag-ps-thought-src-dim, .ag-ps-thought-src-hidden').forEach((n) => {
       n.classList.remove('ag-ps-thought-src-dim', 'ag-ps-thought-src-hidden');
@@ -4021,10 +4184,13 @@
     }
   }
 
+  const bridgeFrameTargets = new Map();
+
   function isTrustedBridgeOrigin(origin) {
     const o = String(origin || '').trim();
     if (!o || o === 'null') return true; // Sandboxed srcdoc MCP App iframe
     if (o === window.location.origin) return true;
+    if (/^https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.usercontent\.goog(?::\d+)?$/i.test(o)) return true; // Antigravity MCP App sandbox origin
     return /^(?:app|vscode-webview|file):\/\//i.test(o) || /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i.test(o);
   }
 
@@ -4033,10 +4199,18 @@
     const seen = new Set();
     const pushWin = (w) => {
       if (!w || w === window || seen.has(w)) return;
+      try { if (w.closed) return; } catch {}
       seen.add(w);
       wins.push(w);
     };
     if (bridgeTargetWin) pushWin(bridgeTargetWin);
+    for (const [fw] of bridgeFrameTargets) {
+      if (!fw) { bridgeFrameTargets.delete(fw); continue; }
+      try {
+        if (fw.closed) { bridgeFrameTargets.delete(fw); continue; }
+      } catch {}
+      pushWin(fw);
+    }
     try {
       const frames = document.querySelectorAll('iframe');
       for (let i = 0; i < frames.length; i++) {
@@ -4083,7 +4257,8 @@
     const theme = getCurrentThemeBridgePayload();
     const wins = collectCandidateFrameWindows();
     for (let i = 0; i < wins.length; i++) {
-      postBridgeMessage(wins[i], { type: 'theme-sync', theme }, '*');
+      const targetOrig = bridgeFrameTargets.get(wins[i]) || (wins[i] === bridgeTargetWin ? bridgeTargetOrigin : '*');
+      postBridgeMessage(wins[i], { type: 'theme-sync', theme }, targetOrig);
     }
   }
 
@@ -4265,12 +4440,15 @@
 
     if (data.type === 'ready' || data.type === 'bridge-pong') {
       if (!isOwnedIframeWindow(src)) return;
-      bridgeTargetWin = src;
-      bridgeTargetOrigin = replyOrigin;
-      bridgeLastSeenAt = Date.now();
+      bridgeFrameTargets.set(src, replyOrigin);
+      if (data.role !== 'inline-card') {
+        bridgeTargetWin = src;
+        bridgeTargetOrigin = replyOrigin;
+        bridgeLastSeenAt = Date.now();
+      }
       const liveNow = sanitizeQuotaPayload(getQuotaState()) || (cachedLiveQuota && (cachedLiveQuota.pct5h !== null || cachedLiveQuota.pct7d !== null) ? cachedLiveQuota : null);
       const wantTab =
-        pendingWorkbenchTab && Date.now() - pendingWorkbenchTabAt < 8000 && ALLOWED_BRIDGE_TABS.has(pendingWorkbenchTab)
+        data.role !== 'inline-card' && pendingWorkbenchTab && Date.now() - pendingWorkbenchTabAt < 8000 && ALLOWED_BRIDGE_TABS.has(pendingWorkbenchTab)
           ? pendingWorkbenchTab
           : '';
       postBridgeMessage(src, {
@@ -4304,6 +4482,14 @@
       return;
     }
 
+    if (data.type === 'set-tier-badge-mode') {
+      if (!isOwnedIframeWindow(src)) return;
+      if (PRISM_TIER_MODES.includes(data.mode)) {
+        setPrismTierBadgeMode(data.mode, 'workbench');
+      }
+      return;
+    }
+
     if (data.type === 'account-summary' && data.summary && typeof data.summary === 'object') {
       if (!isOwnedIframeWindow(src)) return;
       bridgeTargetWin = src;
@@ -4331,6 +4517,7 @@
   onCleanup(() => {
     window.removeEventListener('message', onWorkbenchBridgeMessage);
     clearBridgeRetryTimers();
+    bridgeFrameTargets.clear();
     bridgeTargetWin = null;
   });
   setTimeout(() => { if (!disposed) broadcastBridgePing(); }, 450);
@@ -4366,6 +4553,16 @@
       syncMascotDock(busy);
     } else if (key === 'showWorkbenchBtn' || key === 'outline') {
       syncToolbarButtons();
+    } else if (key === 'tokenUnit') {
+      syncTokenUnitBridge(true);
+      syncUsageExtraMount();
+    } else if (key === 'thoughtMode') {
+      if (norm === 'off') {
+        thoughtTextMemo = new WeakMap();
+        thoughtPeekOriginal = new WeakSet();
+        try { window.__agProjectCall?.('clearTranslateCache', {}, 4000); } catch {}
+      }
+      syncThoughtBlocks(isAgentGenerating());
     }
     emitBus('prefs');
     const pop = document.getElementById('ag-ps-popover');
@@ -4692,9 +4889,9 @@
       ? `${accSum.activeRole === 'primary' ? '★ ' : ''}${accSum.activeAlias}${effectiveEmail ? ` · ${shortAccountEmail(effectiveEmail)}` : ''}`
       : (effectiveEmail ? shortAccountEmail(effectiveEmail) : '多账号安全接力');
     const quotaChips = [];
-    const shortTier = formatShortTierName(liveQ?.tierName);
-    if (shortTier) {
-      quotaChips.push(`<span class="ag-ps-qchip" title="${escapeHtml(liveQ.tierName)}">${escapeHtml(shortTier)}</span>`);
+    const tierChipHtml = renderPrismTierBadgeHtml(liveQ?.tierName);
+    if (tierChipHtml) {
+      quotaChips.push(tierChipHtml);
     }
     if (liveQ && typeof liveQ.pct5h === 'number') {
       const tier5 = liveQ.pct5h >= 50 ? 'ok' : liveQ.pct5h >= 20 ? 'warn' : 'danger';
@@ -4890,6 +5087,13 @@
     pop.setAttribute('data-ag-i18n-ignore', '1');
     pop.addEventListener('click', (e) => {
       e.stopPropagation();
+      const tierToggle = e.target.closest('[data-ps-tier-toggle]');
+      if (tierToggle) {
+        e.preventDefault();
+        hideCustomTooltip();
+        cyclePrismTierBadgeMode();
+        return;
+      }
       const catTabBtn = e.target.closest('[data-ps-tab]');
       if (catTabBtn) {
         const nextTab = catTabBtn.getAttribute('data-ps-tab');
@@ -5064,11 +5268,8 @@
       }
       const tm = e.target.closest('[data-thought-mode]');
       if (tm) {
-        prefs.thoughtMode = PREF_VALIDATORS.thoughtMode(tm.getAttribute('data-thought-mode')) || 'bilingual';
-        savePrefs();
-        emitBus('prefs');
-        syncThoughtBlocks(isAgentGenerating());
-        renderPopoverContent(pop);
+        const nextMode = PREF_VALIDATORS.thoughtMode(tm.getAttribute('data-thought-mode')) || 'bilingual';
+        setPref('thoughtMode', nextMode);
       }
     });
     let mascotSizeSaveTimer = 0;
@@ -5220,19 +5421,27 @@
 
   function isAuxWorkbenchTabActive(tabEl) {
     if (!tabEl || !tabEl.isConnected) return false;
-    if (
-      tabEl.getAttribute('aria-selected') === 'true' ||
-      tabEl.getAttribute('data-state') === 'active' ||
-      tabEl.getAttribute('data-active') === 'true' ||
-      tabEl.classList.contains('is-active') ||
-      tabEl.classList.contains('active')
-    ) {
+    const check = (el) =>
+      Boolean(
+        el &&
+          (el.getAttribute('aria-selected') === 'true' ||
+            el.getAttribute('data-state') === 'active' ||
+            el.getAttribute('data-active') === 'true' ||
+            el.classList.contains('is-active') ||
+            el.classList.contains('active') ||
+            (el.classList.contains('agy-aux-tab') && el.classList.contains('bg-secondary')))
+      );
+    if (check(tabEl) || check(tabEl.closest('.agy-aux-tab'))) {
       return true;
     }
     return isOwnedWorkbenchFrameVisible(0.12);
   }
 
   function isFullPageWorkbenchActive() {
+    const p = window.location.pathname || '';
+    if (/^\/view\/mcp-app/i.test(p) && /prism[-_\s]*files/i.test(decodeURIComponent(p))) {
+      return true;
+    }
     if (getActiveViewportEl()) return false;
     if (getActiveInputBox()) return false;
     const settingsSb = document.querySelector('[data-testid="settings-sidebar"]');
@@ -5247,20 +5456,28 @@
             n.getAttribute('aria-selected') === 'true' ||
             n.getAttribute('data-active') === 'true' ||
             n.getAttribute('data-selected') === 'true' ||
-            n.getAttribute('data-state') === 'active')
+            n.getAttribute('data-state') === 'active' ||
+            n.classList.contains('bg-sidebar-secondary'))
       );
     return checkActive(sbEntry) || checkActive(sbEntry.parentElement);
   }
 
   function findSidebarWorkbenchEntry() {
-    const candidates = document.querySelectorAll('aside button, aside a, aside [role="button"], nav button, nav a, [data-testid*="sidebar" i] button, [data-testid*="sidebar" i] a');
+    const candidates = document.querySelectorAll(
+      '[data-testid="plugin-sidebar-mcp-app-item"], .bg-sidebar a, .bg-sidebar button, .bg-sidebar [role="button"], [role="navigation"] a, [role="navigation"] button, aside button, aside a, aside [role="button"], nav button, nav a, [data-testid*="sidebar" i] button, [data-testid*="sidebar" i] a'
+    );
     for (const el of candidates) {
       if (!el.isConnected) continue;
       const r = el.getBoundingClientRect();
-      if (r.width <= 0 || r.height <= 0 || r.left > 340) continue;
+      if (r.width <= 0 || r.height <= 0 || r.left > 360) continue;
       const txt = String(el.textContent || '').replace(/\s+/g, ' ').trim();
       const aria = String(el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
-      if ((txt.length <= 28 && /Prism\s*(?:工作台|文件)/i.test(txt)) || /Prism\s*(?:工作台|文件)/i.test(aria)) {
+      const href = String(el.getAttribute('href') || '');
+      if (
+        (txt.length <= 28 && /Prism\s*(?:工作台|文件)/i.test(txt)) ||
+        /Prism\s*(?:工作台|文件)/i.test(aria) ||
+        /prism-files/i.test(href)
+      ) {
         return el;
       }
     }
@@ -5385,8 +5602,24 @@
         window.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, cancelable: false }));
       }
     } catch {}
-    const wantedCid = lastChatConvPath.startsWith('/c/') ? lastChatConvPath.slice(3).split('/')[0] : '';
-    const rows = Array.from(document.querySelectorAll('[data-testid="conversation-row-sidebar"], aside a[href^="/c/"], nav a[href^="/c/"]'));
+    let savedConvPath = lastChatConvPath;
+    if (!savedConvPath) {
+      try {
+        const raw = sessionStorage.getItem('ag_prism_last_conv_v1') || localStorage.getItem('ag_prism_last_conv_v1');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed.path === 'string' && /^\/c\/[A-Za-z0-9_-]{6,}/.test(parsed.path)) {
+            savedConvPath = parsed.path;
+          }
+        }
+      } catch {}
+    }
+    const wantedCid = savedConvPath.startsWith('/c/') ? savedConvPath.slice(3).split('/')[0] : '';
+    const rows = Array.from(
+      document.querySelectorAll(
+        '[data-testid="conversation-row-sidebar"], .ag-recent-row, .bg-sidebar a[href^="/c/"], [role="navigation"] a[href^="/c/"], aside a[href^="/c/"], nav a[href^="/c/"]'
+      )
+    );
     let targetRow = null;
     if (wantedCid) {
       targetRow = rows.find((el) => {
@@ -5403,12 +5636,20 @@
       targetRow = rows.find((el) => isElementRendered(el));
     }
     if (targetRow) {
-      const clickable = targetRow.matches('a, button, [role="button"]')
+      const clickable = targetRow.matches('a[href^="/c/"], a, button, [role="button"]')
         ? targetRow
-        : (targetRow.querySelector('a, button, [role="button"]') || targetRow);
+        : (targetRow.querySelector('a[href^="/c/"], a, button, [role="button"]') || targetRow);
       safeClickElement(clickable);
       setTimeout(syncToolbarActiveStates, 90);
       return true;
+    }
+    if (savedConvPath && /^\/c\/[A-Za-z0-9_-]{6,}/.test(savedConvPath)) {
+      try {
+        window.history.pushState({}, '', savedConvPath);
+        window.dispatchEvent(new PopStateEvent('popstate'));
+        setTimeout(syncToolbarActiveStates, 90);
+        return true;
+      } catch {}
     }
     try {
       if (window.history.length > 1) {
@@ -5417,7 +5658,7 @@
         return true;
       }
     } catch {}
-    const newBtn = document.querySelector('[data-testid="new-conversation-button"], aside a[href="/"], nav a[href="/"]');
+    const newBtn = document.querySelector('[data-testid="new-conversation-button"], .bg-sidebar a[href="/"], [role="navigation"] a[href="/"], aside a[href="/"], nav a[href="/"]');
     if (newBtn && isElementRendered(newBtn)) {
       safeClickElement(newBtn);
       return true;
@@ -5798,6 +6039,7 @@
   });
 
   let lastPath = window.location.pathname;
+  let lastSearch = window.location.search || '';
   let lastActiveBox = null;
   let lastDarkState = isCurrentlyDark();
   let navSwitchTimer = 0;
@@ -5816,7 +6058,7 @@
     if (disposed) return;
     const t = e.target;
     if (!t || !t.closest) return;
-    if (t.closest('[data-testid="conversation-row-sidebar"], aside, nav, [role="tab"]')) {
+    if (t.closest('[data-testid="conversation-row-sidebar"], .ag-recent-row, .bg-sidebar, [role="navigation"], aside, nav, [role="tab"], .agy-aux-tab')) {
       if (navSwitchTimer) clearTimeout(navSwitchTimer);
       navSwitchTimer = setTimeout(() => {
         navSwitchTimer = 0;
@@ -5833,12 +6075,14 @@
   function tickAll() {
     if (disposed || document.hidden) return;
     const curBox = getActiveInputBox();
-    // Detect SPA conversation switch (either URL pathname change OR cached multi-view inputBox switch)
+    // Detect SPA conversation switch (URL pathname/search change OR cached multi-view inputBox switch)
     if (/^\/c\/[A-Za-z0-9_-]{6,}/.test(window.location.pathname || '')) {
       lastChatConvPath = window.location.pathname;
     }
-    if (window.location.pathname !== lastPath || (curBox && curBox !== lastActiveBox)) {
+    const curSearch = window.location.search || '';
+    if (window.location.pathname !== lastPath || curSearch !== lastSearch || (curBox && curBox !== lastActiveBox)) {
       lastPath = window.location.pathname;
+      lastSearch = curSearch;
       lastActiveBox = curBox;
       cachedComposerEl = null;
       const drawer = document.getElementById('ag-ps-outline');

@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const AGENT_VERSION = '0.9.2';
+  const AGENT_VERSION = '0.9.3';
   if (window.__prismCuaContentAgent && window.__prismCuaContentAgent.version === AGENT_VERSION) {
     return;
   }

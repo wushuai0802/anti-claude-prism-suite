@@ -1528,11 +1528,11 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.9.2');
-    assert.equal(pluginJson.version, '0.9.2');
+    assert.equal(pkgJson.version, '0.9.3');
+    assert.equal(pluginJson.version, '0.9.3');
     assert.ok(Array.isArray(pluginJson.suggested_prompts) && pluginJson.suggested_prompts.length <= 3);
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
-    assert.match(jsSrc, /SUITE_VERSION = '0\.9\.2'/);
+    assert.match(jsSrc, /SUITE_VERSION = '0\.9\.3'/);
     assert.match(jsSrc, /COOKIE_PREFS_KEY = 'ag_prism_prefs_v1'/);
     assert.match(jsSrc, /getActiveInputBox/);
     assert.match(jsSrc, /getInputBoxEl: getActiveInputBox/);
@@ -1560,7 +1560,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(wfSrc, /composerFileDrop/);
     assert.match(jsSrc, /ag_claude_ux_quota_cache_v1/);
     assert.match(jsSrc, /readAntiClaudeQuotaCache/);
-    assert.match(inlineHtml, /version: '0\.9\.2'/);
+    assert.match(inlineHtml, /version: '0\.9\.3'/);
     assert.match(jsSrc, /__agPrismBridge/);
     assert.match(jsSrc, /bridge-ping/);
     assert.match(jsSrc, /bridge-pong/);
@@ -1592,7 +1592,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(csSrc, /EnsureDebugPortOnUserShortcuts/);
     assert.match(csSrc, /InstallKernel/);
     assert.match(csSrc, /prism-suite-00-prefs\.js/);
-    assert.match(csSrc, /v0\.9\.2/);
+    assert.match(csSrc, /v0\.9\.3/);
     const installPluginSlice = csSrc.slice(csSrc.indexOf('public static int InstallPlugin('), csSrc.indexOf('private static bool IsReparsePoint('));
     assert.doesNotMatch(installPluginSlice, /Directory\.Delete\(targetDir,\s*true\)/, 'InstallPlugin must update in-place without deleting prism-files root');
   } finally {
@@ -1752,7 +1752,7 @@ test('v0.6.0 bundled Anti-Claude v3.1.9 kernel, per-pool quota recommendation ve
     assert.equal(daemonCompat.found, true);
     assert.equal(daemonCompat.compatible, true, `Bundled kernel missing hooks: ${daemonCompat.missing.join(', ')}`);
     const vendorPkg = JSON.parse(fs.readFileSync(path.join(vendorKernelDir, 'package.json'), 'utf8'));
-    assert.equal(vendorPkg.version, '3.1.9');
+    assert.equal(vendorPkg.version, '3.1.10');
 
     const sandboxStateDir = path.join(tmp, 'anti-claude');
     const sandboxUserDir = path.join(sandboxStateDir, 'user');
@@ -2802,7 +2802,7 @@ test('v0.8.0 prism-cua end-to-end broker/MCP roundtrip, batch_actions, safety/CA
     // 1. Strict 3-tool model visibility & default-disabled plugin manifest
     const cuaPluginJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'plugin-cua', 'plugin.json'), 'utf8'));
     assert.equal(cuaPluginJson.name, 'prism-cua');
-    assert.equal(cuaPluginJson.version, '0.9.2');
+    assert.equal(cuaPluginJson.version, '0.9.3');
     assert.equal(cuaPluginJson.disabled, true, 'prism-cua must ship disabled by default');
     assert.deepEqual(CUA_TOOLS.map((t) => t.name), ['cua_status', 'cua_observe', 'cua_act']);
 
@@ -3042,7 +3042,7 @@ test('v0.8.1 visual virtual cursor overlay, 4-tier non-intrusive mouse routing (
     assert.match(winCuaCs, /NativeMethods\.SetCursorPos\(origCursor\.X,\s*origCursor\.Y\)/);
 
     // 2. Browser Shadow DOM virtual cursor & Workbench toggle UI invariants
-    assert.match(contentAgentJs, /AGENT_VERSION = '0\.9\.2'/);
+    assert.match(contentAgentJs, /AGENT_VERSION = '0\.9\.3'/);
     assert.match(contentAgentJs, /function pulseVirtualCursor\(/);
     assert.match(contentAgentJs, /__prism_cua_vcursor_host/);
     assert.match(contentAgentJs, /delivery:\s*'dom_virtual'/);
@@ -4161,8 +4161,20 @@ test('v0.9.0 mini-dom runtime execution, [MS-SHLLINK] binary codec, AV-hygiene g
     assert.equal(documentMock.getElementById('ag-ps-outline-rail'), null, 'Smart mode removes duplicate right rail when host left navigator is visible');
     hostLeftNav.dispatchEvent({ type: 'pointerover', target: hostTurnBtn });
     const leftTip = documentMock.getElementById('ag-ps-rail-tip');
-    assert.ok(leftTip && leftTip.getAttribute('data-show') === '1', 'Hovering host left navigator dot shows Prism prompt preview tooltip');
+    assert.ok(leftTip && leftTip.getAttribute('data-show') === '1', 'Hovering legacy host left navigator dot shows Prism prompt preview tooltip');
     assert.equal(leftTip.getAttribute('data-side'), 'left');
+
+    // Modern host with [data-base-ui-tooltip-trigger]: 'detailed' yields to native card (zero overlap), 'compact' shows single-line capsule
+    hostTurnBtn.setAttribute('data-base-ui-tooltip-trigger', '');
+    hostLeftNav.dispatchEvent({ type: 'pointerover', target: hostTurnBtn });
+    assert.notEqual(leftTip.getAttribute('data-show'), '1', 'Detailed mode on modern host suppresses duplicate Prism capsule');
+    bus.setPref('outlinePreviewStyle', 'compact');
+    assert.equal(htmlEl.getAttribute('data-ag-ps-rail-preview'), 'compact');
+    hostLeftNav.dispatchEvent({ type: 'pointerover', target: hostTurnBtn });
+    assert.equal(leftTip.getAttribute('data-show'), '1', 'Compact mode shows single-line Prism capsule while CSS hides native card');
+    assert.equal(leftTip.getAttribute('data-style'), 'compact');
+    bus.setPref('outlinePreviewStyle', 'detailed');
+    assert.notEqual(leftTip.getAttribute('data-show'), '1', 'Switching back to detailed hides Prism capsule immediately');
 
     // v0.9.2: GPU compositor border beam (.ag-ps-beam-ring) & 4-tab popover navigation
     bus.setPref('performanceMode', 'balanced');
@@ -4341,7 +4353,7 @@ test('v0.9.0 mini-dom runtime execution, [MS-SHLLINK] binary codec, AV-hygiene g
     agentSandbox.window.document = agentSandbox.document;
     vm.runInContext(contentAgentSrc, agentSandbox);
     const cuaAgent = agentSandbox.window.__prismCuaContentAgent;
-    assert.ok(cuaAgent && cuaAgent.version === '0.9.2');
+    assert.ok(cuaAgent && cuaAgent.version === '0.9.3');
 
     const pasteAttempt = await cuaAgent.act({ op: 'press_key', key: 'Ctrl+V' });
     assert.equal(pasteAttempt.ok, false);
@@ -4526,4 +4538,61 @@ test('v0.9.2 4-category popover tabs, GPU compositor border beam, 5x-ID semantic
   assert.match(popupHtml, /icons\/icon48\.png/);
   assert.match(popupHtml, /Prism 网页协作助手/);
   assert.match(installerCs, /btnTogglePaths/);
+
+  // 5. Post-v0.9.2 real-window polish: exclude 0px changed-files-card wrapper, vertical left-rail capsule, *.usercontent.goog bridge origin, resting-clean sash, decoupled bubble tint & side-panel-safe keepOverviewOpen
+  assert.doesNotMatch(fxCss, /\[data-testid="changed-files-card"\]\s*,/, 'Must not apply card border to unrounded outer changed-files-card wrapper');
+  assert.doesNotMatch(fxCss, /data-ag-ps-facets="1"[\s\S]{0,180}agy-user-bubble/, 'Optical facets must not alter user message bubble borders or tint');
+  assert.match(fxCss, /\[data-testid="conversation-navigator-turn"\]\[aria-current="true"\][\s\S]{0,160}>\s*span\s*\{[\s\S]{0,160}height:\s*16px/);
+  assert.match(suiteJs, /usercontent\\\.goog/);
+  assert.match(fxJs, /WANTED_OV_STORAGE_KEY/);
+  assert.match(fxJs, /isAuxSidePanelOpen/);
+  assert.match(fxJs, /checkAndHealOrphanedOverviewTransition/);
+  assert.match(suiteJs, /renderPrismTierBadgeHtml/);
+  assert.match(appHtml, /renderWbTierBadge/);
+  assert.match(fxJs, /outlinePreviewStyle/);
+  assert.match(fxCss, /data-ag-ps-rail-preview="compact"/);
+});
+
+test('v0.9.3 Anti-Claude v3.1.10 compat, placeholder-masked thought translation, wan/yi token & hour duration formatting, and composer Tab intent ghost', () => {
+  const rootUp = fs.readFileSync(path.join(REPO, 'upstream.json'), 'utf8');
+  const pluginUp = fs.readFileSync(path.join(REPO, 'plugin', 'upstream.json'), 'utf8');
+  assert.equal(rootUp, pluginUp, 'Root upstream.json and plugin/upstream.json must stay byte-for-byte identical');
+  const parsedUp = JSON.parse(rootUp);
+  assert.equal(parsedUp.upstreams.antiClaude.baselineTag, 'v3.1.10');
+  assert.equal(parsedUp.upstreams.antiClaude.baselineCommit, 'c49103c');
+  assert.equal(parsedUp.upstreams.agyPowertools.baselineTag, 'v2.17.0');
+  assert.equal(parsedUp.upstreams.agyPowertools.baselineCommit, '6e2354b');
+
+  const daemonSrc = fs.readFileSync(path.join(REPO, 'vendor', 'anti-claude', 'core', 'daemon.mjs'), 'utf8');
+  const customSrc = fs.readFileSync(path.join(REPO, 'vendor', 'anti-claude', 'user', 'custom.js'), 'utf8');
+  const i18nJson = JSON.parse(fs.readFileSync(path.join(REPO, 'vendor', 'anti-claude', 'core', 'i18n.json'), 'utf8'));
+  const suiteJs = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite.js'), 'utf8');
+  const fxJs = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite-fx.js'), 'utf8');
+  const fxCss = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite-fx.css'), 'utf8');
+  const accMgr = fs.readFileSync(path.join(REPO, 'plugin', 'server', 'account-manager.mjs'), 'utf8');
+
+  // 1. Anti-Claude v3.1.10 Antigravity v2.36.0 model menu compatibility
+  assert.equal(i18nJson['Context and quota indicator'], '上下文与配额指示器');
+  assert.equal(i18nJson['Legacy Dark'], '经典深色');
+  assert.match(customSrc, /'locked',\s*'hideThinkingEffort'/);
+  assert.match(customSrc, /api\.hideThinkingEffort === true/);
+
+  // 2. Placeholder masking, 0600 cache & clearTranslateCache + predictNextPrompt in daemon.mjs
+  assert.match(daemonSrc, /⟪P\$\{/);
+  assert.match(daemonSrc, /clearTranslateCache/);
+  assert.match(daemonSrc, /predictNextPrompt/);
+  assert.match(daemonSrc, /thought-translation-cache\.json/);
+
+  // 3. Chinese 万/亿 token unit + >=1h duration carry + Composer Tab intent ghost
+  assert.match(customSrc, /ag-prism-token-unit/);
+  assert.match(customSrc, /小时/);
+  assert.match(suiteJs, /tokenUnit:/);
+  assert.match(suiteJs, /composerIntentSuggest:/);
+  assert.match(suiteJs, /clearTranslateCache/);
+  assert.match(fxJs, /composerIntentSuggest/);
+  assert.match(fxJs, /ag-ps-intent-ghost/);
+  assert.match(fxCss, /\.ag-ps-intent-ghost/);
+  assert.doesNotMatch(fxCss, /\[data-testid="user-message"\]:not\(:has\(/, 'Image-only user messages must never match outer user-message wrapper tinting');
+  assert.match(accMgr, /composerIntentSuggest/);
+  assert.match(accMgr, /tokenUnit/);
 });

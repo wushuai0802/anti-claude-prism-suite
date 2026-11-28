@@ -1804,5 +1804,11 @@
   "Unpin Workspace": "取消置顶工作区",
   "Share": "分享",
   "Workspace Name": "工作区名称",
-  "Worktree Name": "Worktree 名称"
+  "Worktree Name": "Worktree 名称",
+  "Context and quota indicator": "上下文与配额指示器",
+  "1. Accessibility": "1. 辅助功能",
+  "2. Screen Recording": "2. 屏幕录制",
+  "Relaunch Antigravity to finish Screen Recording setup": "重启 Antigravity 以完成屏幕录制权限配置",
+  "Legacy Light": "经典浅色",
+  "Legacy Dark": "经典深色"
 }

@@ -2826,6 +2826,63 @@
         animation: none !important;
       }
     }
+
+    .wb-tier-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 3.5px;
+      height: 18px;
+      padding: 0 6.5px;
+      border-radius: 6px;
+      font-size: 9.5px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      line-height: 1;
+      white-space: nowrap;
+      cursor: pointer;
+      user-select: none;
+      transition: transform 140ms cubic-bezier(0.22, 1, 0.36, 1), filter 140ms ease;
+    }
+    .wb-tier-badge:hover {
+      filter: brightness(1.06);
+      transform: translateY(-0.5px);
+    }
+    .wb-tier-badge:active {
+      transform: scale(0.94);
+    }
+    .wb-tier-badge[data-tier-mode="icon"] {
+      width: 18px;
+      padding: 0;
+      border-radius: 5.5px;
+    }
+    .wb-tier-badge[data-tier-kind="ultra"] {
+      background: linear-gradient(135deg, #8B2CF5 0%, #DF267D 100%);
+      color: #FFFFFF;
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.28) inset, 0 2px 6px -1px rgba(139, 44, 245, 0.30);
+    }
+    .wb-tier-badge[data-tier-kind="pro"] {
+      background: linear-gradient(135deg, #2563EB 0%, #4338CA 100%);
+      color: #FFFFFF;
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.26) inset, 0 2px 6px -1px rgba(37, 99, 235, 0.28);
+    }
+    .wb-tier-badge[data-tier-kind="team"] {
+      background: linear-gradient(135deg, #0D9488 0%, #059669 100%);
+      color: #FFFFFF;
+    }
+    .wb-tier-badge[data-tier-kind="plus"] {
+      background: linear-gradient(135deg, #0284C7 0%, #2563EB 100%);
+      color: #FFFFFF;
+    }
+    .wb-tier-badge[data-tier-kind="starter"] {
+      background: linear-gradient(135deg, #64748B 0%, #475569 100%);
+      color: #FFFFFF;
+    }
+    .wb-tier-badge svg {
+      width: 9.5px;
+      height: 9.5px;
+      flex-shrink: 0;
+    }
   </style>
 </head>
 <body>
@@ -3845,11 +3902,71 @@
         '--sidebar-border': '--p-border'
       };
       const PRISM_WB_THEME_CACHE_KEY = 'ag_prism_wb_theme_v1';
+      const PRISM_WB_TIER_MODE_KEY = 'ag_prism_tier_badge_mode';
       let activePrismTheme = null;
+
+      function getWbTierBadgeMode() {
+        if (activePrismTheme && ['badge', 'icon', 'text'].includes(activePrismTheme.tierBadgeMode)) {
+          return activePrismTheme.tierBadgeMode;
+        }
+        try {
+          const m = localStorage.getItem(PRISM_WB_TIER_MODE_KEY);
+          if (m && ['badge', 'icon', 'text'].includes(m)) return m;
+        } catch {}
+        return 'badge';
+      }
+
+      function renderWbTierBadge(rawTier, compact = false) {
+        const full = String(rawTier || '').trim();
+        if (!full) return '';
+        let kind = 'starter';
+        let shortLabel = full.replace(/^Google\s+AI\s+/i, '').trim() || full;
+        let gemSvg = '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M7 2 12 7 7 12 2 7 7 2z"/></svg>';
+        if (/ultra/i.test(full)) {
+          kind = 'ultra';
+          shortLabel = 'ULTRA';
+          gemSvg = '<svg viewBox="0 0 14 14" fill="currentColor" aria-hidden="true"><path d="M3.7 2.1h6.6l2.4 3.2L7 12.4 1.3 5.3l2.4-3.2z"/></svg>';
+        } else if (/\bpro\b/i.test(full)) {
+          kind = 'pro';
+          shortLabel = 'PRO';
+          gemSvg = '<svg viewBox="0 0 14 14" fill="currentColor" aria-hidden="true"><path d="M7 1.3 12.7 7 7 12.7 1.3 7 7 1.3z"/></svg>';
+        } else if (/\b(team|enterprise|business)\b/i.test(full)) {
+          kind = 'team';
+          shortLabel = /enterprise/i.test(full) ? 'ENT' : 'TEAM';
+          gemSvg = '<svg viewBox="0 0 14 14" fill="currentColor" aria-hidden="true"><path d="M7 1l1.8 4.2L13 7l-4.2 1.8L7 13 5.2 8.8 1 7l4.2-1.8L7 1z"/></svg>';
+        } else if (/\b(plus|advanced)\b/i.test(full)) {
+          kind = 'plus';
+          shortLabel = 'PLUS';
+          gemSvg = '<svg viewBox="0 0 14 14" fill="currentColor" aria-hidden="true"><path d="M7 1.5l1.5 4L12.5 7l-4 1.5L7 12.5l-1.5-4L1.5 7l4-1.5L7 1.5z"/></svg>';
+        } else if (/starter/i.test(full)) {
+          shortLabel = 'STARTER';
+        } else if (/free/i.test(full)) {
+          shortLabel = 'FREE';
+        } else {
+          shortLabel = shortLabel.slice(0, 10).toUpperCase();
+        }
+        const mode = getWbTierBadgeMode();
+        const tip = `${full} · 点击切换徽章 / 图标 / 文字`;
+        if (mode === 'text') {
+          const txt = /^(?:antigravity\s+)?starter(?:\s+quota)?$/i.test(full) ? 'Starter' : (compact && (kind === 'ultra' || kind === 'pro') ? (kind === 'ultra' ? 'Ultra' : 'Pro') : full);
+          return `<span class="pill" data-wb-tier-toggle="1" title="${escapeHtml(tip)}" style="cursor:pointer;">${escapeHtml(txt)}</span>`;
+        }
+        if (mode === 'icon') {
+          return `<span class="wb-tier-badge" data-wb-tier-toggle="1" data-tier-mode="icon" data-tier-kind="${kind}" title="${escapeHtml(tip)}" role="button" tabindex="0">${gemSvg}</span>`;
+        }
+        return `<span class="wb-tier-badge" data-wb-tier-toggle="1" data-tier-mode="badge" data-tier-kind="${kind}" title="${escapeHtml(tip)}" role="button" tabindex="0">${gemSvg}<span>${escapeHtml(shortLabel)}</span></span>`;
+      }
 
       function applyPrismThemePayload(theme, persist = true) {
         if (!theme || typeof theme !== 'object') return;
+        const prevTierMode = activePrismTheme && activePrismTheme.tierBadgeMode;
         activePrismTheme = theme;
+        if (theme.tierBadgeMode && ['badge', 'icon', 'text'].includes(theme.tierBadgeMode)) {
+          try { localStorage.setItem(PRISM_WB_TIER_MODE_KEY, theme.tierBadgeMode); } catch {}
+          if (prevTierMode && prevTierMode !== theme.tierBadgeMode && typeof appState === 'object' && appState && appState.activeTab === 'accounts') {
+            try { renderAccounts(); } catch {}
+          }
+        }
         if (persist) {
           try { localStorage.setItem(PRISM_WB_THEME_CACHE_KEY, JSON.stringify(theme)); } catch {}
         }
@@ -6517,7 +6634,7 @@
           accountsWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.9.2，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.9.3，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
                 `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
                 `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
               `</article>`
@@ -6839,8 +6956,7 @@
               const isRec = !isOnline && !poolHealth.anyExhausted && Boolean(effectiveRecId && effectiveRecId === a.id);
               const eff = a.effectiveQuota;
               const rawTier = String(eff?.tierName || '').trim();
-              const tierLabel = formatTierLabel(rawTier, !isOnline);
-              const tierBadge = tierLabel ? `<span class="pill" title="${escapeHtml(rawTier)}">${escapeHtml(tierLabel)}</span>` : '';
+              const tierBadge = renderWbTierBadge(rawTier, !isOnline);
               const backupBadge = a.vaultHasBackup ? '' : '<span class="pill pill-danger">缺备份</span>';
               const toggleRole = a.role === 'primary' ? 'backup' : 'primary';
               const toggleRoleText = a.role === 'primary' ? '改备用' : '设为主号';
@@ -7320,7 +7436,7 @@
               ? `<span class="pill pill-warn">新版本 ${escapeHtml(suInfo.latestTag)}</span>`
               : st.radarLoading
                 ? '<span class="pill">检查中</span>'
-                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.9.2</span>');
+                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.9.3</span>');
         const expSnap = st.exposure || null;
         const expMcp = expSnap?.mcpExposure || appState.prefs?.mcpExposure || { fileTools: true, memoryTools: true, modelHubTools: true };
         const activeMcpCnt = (expMcp.fileTools !== false ? 2 : 0) + (expMcp.memoryTools !== false ? 4 : 0) + (expMcp.modelHubTools !== false ? 2 : 0);
@@ -7526,7 +7642,7 @@
           cuaWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-cua-action="refresh">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.9.2，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程；请在 Plugins Manager 重载插件或重启一次 Antigravity。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.9.3，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程；请在 Plugins Manager 重载插件或重启一次 Antigravity。</p>` +
               `</article>`
             : `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">读取电脑操控状态失败</span><button type="button" class="mini-btn is-primary" data-cua-action="refresh">重试</button></div>` +
@@ -7831,6 +7947,7 @@
           if (event.source && event.source !== window.parent && event.source !== window.top) return;
           const orig = String(event.origin || '').trim();
           const trustedOrig = !orig || orig === 'null' || orig === window.location.origin ||
+            /^https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.usercontent\.goog(?::\d+)?$/i.test(orig) ||
             /^(?:app|vscode-webview|file):\/\//i.test(orig) ||
             /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i.test(orig);
           if (!trustedOrig) return;
@@ -8270,6 +8387,18 @@
       });
 
       accountsWrap.addEventListener('click', async (event) => {
+        const tierToggle = event.target.closest('[data-wb-tier-toggle]');
+        if (tierToggle) {
+          event.preventDefault();
+          event.stopPropagation();
+          const modes = ['badge', 'icon', 'text'];
+          const next = modes[(modes.indexOf(getWbTierBadgeMode()) + 1) % modes.length];
+          if (activePrismTheme) activePrismTheme.tierBadgeMode = next;
+          try { localStorage.setItem(PRISM_WB_TIER_MODE_KEY, next); } catch {}
+          postBridgeToMain({ type: 'set-tier-badge-mode', mode: next });
+          renderAccounts();
+          return;
+        }
         const btn = event.target.closest('button[data-acc-action]');
         if (!btn) return;
         const act = btn.dataset.accAction;
@@ -8534,7 +8663,7 @@
             appState.accounts.selfUpdateChecking = false;
             appState.accounts.selfUpdateInfo = info;
             renderAccounts();
-            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.9.2'}`);
+            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.9.3'}`);
           } else if (act === 'self-update-repair-ask') {
             appState.accounts.selfUpdateConfirmRepair = true;
             renderAccounts();
@@ -10071,7 +10200,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.9.2' },
+            appInfo: { name: 'prism-files', version: '0.9.3' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};

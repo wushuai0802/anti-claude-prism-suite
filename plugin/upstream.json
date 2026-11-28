@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "updatedAt": "2026-11-27",
+  "updatedAt": "2026-11-28",
   "principle": "Selective adoption only: inspect breaking host/credential changes first, surface useful/fun ideas for user approval, never copy-paste wholesale or import GPL-3.0 code.",
   "upstreams": {
     "antiClaude": {
@@ -9,8 +9,8 @@
       "license": "MIT",
       "absorptionPolicy": "compat-first-selective",
       "adoptionBoundary": "仅追踪 user/extensions 加载钩子、getUsageSummary/translateText 等扩展契约变化，不打包反编译核心逻辑。",
-      "baselineTag": "v3.1.9",
-      "baselineCommit": "747d43e",
+      "baselineTag": "v3.1.10",
+      "baselineCommit": "c49103c",
       "watchedPaths": [
         "core/daemon.mjs",
         "core/runtime.js",
@@ -36,8 +36,8 @@
       "license": "MIT",
       "absorptionPolicy": "selective-feature-ideas",
       "adoptionBoundary": "关注 Antigravity 凭据库路径变动与有趣轻量小工具/视觉创意；不照搬全盘重写与闭环强耦合逻辑。",
-      "baselineTag": "v2.16.11",
-      "baselineCommit": "fa4eedb",
+      "baselineTag": "v2.17.0",
+      "baselineCommit": "6e2354b",
       "watchedPaths": [
         "lib/credential-vault.mjs",
         "extensions/",

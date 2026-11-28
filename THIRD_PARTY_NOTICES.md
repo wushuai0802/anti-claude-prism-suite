@@ -7,7 +7,7 @@ It bundles or references the following open-source components and community ecos
 
 ## 1. Anti-Claude (`vendor/anti-claude/`) — Bundled Runtime Kernel
 
-- **Upstream Repository**: https://github.com/hongqi7/Anti-Claude (`v3.1.9`)
+- **Upstream Repository**: https://github.com/hongqi7/Anti-Claude (`v3.1.10`)
 - **License**: MIT License
 - **Role**: Bundled in `vendor/anti-claude/` and deployed into `~/.gemini/antigravity/anti-claude/runtime/` so users can install `anti-claude-prism-suite` standalone without separately installing a prerequisite runtime.
 

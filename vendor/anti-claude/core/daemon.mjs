@@ -3703,7 +3703,171 @@ const USAGE_LEDGER_CACHE_FILE = path.join(STATE_DIR, 'usage-ledger-cache.json');
 let usageLedgerMem = null; // { cachePath, entries: Map<dbPath, { sig, mtimeMs, byDay }> }
 let usageSummaryMemo = { at: 0, key: '', data: null };
 const usageReadFailUntil = new Map();
-const translateCache = new Map(); // hash -> translated string
+const THOUGHT_TRANSLATE_CACHE_FILE = path.join(
+  os.homedir(),
+  '.gemini',
+  'antigravity',
+  'prism-suite',
+  'thought-translation-cache.json'
+);
+const MODEL_HUB_CONFIG_FILE = path.join(os.homedir(), '.gemini', 'antigravity', 'prism-suite', 'model-hub.json');
+const TRANSLATE_CACHE_TTL_MS = 7 * 86400 * 1000;
+const TRANSLATE_CACHE_MAX_ENTRIES = 300;
+const translateCache = new Map(); // hash -> { v: string, t: number }
+const translateChunkCache = new Map(); // masked chunk hash -> translated string
+let translateCacheLoaded = false;
+let translateCacheWriteTimer = null;
+
+function flushTranslateCacheSync() {
+  const dir = path.dirname(THOUGHT_TRANSLATE_CACHE_FILE);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(dir, 0o700);
+  } catch {}
+  const now = Date.now();
+  const entries = {};
+  for (const [k, rec] of translateCache.entries()) {
+    if (!rec || typeof rec.v !== 'string' || !rec.v || now - (Number(rec.t) || 0) > TRANSLATE_CACHE_TTL_MS) {
+      translateCache.delete(k);
+      continue;
+    }
+    entries[k] = { v: rec.v, t: Math.floor(Number(rec.t) || now) };
+  }
+  const target = resolveAtomicWriteTarget(THOUGHT_TRANSLATE_CACHE_FILE);
+  const tmp = `${target}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  const body = `${JSON.stringify({ schema: 1, updatedAt: now, entries })}\n`;
+  try {
+    fs.writeFileSync(tmp, body, { encoding: 'utf8', mode: 0o600 });
+    try {
+      fs.chmodSync(tmp, 0o600);
+    } catch {}
+    fs.renameSync(tmp, target);
+  } catch (err) {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {}
+    throw err;
+  }
+}
+
+function scheduleTranslateCacheWrite() {
+  if (translateCacheWriteTimer) clearTimeout(translateCacheWriteTimer);
+  translateCacheWriteTimer = setTimeout(() => {
+    translateCacheWriteTimer = null;
+    try {
+      flushTranslateCacheSync();
+    } catch {}
+  }, 1200);
+  if (translateCacheWriteTimer && typeof translateCacheWriteTimer.unref === 'function') {
+    translateCacheWriteTimer.unref();
+  }
+}
+
+function ensureTranslateCacheLoaded() {
+  if (translateCacheLoaded) return;
+  translateCacheLoaded = true;
+  const raw = readJsonOrFallback(THOUGHT_TRANSLATE_CACHE_FILE, null);
+  if (!raw || typeof raw !== 'object' || !raw.entries || typeof raw.entries !== 'object') return;
+  const now = Date.now();
+  let pruned = false;
+  const validItems = [];
+  for (const [k, val] of Object.entries(raw.entries)) {
+    if (!k || !val || typeof val !== 'object') {
+      pruned = true;
+      continue;
+    }
+    const v = typeof val.v === 'string' ? val.v : '';
+    const t = Number(val.t) || 0;
+    if (!v || t <= 0 || now - t > TRANSLATE_CACHE_TTL_MS) {
+      pruned = true;
+      continue;
+    }
+    validItems.push([k, { v, t }]);
+  }
+  if (validItems.length > TRANSLATE_CACHE_MAX_ENTRIES) {
+    validItems.sort((a, b) => a[1].t - b[1].t);
+    validItems.splice(0, validItems.length - TRANSLATE_CACHE_MAX_ENTRIES);
+    pruned = true;
+  }
+  for (const [k, rec] of validItems) {
+    translateCache.set(k, rec);
+  }
+  if (pruned) scheduleTranslateCacheWrite();
+}
+
+function getTranslateCacheEntry(key) {
+  const rec = translateCache.get(key);
+  if (!rec) return null;
+  if (!rec.v || typeof rec.v !== 'string' || Date.now() - (Number(rec.t) || 0) > TRANSLATE_CACHE_TTL_MS) {
+    translateCache.delete(key);
+    return null;
+  }
+  translateCache.delete(key);
+  translateCache.set(key, rec);
+  return rec.v;
+}
+
+function setTranslateCacheEntry(key, val) {
+  if (!val || typeof val !== 'string') return;
+  if (translateCache.has(key)) translateCache.delete(key);
+  translateCache.set(key, { v: val, t: Date.now() });
+  while (translateCache.size > TRANSLATE_CACHE_MAX_ENTRIES) {
+    const oldest = translateCache.keys().next().value;
+    if (oldest === undefined) break;
+    translateCache.delete(oldest);
+  }
+  scheduleTranslateCacheWrite();
+}
+
+function clearTranslateCacheStore() {
+  translateCacheLoaded = true;
+  translateCache.clear();
+  translateChunkCache.clear();
+  if (translateCacheWriteTimer) {
+    clearTimeout(translateCacheWriteTimer);
+    translateCacheWriteTimer = null;
+  }
+  try {
+    if (fs.existsSync(THOUGHT_TRANSLATE_CACHE_FILE)) {
+      fs.unlinkSync(THOUGHT_TRANSLATE_CACHE_FILE);
+    }
+  } catch {}
+}
+
+function maskThoughtProtectedSpans(rawText) {
+  const originals = [];
+  const put = (segment) => {
+    const idx = originals.length;
+    originals.push(segment);
+    return `⟪P${idx}⟫`;
+  };
+  let out = String(rawText || '');
+  // 1) Fenced code blocks (masked before chunk splitting so code blocks never split across chunks)
+  out = out.replace(/```[\s\S]*?```/g, (m) => put(m));
+  // 2) Inline code spans
+  out = out.replace(/`[^`\n]{1,240}`/g, (m) => put(m));
+  // 3) URLs
+  out = out.replace(/\b(?:https?|file|vscode-webview):\/\/[^\s<>)"']+/gi, (m) => put(m));
+  // 4) File paths with optional line references (linear non-backtracking)
+  out = out.replace(
+    /(?:^|(?<=[\s([{"']))(?:\/[A-Za-z0-9._-]+){2,}(?::\d+(?:-\d+)?)?|[A-Za-z]:\\(?:[^\s<>:"|?*`\r\n\\]+\\)*[^\s<>:"|?*`\r\n\\]+/gm,
+    (m) => put(m)
+  );
+  // 5) Code identifiers (camelCase, PascalCase, snake_case, SCREAMING_SNAKE_CASE >= 4 chars, never touching ⟪P...⟫)
+  out = out.replace(
+    /(?<!⟪)\b(?:[a-z]+[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]*|[A-Za-z]+_[A-Za-z0-9_]+)\b/g,
+    (m) => (m.length >= 4 ? put(m) : m)
+  );
+  return { masked: out, originals };
+}
+
+function unmaskThoughtProtectedSpans(text, originals) {
+  if (!text || !Array.isArray(originals) || originals.length === 0) return text;
+  return String(text).replace(/⟪\s*P\s*(\d+)\s*⟫/gi, (full, numStr) => {
+    const idx = Number(numStr);
+    return Number.isInteger(idx) && idx >= 0 && idx < originals.length ? originals[idx] : full;
+  });
+}
 
 function splitTextForTranslation(text, maxChunkLen = 950) {
   const paragraphs = text.split(/\n{2,}/);
@@ -3749,43 +3913,211 @@ function splitTextForTranslation(text, maxChunkLen = 950) {
 
 async function translateChunk(chunk, tl) {
   const cKey = `c:${tl}:${crypto.createHash('sha1').update(chunk).digest('hex')}`;
-  if (translateCache.has(cKey)) return translateCache.get(cKey);
-  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(tl)}&dt=t&q=${encodeURIComponent(chunk)}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(6500) });
-  if (!res.ok) throw new Error(`http_${res.status}`);
-  const data = await res.json();
-  const translated = Array.isArray(data?.[0]) ? data[0].map((seg) => (Array.isArray(seg) ? seg[0] || '' : '')).join('') : '';
-  if (!translated) throw new Error('empty_translation');
-  setBounded(translateCache, cKey, translated, 384);
-  return translated;
+  if (translateChunkCache.has(cKey)) return translateChunkCache.get(cKey);
+  let tier1Err = null;
+  try {
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(tl)}&dt=t&q=${encodeURIComponent(chunk)}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(6000), redirect: 'error' });
+    if (!res.ok) throw new Error(`http_${res.status}`);
+    const data = await res.json();
+    const translated = Array.isArray(data?.[0]) ? data[0].map((seg) => (Array.isArray(seg) ? seg[0] || '' : '')).join('') : '';
+    if (!translated) throw new Error('empty_translation');
+    setBounded(translateChunkCache, cKey, translated, 384);
+    return translated;
+  } catch (err) {
+    tier1Err = err;
+  }
+
+  const fallbackUrl = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=${encodeURIComponent(tl)}&q=${encodeURIComponent(chunk)}`;
+  const res2 = await fetch(fallbackUrl, { signal: AbortSignal.timeout(6000), redirect: 'error' });
+  if (!res2.ok) throw new Error(`http_${res2.status}`);
+  const data2 = await res2.json();
+  const translated2 = Array.isArray(data2)
+    ? typeof data2[0] === 'string'
+      ? data2.join('')
+      : Array.isArray(data2[0])
+        ? data2[0].map((x) => (Array.isArray(x) ? x[0] || '' : typeof x === 'string' ? x : '')).join('')
+        : ''
+    : data2?.sentences
+      ? data2.sentences.map((s) => s?.trans || '').join('')
+      : '';
+  if (!translated2) throw tier1Err || new Error('empty_translation');
+  setBounded(translateChunkCache, cKey, translated2, 384);
+  return translated2;
 }
 
 async function translateThoughtText(rawText, targetLang = 'zh-CN') {
   const text = String(rawText || '').trim();
   if (!text) return { ok: true, translated: '', skipped: true };
+  ensureTranslateCacheLoaded();
   const clipped = text.length > 10000 ? text.slice(0, 10000) : text;
-  const cjkCount = (clipped.match(/[\u4e00-\u9fff]/g) || []).length;
-  const alphaCount = (clipped.match(/[A-Za-z]/g) || []).length;
-  if (cjkCount > 0 && cjkCount / Math.max(1, cjkCount + alphaCount) >= 0.55) {
-    return { ok: true, translated: clipped, skipped: true };
-  }
   const tl = /^[a-zA-Z-]{2,10}$/.test(String(targetLang || '')) ? String(targetLang) : 'zh-CN';
   const cacheKey = `${tl}:${crypto.createHash('sha1').update(clipped).digest('hex')}`;
-  if (translateCache.has(cacheKey)) {
-    return { ok: true, translated: translateCache.get(cacheKey), cached: true };
+  const cachedHit = getTranslateCacheEntry(cacheKey);
+  if (cachedHit !== null) {
+    return { ok: true, translated: cachedHit, cached: true };
   }
+
+  const { masked, originals } = maskThoughtProtectedSpans(clipped);
+  const proseOnly = masked.replace(/⟪P\d+⟫/g, '');
+  const cjkCount = (proseOnly.match(/[\u4e00-\u9fff]/g) || []).length;
+  const alphaCount = (proseOnly.match(/[A-Za-z]/g) || []).length;
+  if (alphaCount === 0 || (cjkCount > 0 && cjkCount / Math.max(1, cjkCount + alphaCount) >= 0.55)) {
+    return { ok: true, translated: clipped, skipped: true };
+  }
+
   try {
-    const chunks = splitTextForTranslation(clipped, 950);
+    const chunks = splitTextForTranslation(masked, 950);
     const out = [];
     for (const ch of chunks) {
       out.push(await translateChunk(ch, tl));
     }
-    const translated = out.join('\n\n');
-    setBounded(translateCache, cacheKey, translated, 256);
+    const translated = unmaskThoughtProtectedSpans(out.join('\n\n'), originals);
+    setTranslateCacheEntry(cacheKey, translated);
     return { ok: true, translated, truncated: text.length > 10000 };
   } catch (err) {
     return { ok: false, error: String(err?.name || err?.message || 'translate_failed') };
   }
+}
+
+function isAllowedModelHubEndpointUrl(rawUrl) {
+  try {
+    const u = new URL(String(rawUrl || '').trim());
+    if (u.username || u.password) return false;
+    const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (
+      !host ||
+      host === '0.0.0.0' ||
+      host === 'metadata.google.internal' ||
+      host.endsWith('.internal') ||
+      host.startsWith('169.254.') ||
+      host.startsWith('fe80:') ||
+      host.startsWith('::ffff:169.254.')
+    ) {
+      return false;
+    }
+    if (u.protocol === 'https:') return true;
+    if (u.protocol !== 'http:') return false;
+    if (host === 'localhost' || host === '::1') return true;
+    const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (!ipv4) return false;
+    const [a, b, c, d] = ipv4.slice(1).map(Number);
+    if ([a, b, c, d].some((o) => o < 0 || o > 255)) return false;
+    if (a === 127 || a === 10) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function predictNextPromptHeuristic(lastAssistantText) {
+  const text = String(lastAssistantText || '').trim();
+  const tail = text.slice(-360);
+  const asksQuestion = /[?？]|(?:是否|要不要|需要我|确认|可以吗|好吗|行吗|如何|怎么样|请告知|告诉我|反馈)/.test(tail);
+  if (/(?:打包发布|v0\.\d+|发版|推送)/i.test(text) && asksQuestion) {
+    return '确认无误，请打包发布新版本';
+  }
+  if (/(?:测试|验收|试试)/.test(text) && asksQuestion) {
+    return '效果没问题，请继续收尾提交';
+  }
+  if (/(?:报错|异常|根因|失败)/.test(text)) {
+    return '请按定位的根因修复并运行测试验证';
+  }
+  if (/(?:方案|建议)/.test(text) || (/(?:^|\s)1[.、)]/.test(text) && /(?:^|\s)2[.、)]/.test(text))) {
+    return '按你的推荐方案继续落地执行';
+  }
+  if (/(?:巡检|上游|更新)/.test(text)) {
+    return '合入高优先级兼容项并运行回归测试';
+  }
+  return '继续检查还有没有遗漏细节需要优化';
+}
+
+async function predictNextPromptAction(payload) {
+  const lastUserText = String(payload?.lastUserText || '').trim().slice(-900);
+  const lastAssistantText = String(payload?.lastAssistantText || '').trim().slice(-1400);
+
+  if (lastAssistantText || lastUserText) {
+    const rawHub = readJsonOrFallback(MODEL_HUB_CONFIG_FILE, null);
+    if (rawHub && typeof rawHub === 'object') {
+      const candidates = Array.isArray(rawHub)
+        ? rawHub
+        : Array.isArray(rawHub.endpoints)
+          ? rawHub.endpoints
+          : Array.isArray(rawHub.providers)
+            ? rawHub.providers
+            : rawHub.baseUrl
+              ? [rawHub]
+              : [];
+      const topModels = Array.isArray(rawHub.models) ? rawHub.models : [];
+      for (const ep of candidates) {
+        if (!ep || typeof ep !== 'object' || ep.enabled === false) continue;
+        if (ep.protocol && !/^openai/i.test(String(ep.protocol))) continue;
+        const baseUrl = String(ep.baseUrl || '').trim().replace(/\/+$/, '');
+        const apiKey = String(ep.apiKey || (ep.apiKeyEnv && process.env[ep.apiKeyEnv]) || '').trim();
+        if (!baseUrl || !apiKey) continue;
+        const chatUrl = /\/chat\/completions$/i.test(baseUrl) ? baseUrl : `${baseUrl}/chat/completions`;
+        if (!isAllowedModelHubEndpointUrl(chatUrl)) continue;
+        const rawModels = Array.isArray(ep.models)
+          ? ep.models
+          : ep.id
+            ? topModels.filter((m) => m && m.providerId === ep.id && m.enabled !== false)
+            : topModels;
+        const modelIds = rawModels
+          .filter((m) => (typeof m === 'string' ? true : m && m.enabled !== false))
+          .map((m) => (typeof m === 'string' ? m.trim() : String(m.model || m.name || m.id || '').trim()))
+          .filter(Boolean);
+        const chosenModel = modelIds.find((id) => /flash|mini|haiku/i.test(id)) || modelIds[0] || '';
+        if (!chosenModel) continue;
+        try {
+          const res = await fetch(chatUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+              model: chosenModel,
+              max_tokens: 42,
+              temperature: 0.3,
+              messages: [
+                {
+                  role: 'system',
+                  content:
+                    '基于最后一轮问答，站在用户角度预测用户下一步最可能输入的一句简短中文指令（10~26字，直接输出指令本身，不要引号、句号或解释）。'
+                },
+                {
+                  role: 'user',
+                  content: `${lastUserText ? `【用户上一句】\n${lastUserText}\n\n` : ''}【助手最新回复】\n${lastAssistantText}`
+                }
+              ]
+            }),
+            signal: AbortSignal.timeout(2800),
+            redirect: 'error'
+          });
+          if (!res.ok) continue;
+          const data = await res.json();
+          const rawContent = String(data?.choices?.[0]?.message?.content || '')
+            .replace(/<think>[\s\S]*?<\/think>/gi, '')
+            .replace(/[\r\n]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .replace(/^[\s"'“”‘’「」『』`]+|[\s"'“”‘’「」『』`。！.!]+$/g, '')
+            .trim();
+          if (rawContent.length >= 4 && rawContent.length <= 48) {
+            return { ok: true, suggestion: rawContent, source: 'ai' };
+          }
+        } catch {}
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    suggestion: predictNextPromptHeuristic(lastAssistantText),
+    source: 'heuristic'
+  };
 }
 
 function formatLocalDateKey(ms) {
@@ -4177,6 +4509,7 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
           thoughtMode: ['off', 'bilingual', 'immersive'],
           composerBorderFx: ['off', 'smart', 'beam', 'static'],
           outlineRailMode: ['smart', 'right', 'off'],
+          outlinePreviewStyle: ['detailed', 'compact'],
           borderBeamMode: ['always', 'busy'],
           borderBeamPalette: ['theme', 'gemini', 'aurora', 'prism', 'neon', 'quota'],
           quotaRingPeriod: ['auto', 'weekly', '5h'],
@@ -4184,7 +4517,8 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
           bubbleTintPreset: ['accent', 'sky', 'emerald', 'amber', 'violet'],
           sidebarSessions: ['default', '10', 'all'],
           i18nExtraMode: ['off', 'zh-CN', 'zh-TW', 'en'],
-          performanceMode: ['power-save', 'balanced', 'vivid']
+          performanceMode: ['power-save', 'balanced', 'vivid'],
+          tokenUnit: ['auto', 'wan', 'kmb']
         };
         const BOOL_ALLOW = new Set([
           'showWorkbenchBtn', 'outline', 'usageExtra', 'inkStream', 'mascot', 'mascotRoam',
@@ -4193,7 +4527,8 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
           'switchAutoReturn', 'autoDismissOnboarding', 'quotaHandoffAlert',
           'imageContextMenu', 'cleanCopy', 'sshPaste', 'inlineEditHelper',
           'sessionFork', 'composerFileDrop', 'wslExplorerRevealFix', 'fastWindowRestore',
-          'ignoreReducedMotion', 'opticalFacets', 'semanticAfterglow', 'compactQuotaPill'
+          'ignoreReducedMotion', 'opticalFacets', 'semanticAfterglow', 'compactQuotaPill',
+          'composerIntentSuggest'
         ]);
         const FONT_STR_ALLOW = new Set(['chatFontFamily', 'codeFontFamily']);
         const UNSAFE_FONT_VAL_RE = /[;{}<>\\]|\/\*|url\s*\(|expression\s*\(|@import|[\x00-\x1f\x7f]/i;
@@ -4376,6 +4711,14 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
     }
     if (action === 'translateText') {
       const result = await translateThoughtText(payload?.text, payload?.targetLang || 'zh-CN');
+      return { reqId, result };
+    }
+    if (action === 'clearTranslateCache') {
+      clearTranslateCacheStore();
+      return { reqId, result: { ok: true } };
+    }
+    if (action === 'predictNextPrompt') {
+      const result = await predictNextPromptAction(payload);
       return { reqId, result };
     }
     if (action === 'getFastWindowRestoreStatus') {

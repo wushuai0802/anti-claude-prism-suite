@@ -7041,6 +7041,111 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) [data-testid="overview-pan
   font-variant-numeric: tabular-nums;
 }
 
+/* Interactive Multi-Tier Gem Emblem Badge (Easter Egg: badge <-> icon <-> text) */
+@keyframes ag-tier-pop {
+  0% { transform: scale(0.86); }
+  58% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+
+.ag-tier-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3.5px;
+  height: 18px;
+  padding: 0 6.5px;
+  border-radius: 6px;
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.035em;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+  vertical-align: middle;
+  transition: transform 140ms cubic-bezier(0.22, 1, 0.36, 1), filter 140ms ease, box-shadow 140ms ease;
+}
+
+.ag-tier-badge:hover {
+  filter: brightness(1.06);
+  transform: translateY(-0.5px);
+}
+
+.ag-tier-badge:active {
+  transform: scale(0.94);
+}
+
+.ag-tier-badge.is-pop {
+  animation: ag-tier-pop 210ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ag-tier-badge[data-tier-mode="icon"] {
+  width: 18px;
+  padding: 0;
+  border-radius: 5.5px;
+}
+
+.ag-tier-badge[data-tier-mode="text"] {
+  height: auto;
+  padding: 1.5px 6.5px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  background: var(--ag-ov-subtle, rgba(128, 128, 128, 0.11));
+  color: var(--ag-ov-muted, var(--muted-foreground, #71717A));
+  border: 1px solid rgba(128, 128, 128, 0.12);
+  box-shadow: none;
+}
+
+.ag-tier-badge:is([data-tier-mode="badge"], [data-tier-mode="icon"])[data-tier-kind="ultra"] {
+  background: linear-gradient(135deg, #8B2CF5 0%, #DF267D 100%) !important;
+  color: #FFFFFF !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.28) inset, 0 2px 6px -1px rgba(139, 44, 245, 0.32);
+}
+
+.ag-tier-badge:is([data-tier-mode="badge"], [data-tier-mode="icon"])[data-tier-kind="pro"] {
+  background: linear-gradient(135deg, #2563EB 0%, #4338CA 100%) !important;
+  color: #FFFFFF !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.26) inset, 0 2px 6px -1px rgba(37, 99, 235, 0.30);
+}
+
+.ag-tier-badge:is([data-tier-mode="badge"], [data-tier-mode="icon"])[data-tier-kind="team"] {
+  background: linear-gradient(135deg, #0D9488 0%, #059669 100%) !important;
+  color: #FFFFFF !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.24) inset, 0 2px 6px -1px rgba(13, 148, 136, 0.28);
+}
+
+.ag-tier-badge:is([data-tier-mode="badge"], [data-tier-mode="icon"])[data-tier-kind="plus"] {
+  background: linear-gradient(135deg, #0284C7 0%, #2563EB 100%) !important;
+  color: #FFFFFF !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.24) inset, 0 2px 6px -1px rgba(2, 132, 199, 0.28);
+}
+
+.ag-tier-badge:is([data-tier-mode="badge"], [data-tier-mode="icon"])[data-tier-kind="starter"] {
+  background: linear-gradient(135deg, #64748B 0%, #475569 100%) !important;
+  color: #FFFFFF !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.20) inset, 0 1px 4px rgba(15, 23, 42, 0.18);
+}
+
+.ag-tier-badge .ag-tier-gem {
+  width: 9.5px;
+  height: 9.5px;
+  flex-shrink: 0;
+  color: #FFFFFF !important;
+}
+
+.ag-tier-badge .ag-tier-txt {
+  color: #FFFFFF !important;
+  font-size: 9.5px !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.04em !important;
+  line-height: 1 !important;
+}
+
 #ag-claude-ov-sections .ag-ov-quota-box {
   background-color: var(--ag-ov-subtle);
   border: 1px solid var(--ag-ov-border);

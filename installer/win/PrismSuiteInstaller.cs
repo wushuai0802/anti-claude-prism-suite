@@ -16,8 +16,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("Anti-Claude Prism Suite 一键安装器")]
 [assembly: AssemblyDescription("Anti-Claude Prism Suite Standalone All-in-One Installer (Kernel + Extensions + prism-files + prism-cua + chrome-bridge)")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.9.2.0")]
-[assembly: AssemblyFileVersion("0.9.2.0")]
+[assembly: AssemblyVersion("0.9.3.0")]
+[assembly: AssemblyFileVersion("0.9.3.0")]
 
 namespace AntiClaudePrismSuiteInstaller
 {
@@ -1271,7 +1271,7 @@ namespace AntiClaudePrismSuiteInstaller
                 }
             }
 
-            log(string.Format("[完成] 内置 Anti-Claude v3.1.9 运行时内核已部署至 {0}（共 {1} 个文件）", runtimeDir, count));
+            log(string.Format("[完成] 内置 Anti-Claude v3.1.10 运行时内核已部署至 {0}（共 {1} 个文件）", runtimeDir, count));
 
             if (activateHostDaemon)
             {
@@ -1313,7 +1313,7 @@ namespace AntiClaudePrismSuiteInstaller
                         }
                         else
                         {
-                            log("  [内核] 已激活 Anti-Claude v3.1.9 后台 CDP 守护进程与开机自启（无需再单独安装 Anti-Claude）");
+                            log("  [内核] 已激活 Anti-Claude v3.1.10 后台 CDP 守护进程与开机自启（无需再单独安装 Anti-Claude）");
                         }
                     }
                     catch (Exception ex)
@@ -2237,7 +2237,7 @@ namespace AntiClaudePrismSuiteInstaller
             // Explicit DPI-exact scaling (prevents WinForms AutoScaleMode.Dpi 96-vs-192 mismatch on 150%/200%/250% displays)
             AutoScaleMode = AutoScaleMode.None;
             DoubleBuffered = true;
-            Text = "Anti-Claude Prism Suite 一键安装器 v0.9.2（独立完整版）";
+            Text = "Anti-Claude Prism Suite 一键安装器 v0.9.3（独立完整版）";
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = Color.FromArgb(248, 250, 252);
             ForeColor = Color.FromArgb(15, 23, 42);
@@ -2309,14 +2309,14 @@ namespace AntiClaudePrismSuiteInstaller
             headerTextCol.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             lblTitle = new Label();
-            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.9.2";
+            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.9.3";
             lblTitle.ForeColor = Color.White;
             lblTitle.Font = MakeFont(13f, FontStyle.Bold);
             lblTitle.AutoSize = true;
             lblTitle.Margin = SPad(0, 0, 0, 4);
 
             lblSubtitle = new Label();
-            lblSubtitle.Text = "已内嵌 Anti-Claude v3.1.9 内核 + 棱镜扩展 + Prism 七合一工作台 + 受控电脑操控桥（免装 Node.js · 零前置依赖）";
+            lblSubtitle.Text = "已内嵌 Anti-Claude v3.1.10 内核 + 棱镜扩展 + Prism 七合一工作台 + 受控电脑操控桥（免装 Node.js · 零前置依赖）";
             lblSubtitle.ForeColor = Color.FromArgb(148, 163, 184);
             lblSubtitle.Font = MakeFont(8.6f, FontStyle.Regular);
             lblSubtitle.AutoSize = true;
@@ -2710,7 +2710,7 @@ namespace AntiClaudePrismSuiteInstaller
         private void OnFormShown(object sender, EventArgs e)
         {
             SyncResponsiveWrapWidths();
-            AppendLog(string.Format("已载入内嵌资源清单：共 {0} 个文件（含内置 Anti-Claude v3.1.9 内核）。", manifestEntries.Count));
+            AppendLog(string.Format("已载入内嵌资源清单：共 {0} 个文件（含内置 Anti-Claude v3.1.10 内核）。", manifestEntries.Count));
             AppendLog("正在检测 WSL Antigravity 环境（最多等待 3 秒）...");
 
             ThreadPool.QueueUserWorkItem(delegate
@@ -2914,7 +2914,7 @@ namespace AntiClaudePrismSuiteInstaller
                         MessageBox.Show(
                             this,
                             isInstall
-                                ? "Anti-Claude Prism Suite v0.9.2 安装成功！\n\n快速上手三步指引：\n1. 若 Antigravity 正在打开，请先关闭并重新启动一次；\n2. 点击窗口右上角「✦ 棱镜」，一键选择喜欢的主题配色与体验模式；\n3. 点击顶栏「工作台」，即可使用文件浏览、历史检索与多账号一键切换！"
+                                ? "Anti-Claude Prism Suite v0.9.3 安装成功！\n\n快速上手三步指引：\n1. 若 Antigravity 正在打开，请先关闭并重新启动一次；\n2. 点击窗口右上角「✦ 棱镜」，一键选择喜欢的主题配色与体验模式；\n3. 点击顶栏「工作台」，即可使用文件浏览、历史检索与多账号一键切换！"
                                 : "已干净卸载选中的 Anti-Claude Prism Suite 组件。",
                             isInstall ? "安装成功" : "卸载完成",
                             MessageBoxButtons.OK,

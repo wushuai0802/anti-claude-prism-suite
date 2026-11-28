@@ -82,6 +82,31 @@
     overviewPanel: effectiveModBool('claudeUxOverviewPanel', true)
   };
   const L = (zh, en) => (FEAT.i18n ? zh : en);
+  const isZhLang = () => Boolean(FEAT.i18n);
+  const PRISM_TOKEN_UNIT_KEY = 'ag-prism-token-unit';
+  function getPrismTokenUnit() {
+    try {
+      const raw = typeof localStorage === 'object' && localStorage ? localStorage.getItem(PRISM_TOKEN_UNIT_KEY) : null;
+      if (raw === 'kmb') return 'kmb';
+      if (raw === 'wan') return 'wan';
+    } catch {}
+    return isZhLang() ? 'wan' : 'kmb';
+  }
+  function fmtElapsedSecs(secs) {
+    const s = Math.max(0, Math.floor(Number(secs) || 0));
+    if (s >= 3600) {
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const rem = s % 60;
+      return L(`${h}小时${m}分${rem}秒`, `${h}h ${m}m ${rem}s`);
+    }
+    if (s >= 60) {
+      const m = Math.floor(s / 60);
+      const rem = s % 60;
+      return L(`${m}分${rem}秒`, `${m}m ${rem}s`);
+    }
+    return `${s}s`;
+  }
   const HOST_OS = (() => {
     const navPlat =
       (typeof navigator !== 'undefined' &&
@@ -357,7 +382,7 @@
             el.appendChild(timerEl);
           }
         }
-        const txt = `${secs}s`;
+        const txt = fmtElapsedSecs(secs);
         if (timerEl.textContent !== txt) timerEl.textContent = txt;
       } else {
         if (orbit) orbit.remove();
@@ -951,12 +976,16 @@
   }
 
   function parseTokenLabelToCount(label) {
-    const m = String(label || '').trim().match(/^([\d.]+)\s*([kKmM])?$/);
+    const m = String(label || '').trim().replace(/,/g, '').match(/^([\d.]+)\s*([kKmMbB]|万|亿)?$/);
     if (!m) return 0;
     const num = Number(m[1]);
     if (!Number.isFinite(num) || num <= 0) return 0;
-    const unit = (m[2] || '').toLowerCase();
-    if (unit === 'm') return Math.round(num * 1000000);
+    const rawUnit = m[2] || '';
+    if (rawUnit === '亿') return Math.round(num * 100_000_000);
+    if (rawUnit === '万') return Math.round(num * 10_000);
+    const unit = rawUnit.toLowerCase();
+    if (unit === 'b') return Math.round(num * 1_000_000_000);
+    if (unit === 'm') return Math.round(num * 1_000_000);
     if (unit === 'k') return Math.round(num * 1000);
     return Math.round(num);
   }
@@ -1118,9 +1147,14 @@
     const cidKey = curCid || '__active__';
     const rawRatio = String((ctxState && ctxState.ratioText) || '');
     const parts = rawRatio.split('/');
-    const preUsedFromRatio = (parts[0] || '').trim();
-    const limitLabel = (parts[1] || '').trim();
-    const limitTokens = parseTokenLabelToCount(limitLabel);
+    const rawPreFromRatio = (parts[0] || '').trim();
+    const rawLimitLabel = (parts[1] || '').trim();
+    const preTokensFromRatio = parseTokenLabelToCount(rawPreFromRatio);
+    const limitTokens = parseTokenLabelToCount(rawLimitLabel);
+    const useWan = getPrismTokenUnit() === 'wan' && isZhLang();
+    const preUsedFromRatio =
+      useWan && preTokensFromRatio > 0 ? fmtCompactTokens(preTokensFromRatio) : rawPreFromRatio;
+    const limitLabel = useWan && limitTokens > 0 ? fmtCompactTokens(limitTokens) : rawLimitLabel;
     const cpMeta = compactedMetaByCid.get(cidKey) || null;
     const preUsed =
       (cpMeta && cpMeta.preTokens > 0 ? fmtCompactTokens(cpMeta.preTokens) : '') || preUsedFromRatio;
@@ -1254,20 +1288,66 @@
     return false;
   }
 
+  function fmtTokenValueByUnit(v) {
+    if (getPrismTokenUnit() === 'wan' && isZhLang()) {
+      if (v >= 100_000_000) return `${(v / 100_000_000).toFixed(2).replace(/\.0+$|(\.\d*[1-9])0+$/, '$1')}亿`;
+      if (v >= 10_000) return `${(v / 10_000).toFixed(1).replace(/\.0$/, '')}万`;
+      return String(Math.round(v));
+    }
+    if (v >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(2).replace(/\.0+$|(\.\d*[1-9])0+$/, '$1')}B`;
+    if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+    if (v >= 1000) {
+      const k = v / 1000;
+      return (k >= 100 ? String(Math.round(k)) : k.toFixed(1).replace(/\.0$/, '')) + 'k';
+    }
+    return String(Math.round(v));
+  }
+
   function fmtCompactTokens(n) {
     if (!Number.isFinite(n) || n < 0) return '';
-    if (n < 1000) return String(Math.round(n));
-    const k = n / 1000;
-    return (k >= 100 ? String(Math.round(k)) : k.toFixed(1).replace(/\.0$/, '')) + 'k';
+    if (n === 0) return '0';
+    return fmtTokenValueByUnit(n);
+  }
+
+  function formatCtxRatioForDisplay(rawRatio, statsObj) {
+    const raw = String(rawRatio || '').trim();
+    if (!(getPrismTokenUnit() === 'wan' && isZhLang())) return raw;
+    if (statsObj && Number(statsObj.limit) > 0 && Number.isFinite(Number(statsObj.ctx))) {
+      return `${fmtOvTokens(statsObj.ctx)} / ${fmtOvTokens(statsObj.limit)}`;
+    }
+    if (raw.includes('/')) {
+      const [lhs, rhs] = raw.split('/');
+      const lhsCnt = parseTokenLabelToCount(lhs);
+      const rhsCnt = parseTokenLabelToCount(rhs);
+      if ((lhsCnt > 0 || String(lhs || '').trim() === '0') && rhsCnt > 0) {
+        return `${fmtOvTokens(lhsCnt)} / ${fmtOvTokens(rhsCnt)}`;
+      }
+    }
+    return raw;
+  }
+
+  function formatOutTextForDisplay(rawOut) {
+    const s = String(rawOut || '').trim();
+    if (!s || !(getPrismTokenUnit() === 'wan' && isZhLang())) return s;
+    const m = s.match(/^Out\s+(.+)$/i);
+    if (!m) return s;
+    const cnt = parseTokenLabelToCount(m[1]);
+    return cnt > 0 ? `Out ${fmtOvTokens(cnt)}` : s;
+  }
+
+  function reformatEmbeddedTokenLabels(str) {
+    const s = String(str || '');
+    if (!s || !(getPrismTokenUnit() === 'wan' && isZhLang())) return s;
+    return s.replace(/\b(\d+(?:\.\d+)?)\s*([kKmMbB])\b/g, (full, num, unit) => {
+      const cnt = parseTokenLabelToCount(`${num}${unit}`);
+      return cnt > 0 ? fmtOvTokens(cnt) : full;
+    });
   }
 
   function fmtDurationSec(sec) {
     if (!Number.isFinite(sec) || sec < 0) return '';
     if (sec >= 60) {
-      const total = Math.round(sec);
-      const mins = Math.floor(total / 60);
-      const rem = total % 60;
-      return `${mins}m ${rem}s`;
+      return fmtElapsedSecs(Math.round(sec));
     }
     return `${sec.toFixed(1)}s`;
   }
@@ -1426,7 +1506,8 @@
           ? `${esc(summaryLabel)} / ${esc(limitLabel)}<span class="ag-ux-tt-sub">${L('已压缩', 'Compacted')}${preUsed ? ` · ${L('原 ', 'was ')}${esc(preUsed)}` : ''}</span>`
           : `${L('已压缩', 'Compacted')}${preUsed ? `<span class="ag-ux-tt-sub">${L('原 ', 'was ')}${esc(preUsed)}</span>` : ''}`;
     } else if (ctxRatio) {
-      ctxHtml = `${esc(ctxRatio)}${ctxPct ? `<span class="ag-ux-tt-sub">${esc(ctxPct)}</span>` : ''}`;
+      const displayRatio = formatCtxRatioForDisplay(ctxRatio);
+      ctxHtml = `${esc(displayRatio)}${ctxPct ? `<span class="ag-ux-tt-sub">${esc(ctxPct)}</span>` : ''}`;
     }
 
     const lastCache = Number.isFinite(d.lastCacheRate) ? `${Math.round(d.lastCacheRate)}%` : '';
@@ -1447,7 +1528,7 @@
 
     const sec2List = [row(L('上下文', 'Context'), ctxHtml), row(L('缓存命中', 'Cache hit'), cacheHtml)];
     if ((d.sessionTurns > 1 || d.subLabel) && d.sessionTotalOut) {
-      sec2List.push(row(L('累计输出', 'Total out'), esc(d.sessionTotalOut)));
+      sec2List.push(row(L('累计输出', 'Total out'), esc(reformatEmbeddedTokenLabels(d.sessionTotalOut))));
     }
     if (d.subLabel) {
       const subDisplay = FEAT.i18n ? d.subLabel : d.subLabel.replace(/\s*个$/, '').replace('同步中', 'syncing');
@@ -1987,6 +2068,13 @@
         return;
       }
       const switchBtn = e.target.closest('[data-ag-quota-switch]');
+      const tierToggle = e.target.closest('[data-ag-tier-toggle]');
+      if (tierToggle) {
+        e.preventDefault();
+        e.stopPropagation();
+        cycleTierBadgeMode();
+        return;
+      }
       if (switchBtn) {
         e.stopPropagation();
         closeQuotaPopover();
@@ -2031,6 +2119,100 @@
     pop.style.bottom = `${bottom}px`;
   }
 
+  const TIER_BADGE_MODE_KEY = 'ag-prism-tier-badge-mode';
+  const TIER_BADGE_MODES = ['badge', 'icon', 'text'];
+  let tierBadgeJustPopped = false;
+
+  function getTierBadgeMode() {
+    try {
+      const m = localStorage.getItem(TIER_BADGE_MODE_KEY);
+      if (m && TIER_BADGE_MODES.includes(m)) return m;
+    } catch {}
+    return 'badge';
+  }
+
+  function cycleTierBadgeMode() {
+    const cur = getTierBadgeMode();
+    const next = TIER_BADGE_MODES[(TIER_BADGE_MODES.indexOf(cur) + 1) % TIER_BADGE_MODES.length];
+    try { localStorage.setItem(TIER_BADGE_MODE_KEY, next); } catch {}
+    tierBadgeJustPopped = true;
+    try {
+      window.dispatchEvent(new CustomEvent('ag-prism-tier-badge-change', { detail: { mode: next, source: 'custom' } }));
+    } catch {}
+    renderOverviewPanel(true);
+    if (quotaPopoverOpen) renderQuotaPopoverBody();
+    setTimeout(() => { tierBadgeJustPopped = false; }, 240);
+    return next;
+  }
+
+  window.addEventListener('ag-prism-tier-badge-change', (ev) => {
+    if (ev && ev.detail && ev.detail.source === 'custom') return;
+    tierBadgeJustPopped = true;
+    renderOverviewPanel(true);
+    if (quotaPopoverOpen) renderQuotaPopoverBody();
+    setTimeout(() => { tierBadgeJustPopped = false; }, 240);
+  });
+
+  const onPrismTokenUnitChange = () => {
+    if (disposed) return;
+    if (window.__ag_last_metrics && typeof window.__ag_render_metrics === 'function') {
+      try {
+        window.__ag_render_metrics(window.__ag_last_metrics);
+      } catch {}
+    }
+    const sec = document.getElementById('ag-claude-ov-sections');
+    if (sec) sec.removeAttribute('data-render-sig');
+    renderOverviewPanel(true);
+    updateComposerRingVisuals();
+    if (quotaPopoverOpen) renderQuotaPopoverBody();
+  };
+  window.addEventListener('ag-prism-token-unit-change', onPrismTokenUnitChange);
+
+  function renderInteractiveTierBadge(rawTier) {
+    const full = String(rawTier || '').trim();
+    if (!full) return '';
+    let kind = 'starter';
+    let shortLabel = full.replace(/^Google\s+AI\s+/i, '').trim() || full;
+    let gemSvg = '<svg class="ag-tier-gem" viewBox="0 0 14 14" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M7 2 12 7 7 12 2 7 7 2z"/></svg>';
+    if (/ultra/i.test(full)) {
+      kind = 'ultra';
+      shortLabel = 'ULTRA';
+      gemSvg = '<svg class="ag-tier-gem" viewBox="0 0 14 14" width="10" height="10" fill="currentColor" aria-hidden="true"><path d="M3.7 2.1h6.6l2.4 3.2L7 12.4 1.3 5.3l2.4-3.2z"/></svg>';
+    } else if (/\bpro\b/i.test(full)) {
+      kind = 'pro';
+      shortLabel = 'PRO';
+      gemSvg = '<svg class="ag-tier-gem" viewBox="0 0 14 14" width="10" height="10" fill="currentColor" aria-hidden="true"><path d="M7 1.3 12.7 7 7 12.7 1.3 7 7 1.3z"/></svg>';
+    } else if (/\b(team|enterprise|business)\b/i.test(full)) {
+      kind = 'team';
+      shortLabel = /enterprise/i.test(full) ? 'ENT' : 'TEAM';
+      gemSvg = '<svg class="ag-tier-gem" viewBox="0 0 14 14" width="10" height="10" fill="currentColor" aria-hidden="true"><path d="M7 1l1.8 4.2L13 7l-4.2 1.8L7 13 5.2 8.8 1 7l4.2-1.8L7 1z"/></svg>';
+    } else if (/\b(plus|advanced)\b/i.test(full)) {
+      kind = 'plus';
+      shortLabel = 'PLUS';
+      gemSvg = '<svg class="ag-tier-gem" viewBox="0 0 14 14" width="10" height="10" fill="currentColor" aria-hidden="true"><path d="M7 1.5l1.5 4L12.5 7l-4 1.5L7 12.5l-1.5-4L1.5 7l4-1.5L7 1.5z"/></svg>';
+    } else if (/starter/i.test(full)) {
+      shortLabel = 'STARTER';
+    } else if (/free/i.test(full)) {
+      shortLabel = 'FREE';
+    } else if (shortLabel.length > 10) {
+      shortLabel = shortLabel.slice(0, 10).toUpperCase();
+    } else {
+      shortLabel = shortLabel.toUpperCase();
+    }
+
+    const mode = getTierBadgeMode();
+    const popCls = tierBadgeJustPopped ? ' is-pop' : '';
+    const tip = `${full} · ${L('点击切换徽章 / 图标 / 文字', 'Click to cycle badge / icon / text')}`;
+    if (mode === 'text') {
+      const cleanText = /^(?:antigravity\s+)?starter(?:\s+quota)?$/i.test(full) ? 'Starter' : full;
+      return `<span class="ag-ov-tier-pill ag-tier-badge${popCls}" data-ag-tier-toggle="1" data-tier-mode="text" data-tier-kind="${kind}" role="button" tabindex="0" title="${escapeHtml(tip)}">${escapeHtml(cleanText)}</span>`;
+    }
+    if (mode === 'icon') {
+      return `<span class="ag-tier-badge${popCls}" data-ag-tier-toggle="1" data-tier-mode="icon" data-tier-kind="${kind}" role="button" tabindex="0" title="${escapeHtml(tip)}" aria-label="${escapeHtml(full)}">${gemSvg}</span>`;
+    }
+    return `<span class="ag-tier-badge${popCls}" data-ag-tier-toggle="1" data-tier-mode="badge" data-tier-kind="${kind}" role="button" tabindex="0" title="${escapeHtml(tip)}">${gemSvg}<span class="ag-tier-txt">${escapeHtml(shortLabel)}</span></span>`;
+  }
+
   function formatQuotaUsedPctStr(val) {
     const clamped = Math.max(0, Math.min(100, val));
     if (clamped <= 0) return '0';
@@ -2046,10 +2228,14 @@
     const paneRunning = isPaneCurrentlyRunning();
     const { preUsed, limitLabel, summaryLabel, summaryPct } = extractCompactLabels(latestCtxState, curCid);
 
+    const rawM = window.__ag_last_metrics;
+    const mStats = hasCtx && rawM && rawM.hasData && (!curCid || rawM.cascadeId === curCid) ? rawM.stats : null;
+    const qpRatioText = hasCtx ? formatCtxRatioForDisplay(latestCtxState.ratioText, mStats) : '';
+    const qpOutText = hasCtx ? formatOutTextForDisplay(latestCtxState.outText) : '';
     let ctxPct = hasCtx ? latestCtxState.pct : 0;
     let ctxPctLabel = `${ctxPct}%`;
     let ctxSub = hasCtx
-      ? `${latestCtxState.ratioText}${latestCtxState.outText ? ` · ${latestCtxState.outText}` : ''}`
+      ? `${qpRatioText}${qpOutText ? ` · ${qpOutText}` : ''}`
       : L('当前会话暂无消耗', 'No usage yet');
     let ctxColor = barColorForPct(ctxPct, 70, 85);
     let fillCompactingAttr = '';
@@ -2091,10 +2277,7 @@
     }
 
     discoverQuotaService();
-    const tierShort = cachedUserTierName
-      ? cachedUserTierName.replace(/^Google\s+AI\s+/i, '').trim() || cachedUserTierName
-      : '';
-    const tierSuffix = tierShort ? ` · ${escapeHtml(tierShort)}` : '';
+    const tierBadgeHtml = cachedUserTierName ? renderInteractiveTierBadge(cachedUserTierName) : '';
 
     const groups = cachedQuotaGroups || [];
     if (groups.length > 0 && (selectedQuotaGroupIdx < 0 || selectedQuotaGroupIdx >= groups.length)) {
@@ -2161,7 +2344,7 @@
     const canQuickSwitch = Boolean(window.__agPrismBus && typeof window.__agPrismBus.openWorkbench === 'function');
     pop.innerHTML = `
       <div class="ag-qp-hdr">
-        <span class="ag-qp-tier">${L('套餐使用限额', 'Plan usage')}${tierSuffix}</span>
+        <span class="ag-qp-tier" style="display:inline-flex;align-items:center;gap:6px;"><span>${L('套餐使用限额', 'Plan usage')}</span>${tierBadgeHtml}</span>
         <span class="ag-qp-hdr-actions">
           ${canQuickSwitch ? `<button type="button" class="ag-qp-switch-btn" data-ag-quota-switch="true" title="${escapeHtml(L('打开 Prism 账号安全接力面板', 'Open Prism Account Relay'))}">⚡ ${L('切号', 'Switch')}</button>` : ''}
           <button type="button" class="ag-qp-all" data-ag-quota-view-all="true">
@@ -2281,10 +2464,13 @@
       else if (pct >= 70) level = 'warn';
       ring.setAttribute('data-level', level);
     }
+    const rawM = window.__ag_last_metrics;
+    const mStats = hasCtx && rawM && rawM.hasData && (!curCid || rawM.cascadeId === curCid) ? rawM.stats : null;
+    const ringRatioText = hasCtx ? formatCtxRatioForDisplay(latestCtxState.ratioText, mStats) : '';
     ring.title = hasCtx
       ? L(
-          `当前上下文 ${latestCtxState.ratioText} (${pct}%) · 点击查看套餐限额`,
-          `Context ${latestCtxState.ratioText} (${pct}%) · Click for plan usage`
+          `当前上下文 ${ringRatioText} (${pct}%) · 点击查看套餐限额`,
+          `Context ${ringRatioText} (${pct}%) · Click for plan usage`
         )
       : L('当前会话暂无上下文消耗 · 点击查看套餐限额', 'No context usage yet · Click for plan usage');
   }
@@ -2757,7 +2943,7 @@
     'open', 'setIsOpen', 'customModels', 'supportsCustomModels', 'showCustomModelHeader', 'onAddCustomModel',
     'onEditCustomModel', 'bestOfNConfig', 'contextWindow', 'isModelListLoading', 'finalFocus', 'footerExtra',
     'orchestratorPick', 'children', 'groups', 'effortIndex', 'orchestratorPlanners', 'orchestratorPlannerIndex',
-    'orchestratorDefaultPlanner', 'orchestratorExecutors', 'lockedReason', 'tooltipNote'
+    'orchestratorDefaultPlanner', 'orchestratorExecutors', 'lockedReason', 'tooltipNote', 'locked', 'hideThinkingEffort'
   ]);
   let bypassNativeModelTriggerUntil = 0;
 
@@ -2776,9 +2962,10 @@
   function nativeModelMenuGaps(api) {
     const gaps = { hard: [], soft: [] };
     if (!api || api.isReduxFallback) return gaps;
-    /* v2.35+ `lockedReason`: the official selector is deliberately pinned shut (e.g. managed/policy
+    /* v2.35+ `lockedReason` / v2.36+ `locked`: the official selector is deliberately pinned shut (e.g. managed/policy
        environments). Mirroring upstream, our own popover must step aside so the locked state stays intact. */
-    if (api.lockedReason !== undefined && api.lockedReason !== null) gaps.hard.push('lockedReason');
+    if (api.locked === true) gaps.hard.push('locked');
+    else if (api.lockedReason !== undefined && api.lockedReason !== null) gaps.hard.push('lockedReason');
     if (api.bestOfNConfig && api.bestOfNConfig.isBestOfNEnabled === true) gaps.hard.push('bestOfN');
     if (api.footerExtra) gaps.soft.push('footerExtra');
     if (api.supportsCustomModels === true) gaps.soft.push('customModels');
@@ -3641,10 +3828,11 @@
     const cat = buildModelCatalog(api);
     currentCatalogSnapshot = cat;
 
+    const hideThinkingEffort = api.hideThinkingEffort === true;
     const multiEfforts = cat.activeFamily
       ? cat.activeFamily.variants.filter((v) => Boolean(v.effort))
       : [];
-    const hasAdjustableEffort = multiEfforts.length > 1;
+    const hasAdjustableEffort = !hideThinkingEffort && multiEfforts.length > 1;
     const curEffortText =
       cat.activeVariant && cat.activeVariant.effort
         ? displayEffortLabel(cat.activeVariant.effort)
@@ -3700,19 +3888,23 @@
       ? `<div class="ag-cm-note" data-ag-cm-note="1">${escapeHtml(tooltipNoteText)}</div>`
       : '';
 
+    const effortRowHtml = hideThinkingEffort
+      ? ''
+      : `<button type="button" class="ag-cm-row" data-ag-cm-hover="${
+          hasAdjustableEffort ? 'effort' : 'none'
+        }" data-ag-cm-subtrigger="effort"${effSubActive}${effDisabled}>
+        <span>${L('思考强度', 'Thinking effort')}</span>
+        <span class="ag-cm-right"><span>${escapeHtml(curEffortText)}</span>${
+          hasAdjustableEffort ? SVG_CM_CHEVRON : ''
+        }</span>
+      </button>`;
+
     mainPop.innerHTML = `
       <div class="ag-cm-sec-hdr">${L('模型 · 本次会话', 'Models · This chat')}</div>
       ${tooltipNoteHtml}
       <div>${primaryRowsHtml}</div>
       <div class="ag-cm-divider"></div>
-      <button type="button" class="ag-cm-row" data-ag-cm-hover="${
-        hasAdjustableEffort ? 'effort' : 'none'
-      }" data-ag-cm-subtrigger="effort"${effSubActive}${effDisabled}>
-        <span>${L('思考强度', 'Thinking effort')}</span>
-        <span class="ag-cm-right"><span>${escapeHtml(curEffortText)}</span>${
-          hasAdjustableEffort ? SVG_CM_CHEVRON : ''
-        }</span>
-      </button>
+      ${effortRowHtml}
       <button type="button" class="ag-cm-row" data-ag-cm-hover="more" data-ag-cm-subtrigger="more"${moreSubActive}>
         <span style="display:inline-flex;align-items:center;gap:6px;">
           <span>${L('更多模型', 'More models')}</span>
@@ -13263,10 +13455,7 @@
   function fmtOvTokens(n) {
     const v = Number(n) || 0;
     if (!Number.isFinite(v) || v <= 0) return '0';
-    if (v >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(2).replace(/\.?0+$/, '')}B`;
-    if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
-    if (v >= 1000) return fmtCompactTokens(v);
-    return String(Math.round(v));
+    return fmtTokenValueByUnit(v);
   }
 
   function ovQuotaUsedColor(usedPct) {
@@ -13482,6 +13671,14 @@
 
   function onOverviewSectionsClick(e) {
     if (disposed || !FEAT.overviewPanel) return;
+    const tierToggleEl = e.target.closest('[data-ag-tier-toggle]');
+    if (tierToggleEl) {
+      e.preventDefault();
+      e.stopPropagation();
+      cycleTierBadgeMode();
+      return;
+    }
+
     const collapseBtn = e.target.closest('[data-ag-ov-collapse]');
     if (collapseBtn) {
       e.preventDefault();
@@ -13613,7 +13810,7 @@
     const colSig = Object.keys(OV_DEFAULT_OPEN)
       .map((k) => (ovCollapseState[k] ? '1' : '0'))
       .join('');
-    const renderSig = `${FEAT.i18n ? 'zh' : 'en'}||${curCid}||${ws.dirPath}||${snapSig}||${ctxSig}||${quotaSig}||${usageSig}||${subSig}||${colSig}`;
+    const renderSig = `${FEAT.i18n ? 'zh' : 'en'}:${getPrismTokenUnit()}||${curCid}||${ws.dirPath}||${snapSig}||${ctxSig}||${quotaSig}||${usageSig}||${subSig}||${colSig}`;
 
     if (!force && sectionsEl.getAttribute('data-render-sig') === renderSig) return;
     sectionsEl.setAttribute('data-render-sig', renderSig);
@@ -13698,7 +13895,13 @@
 
     /* ---- 2. Context Card (T3 Style) ---- */
     let topPctText = hasCtx ? `${stats.pct}% ${L('已用', 'used')}` : L('暂无消耗', 'No data');
-    let topRatioText = hasCtx ? `${fmtOvTokens(stats.ctx)} / ${stats.limitStr}` : '';
+    const ovLimitText =
+      hasCtx && stats.limit > 0 && getPrismTokenUnit() === 'wan' && isZhLang()
+        ? fmtOvTokens(stats.limit)
+        : stats
+          ? stats.limitStr
+          : '';
+    let topRatioText = hasCtx ? `${fmtOvTokens(stats.ctx)} / ${ovLimitText}` : '';
     let topPctLevel = '';
     if (stats) {
       if (stats.pct >= 90) topPctLevel = 'crit';
@@ -13913,7 +14116,7 @@
           <button type="button" class="ag-ov-hdr-toggle" data-ag-ov-collapse="quota">
             ${buildOvChevronSvg(ovCollapseState.quota)}
             <span>Antigravity</span>
-            ${tierDisplay ? `<span class="ag-ov-tier-pill">${escapeHtml(tierDisplay)}</span>` : ''}
+            ${tierDisplay ? renderInteractiveTierBadge(tierDisplay) : ''}
           </button>
           <div class="ag-ov-hdr-actions">
             <button type="button" class="ag-ov-icon-btn" data-ag-ov-action="refresh-quota" title="${escapeHtml(L('刷新实时配额', 'Refresh quota'))}" aria-label="${escapeHtml(L('刷新配额', 'Refresh quota'))}">
@@ -14511,6 +14714,7 @@
     clearPinnedComposerDropHighlights();
     window.removeEventListener('resize', onWindowResizePopover);
     window.removeEventListener('ag-prism-close-popovers', onPeerPopoverCoord);
+    window.removeEventListener('ag-prism-token-unit-change', onPrismTokenUnitChange);
     sidebarWheelBound = false;
     document.removeEventListener('wheel', onSidebarWheel, true);
     if (sidebarFocusTimer) {

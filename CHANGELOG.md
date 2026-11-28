@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.3 - 2026-11-28
+
+- **内置 `Anti-Claude v3.1.10` 内核升级适配 `Antigravity v2.36.0` + 思考过程防误翻双语翻译增强（[daemon.mjs](vendor/anti-claude/core/daemon.mjs) / [custom.js](vendor/anti-claude/user/custom.js) / [i18n.json](vendor/anti-claude/core/i18n.json) / [prism-suite.js](extensions/prism-suite.js) / [prism-suite.css](extensions/prism-suite.css)）**：
+  - **同步 `Anti-Claude v3.1.10` 与 `agy-powertools v2.17.0` 基线**：完整兼容 `Antigravity v2.36.0` 模型选择菜单新增的 `hideThinkingEffort` 推理强度显隐控制，并补齐 `Context and quota indicator`、`Legacy Dark` 等新版宿主界面汉化词条；
+  - **思考过程整句双语翻译、代码防误翻掩码与本地 `0600` 缓存**：翻译前自动将内联代码、文件路径、命令行标志与驼峰/下划线标识符替换为 `⟪P…⟫` 安全占位符（杜绝代码片段与路径被机器翻译破坏），使用 `0600` 权限持久化本地 `thought-translation-cache.json` 加速二次展开，并在将思考中译设为「关」时自动触发 `clearTranslateCache` 清空内存与本地缓存；
+  - **视口按需懒加载与靠左对齐「原文 / 译文」一键切换**：仅对处于或接近当前视口的展开思考块发起翻译（配合滚动容器被动节流监听按需加载离屏思考块）；双语与沉浸模式统一采用左对齐工具头，分别支持 `仅看原文 / 恢复双语` 与 `查看原文 / 仅看译文` 无缝切换。
+- **中文 `万 / 亿` Token 单位、小时级耗时进位与输入框 `Tab` 下一步提问建议（[prism-suite.js](extensions/prism-suite.js) / [prism-suite-fx.js](extensions/prism-suite-fx.js) / [prism-suite-fx.css](extensions/prism-suite-fx.css) / [custom.js](vendor/anti-claude/user/custom.js) / [account-manager.mjs](plugin/server/account-manager.mjs)）**：
+  - **中文直觉 `万 / 亿` 数值单位与长耗时自动进位**：`✦ 棱镜 → ⚡ 效率` 新增 `Token 数量单位`（默认 `万 / 亿`，可随时切回 `K / M`），联动右侧概览、底栏上下文环、12 周热力图与名著体量换算实时刷新；步骤与思考耗时满 `60 分钟` 自动进位为 `X 小时 Y 分` 易读格式；
+  - **实验性「输入框下一步提问建议」（`composerIntentSuggest`，默认关闭）**：零 `document.body` 观察器、纯内存零落盘（切换侧栏历史会话零后台请求）；仅在当前对话回复完成或主动点击空闲输入框时生成浅灰续写建议（自动隐藏原生占位提示防叠字），按 `Tab` 键一键填入输入框（绝不自动发送），中文输入法组词与打字即刻避让、同轮删空自动从内存恢复、按 `Esc` 键当轮静默关闭；
+  - **跨账号切号偏好完整保留**：`sanitizePrismUiPrefs` 同步纳管 `composerBorderFx`、`outlineRailMode`、`outlinePreviewStyle`、`tokenUnit` 与 `composerIntentSuggest` 全部新增偏好。
+- **实机界面体验细节深磨：套餐宝石徽章彩蛋、侧边面板与概览零空白共存、光学切面与气泡解耦、左栏预览互斥与全屏工作台返回修复（[prism-suite.js](extensions/prism-suite.js) / [prism-suite-fx.js](extensions/prism-suite-fx.js) / [prism-suite-fx.css](extensions/prism-suite-fx.css) / [app.html](plugin/ui/app.html)）**：
+  - **套餐宝石徽章与点击三态切换彩蛋**：为 `ULTRA / PRO / TEAM / PLUS / STARTER` 账号渲染专属切面矢量宝石徽章，单击徽章即可在 `徽章 / 纯图标 / 纯文字` 三种形态间灵动切换，并跨主窗口顶栏控制中心与右侧工作台双向实时同步；
+  - **侧边面板与概览零空白共存及残留自愈**：`保持右侧概览常开` 智能感知右侧辅助分屏（如工作台、终端或文件对比）开启状态以避免挤出空白占位，新增 `checkAndHealOrphanedOverviewTransition` 自动修复宿主切换卡顿遗留的半透明过渡态；
+  - **光学立体切面与气泡着色彻底解耦 + 纯图片消息防误染 + 左栏预览互斥**：`光学立体切面` 精准排除无圆角外层 `changed-files-card` 容器且绝不改动用户提问气泡底色与边框；`用户消息气泡着色` 严格限定文字气泡节点（修复单发纯图片或附件时外层整行被误染蓝框的问题）；左栏激活轮次升级为 `16px` 竖向胶囊，新增 `悬停预览样式`（`详细卡片 / 精简胶囊` 严格二选一互斥，彻底消除双浮窗重叠）；
+  - **全屏工作台返回对话沙箱域打通**：桥接白名单正式放行 Antigravity MCP App 沙箱域 `*.usercontent.goog`，修复全局宽屏工作台点击「`↩ 返回对话`」及双端实时主题/配额同步链路。
+
 ## 0.9.2 - 2026-11-28
 
 - **全界面 8 套主题配色零闪烁互通 + 一键体验预设 + 双设置中心双向联动（[prism-suite.js](extensions/prism-suite.js) / [prism-suite.css](extensions/prism-suite.css) / [app.html](plugin/ui/app.html) / [inline.html](plugin/ui/inline.html) / [custom.js](vendor/anti-claude/user/custom.js)）**：

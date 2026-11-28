@@ -39,6 +39,9 @@
     compactQuotaPill: true,
     composerBorderFx: 'smart',    // 'off' | 'smart' | 'beam' | 'static'
     outlineRailMode: 'smart',     // 'smart' | 'right' | 'off'
+    outlinePreviewStyle: 'detailed', // 'detailed' | 'compact'
+    tokenUnit: 'wan',             // 'wan' | 'kmb'
+    composerIntentSuggest: false, // Tab-to-insert next prompt ghost
     borderBeam: false,
     borderBeamMode: 'always',     // 'always' | 'busy'
     borderBeamPalette: 'theme',   // 'theme' | 'gemini' | 'aurora' | 'prism' | 'neon' | 'quota'
@@ -79,6 +82,10 @@
     const raw = prefs && prefs.outlineRailMode;
     if (raw === 'right' || raw === 'off') return raw;
     return 'smart';
+  }
+
+  function resolveOutlinePreviewStyle(prefs) {
+    return prefs && prefs.outlinePreviewStyle === 'compact' ? 'compact' : 'detailed';
   }
 
   const CHAT_FONT_PRESETS = [
@@ -1497,6 +1504,7 @@
     /* ========================================================================
      * 8. Keep Overview Open Across Route Switches & Side-Panel Layout Reflows
      * ======================================================================== */
+    const WANTED_OV_STORAGE_KEY = 'ag_prism_wanted_ov_open_v1';
     const CONV_ROUTE_RE = /^\/c\/[^/]+/;
     const fxSharedState = (window[Symbol.for('ag.prism.fx.visitState')] = window[Symbol.for('ag.prism.fx.visitState')] || {
       hasVisitedConvInWindow: false,
@@ -1509,16 +1517,38 @@
     let autoClickingOverview = false;
     let overviewRestoreTimer = 0;
     let overviewFollowupTimer = 0;
+    let overviewExtraTimers = [];
     let railBurstTimers = [];
     let overviewAutoRestoreClicks = [];
     let lastObservedLayoutSig = '';
 
     function getWantedOverviewOpen() {
-      return fxSharedState.userWantedOverviewOpen;
+      if (typeof fxSharedState.userWantedOverviewOpen === 'boolean') {
+        return fxSharedState.userWantedOverviewOpen;
+      }
+      try {
+        const stored = localStorage.getItem(WANTED_OV_STORAGE_KEY);
+        if (stored === '1') {
+          fxSharedState.userWantedOverviewOpen = true;
+          return true;
+        }
+        if (stored === '0') {
+          fxSharedState.userWantedOverviewOpen = false;
+          return false;
+        }
+      } catch {}
+      // When the user has Keep Overview Open enabled and hasn't explicitly closed Overview, default wanted state to true!
+      if (getPrefs().keepOverviewOpen) {
+        return true;
+      }
+      return null;
     }
 
     function setWantedOverviewOpen(val) {
       fxSharedState.userWantedOverviewOpen = val;
+      if (typeof val === 'boolean') {
+        try { localStorage.setItem(WANTED_OV_STORAGE_KEY, val ? '1' : '0'); } catch {}
+      }
     }
 
     function isConversationRoute(pathname) {
@@ -1619,6 +1649,13 @@
         clearTimeout(overviewFollowupTimer);
         overviewFollowupTimer = 0;
       }
+      if (orphanedOvHealTimer) {
+        clearTimeout(orphanedOvHealTimer);
+        orphanedOvHealTimer = 0;
+      }
+      while (overviewExtraTimers.length) {
+        clearTimeout(overviewExtraTimers.pop());
+      }
     }
 
     function clearRailBurstTimers() {
@@ -1654,27 +1691,101 @@
       return false;
     }
 
+    function isAuxSidePanelOpen() {
+      const auxBtns = document.querySelectorAll('[data-testid="toggle-aux-sidebar"]');
+      for (let i = 0; i < auxBtns.length; i++) {
+        const b = auxBtns[i];
+        if (
+          isElementActuallyVisible(b, 4) &&
+          (b.getAttribute('aria-expanded') === 'true' || b.getAttribute('aria-pressed') === 'true' || b.getAttribute('data-state') === 'open')
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    let orphanedOvEndingSince = 0;
+    let orphanedOvHealTimer = 0;
+
+    function checkAndHealOrphanedOverviewTransition(toggleBtn) {
+      const sib = document.querySelector('[data-testid="overview-panel-host-sibling"]');
+      if (!sib) {
+        orphanedOvEndingSince = 0;
+        return 'none';
+      }
+      const isPressed = Boolean(
+        toggleBtn && (toggleBtn.getAttribute('aria-pressed') === 'true' || toggleBtn.getAttribute('data-state') === 'open')
+      );
+      if (sib.hasAttribute('data-starting-style')) {
+        orphanedOvEndingSince = 0;
+        return 'starting';
+      }
+      if (sib.hasAttribute('data-ending-style')) {
+        if (!isPressed) {
+          orphanedOvEndingSince = 0;
+          return 'ending';
+        }
+        // Host button says Overview IS open (aria-pressed="true"), yet sibling has data-ending-style (opacity: 0)!
+        const now = Date.now();
+        if (!orphanedOvEndingSince) {
+          orphanedOvEndingSince = now;
+          if (!orphanedOvHealTimer) {
+            orphanedOvHealTimer = setTimeout(() => {
+              orphanedOvHealTimer = 0;
+              if (!disposed) {
+                checkAndHealOrphanedOverviewTransition(findActiveOverviewToggleBtn());
+                tryRestoreOverviewNow();
+              }
+            }, 460);
+          }
+          return 'ending-verify';
+        }
+        if (now - orphanedOvEndingSince >= 440) {
+          sib.removeAttribute('data-ending-style');
+          sib.removeAttribute('data-starting-style');
+          orphanedOvEndingSince = 0;
+          scheduleRailRepositionBurst();
+          return 'healed';
+        }
+        return 'ending-verify';
+      }
+      orphanedOvEndingSince = 0;
+      return 'clean';
+    }
+
     function tryRestoreOverviewNow() {
       if (disposed || !isConversationRoute()) return false;
+      // Never fight Antigravity's native side-panel split: while Side Panel is expanded, host suspends Overview and restores it on close!
+      if (isAuxSidePanelOpen()) return false;
+
+      const toggleBtn = findActiveOverviewToggleBtn();
+      const transState = checkAndHealOrphanedOverviewTransition(toggleBtn);
+      if (transState === 'starting' || transState === 'ending' || transState === 'ending-verify' || transState === 'healed') {
+        return true;
+      }
+
       const prefs = getPrefs();
       if (!prefs.keepOverviewOpen || getWantedOverviewOpen() !== true) return false;
       const nowMs = Date.now();
-      if (nowMs - lastManualOverviewToggleAt < 350) return false;
+      if (nowMs - lastManualOverviewToggleAt < 450) return false;
       if (isOverviewOpenNow()) {
         if (railEl) positionOutlineRail();
         return true;
       }
       if (hasTransientOverlayBlockingOverviewRestore()) return false;
 
-      // Bounded sliding-window guard: max 3 auto-clicks within 4.5s, >=200ms apart
+      // Bounded sliding-window guard: max 3 auto-clicks within 4.5s, >=480ms apart (exceeds 400ms --ease-expo-out transition)
       overviewAutoRestoreClicks = overviewAutoRestoreClicks.filter((ts) => nowMs - ts < 4500);
       if (overviewAutoRestoreClicks.length >= 3) return false;
-      if (overviewAutoRestoreClicks.length > 0 && nowMs - overviewAutoRestoreClicks[overviewAutoRestoreClicks.length - 1] < 200) {
+      if (overviewAutoRestoreClicks.length > 0 && nowMs - overviewAutoRestoreClicks[overviewAutoRestoreClicks.length - 1] < 480) {
         return false;
       }
 
-      const toggleBtn = findActiveOverviewToggleBtn();
       if (!toggleBtn) return false;
+      if (toggleBtn.getAttribute('aria-pressed') === 'true' || toggleBtn.getAttribute('data-state') === 'open') {
+        return true;
+      }
 
       overviewAutoRestoreClicks.push(nowMs);
       const prevFocus = document.activeElement;
@@ -1692,19 +1803,19 @@
       ) {
         try { prevFocus.focus({ preventScroll: true }); } catch {}
       }
-      setTimeout(() => { autoClickingOverview = false; }, 180);
+      setTimeout(() => { autoClickingOverview = false; }, 220);
       scheduleRailRepositionBurst();
       return true;
     }
 
-    function scheduleEnsureOverviewOpen(triggerReason, primaryDelayMs = 110) {
+    function scheduleEnsureOverviewOpen(triggerReason, primaryDelayMs = 140) {
       if (disposed || !isConversationRoute()) {
         clearOverviewRestoreTimers();
         return;
       }
       const prefs = getPrefs();
       if (!prefs.keepOverviewOpen || getWantedOverviewOpen() !== true) return;
-      if (Date.now() - lastManualOverviewToggleAt < 350) return;
+      if (Date.now() - lastManualOverviewToggleAt < 450) return;
 
       if (triggerReason === 'route') {
         overviewAutoRestoreClicks = [];
@@ -1717,7 +1828,7 @@
         tryRestoreOverviewNow();
       }, primaryDelayMs);
 
-      // Secondary check after split-pane / route transition settles
+      // Progressive multi-stage checks spaced past the 400ms --ease-expo-out animation so transitions never collide
       if (triggerReason === 'route' || triggerReason === 'layout' || triggerReason === 'panel-click') {
         if (overviewFollowupTimer) clearTimeout(overviewFollowupTimer);
         overviewFollowupTimer = setTimeout(() => {
@@ -1728,7 +1839,17 @@
           } else if (railEl) {
             positionOutlineRail();
           }
-        }, Math.max(primaryDelayMs + 150, 260));
+        }, Math.max(primaryDelayMs + 360, 500));
+
+        while (overviewExtraTimers.length) clearTimeout(overviewExtraTimers.pop());
+        for (const extraMs of [900]) {
+          overviewExtraTimers.push(setTimeout(() => {
+            if (disposed) return;
+            if (!isOverviewOpenNow()) {
+              tryRestoreOverviewNow();
+            }
+          }, extraMs));
+        }
       }
     }
 
@@ -1738,37 +1859,43 @@
       if (!target || typeof target.closest !== 'function') return;
       const ovToggle = target.closest('[data-testid="toggle-overview-panel"]');
       if (ovToggle) {
-        overviewOpenAtPointerDown = isOverviewOpenNow();
+        overviewOpenAtPointerDown = isOverviewOpenNow() || ovToggle.getAttribute('aria-pressed') === 'true';
         overviewPointerDownAt = Date.now();
         lastManualOverviewToggleAt = overviewPointerDownAt;
         clearOverviewRestoreTimers();
         return;
       }
-      const closeCtrl = target.closest(
-        '[aria-label*="Close" i], [aria-label*="Dismiss" i], [aria-label*="Minimize" i], [aria-label*="关闭"], [data-testid*="close"]'
-      );
-      if (closeCtrl) {
-        if (isOverviewOpenNow()) {
-          lastManualOverviewToggleAt = Date.now();
-          clearOverviewRestoreTimers();
-          setTimeout(() => {
-            if (!disposed && isConversationRoute() && !isOverviewOpenNow()) {
-              setWantedOverviewOpen(false);
-              if (railEl) positionOutlineRail();
-            }
-          }, 160);
-        }
+      // Strictly scope Close-button detection INSIDE overview-panel itself so closing auxiliary tabs/dialogs never disables keepOverviewOpen!
+      const closeInsideOverview =
+        target.closest('[data-testid="overview-panel"]') &&
+        target.closest('[aria-label*="Close" i], [aria-label*="Dismiss" i], [aria-label*="关闭"], [data-testid*="close"]');
+      if (closeInsideOverview) {
+        lastManualOverviewToggleAt = Date.now();
+        clearOverviewRestoreTimers();
+        setTimeout(() => {
+          if (!disposed && isConversationRoute() && !isOverviewOpenNow()) {
+            setWantedOverviewOpen(false);
+            if (railEl) positionOutlineRail();
+          }
+        }, 460);
         return;
       }
-      // If Overview is currently open and user clicks a side-panel / split-tab button outside Overview,
-      // preserve Overview across any split-pane collapse/remount or outside-dismiss
+      // When toggling the Aux Side Panel, let the host natively suspend/restore Overview first, then verify after its 400ms transition!
+      const auxToggle = target.closest('[data-testid="toggle-aux-sidebar"]');
+      if (auxToggle) {
+        clearOverviewRestoreTimers();
+        scheduleEnsureOverviewOpen('panel-click', 520);
+        scheduleRailRepositionBurst();
+        return;
+      }
+      // If Overview is currently open and user clicks another split-tab button outside Overview, verify cleanly after transition
       if (isOverviewOpenNow() && !target.closest('[data-testid="overview-panel"]')) {
-        if (Date.now() - lastManualOverviewToggleAt > 350) {
+        if (Date.now() - lastManualOverviewToggleAt > 450) {
           setWantedOverviewOpen(true);
         }
         const ctrl = target.closest('button, [role="button"], [role="tab"]');
         if (ctrl && !ctrl.closest('[data-testid="autoscroll-viewport"]')) {
-          scheduleEnsureOverviewOpen('panel-click', 90);
+          scheduleEnsureOverviewOpen('panel-click', 480);
           scheduleRailRepositionBurst();
         }
       }
@@ -1805,10 +1932,13 @@
       scheduleRailRepositionBurst();
       setTimeout(() => {
         if (!disposed && isConversationRoute()) {
-          setWantedOverviewOpen(isOverviewOpenNow());
+          const actualOpen = btn.isConnected
+            ? (btn.getAttribute('aria-pressed') === 'true' || isOverviewOpenNow())
+            : isOverviewOpenNow();
+          setWantedOverviewOpen(actualOpen);
           if (railEl) positionOutlineRail();
         }
-      }, 170);
+      }, 480);
     }, { capture: true, signal });
 
     document.addEventListener('keydown', (e) => {
@@ -2011,22 +2141,61 @@
       if (railTipEl) setAttr(railTipEl, 'data-show', '');
     }
 
+    function extractTurnReplyExcerpt(turnNode) {
+      if (!turnNode || !turnNode.isConnected) return '';
+      const turnContainer = turnNode.closest('[data-testid="user-message"]')?.parentElement || turnNode.parentElement;
+      if (!turnContainer) return '';
+      const resp =
+        turnContainer.querySelector('[data-testid="planner-response-text"], [data-testid="agent-response"], [data-markdown-root], .prose') ||
+        (turnContainer.nextElementSibling && turnContainer.nextElementSibling.querySelector && turnContainer.nextElementSibling.querySelector('[data-testid="planner-response-text"], [data-testid="agent-response"], [data-markdown-root], .prose'));
+      if (!resp) return '';
+      return (resp.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 110);
+    }
+
     function showRailTip(dotBtn, idx, text, side = 'right') {
       const tip = ensureRailTipOnly();
       if (!tip || !dotBtn) return;
       railHoveredDot = dotBtn;
       railHoveredIdx = idx;
+      const previewStyle = resolveOutlinePreviewStyle(getPrefs());
+      setAttr(tip, 'data-style', previewStyle);
       tip.textContent = '';
-      const badge = document.createElement('span');
-      badge.className = 'ag-ps-rail-tip-idx';
-      badge.textContent = `#${idx + 1}`;
-      const txtSpan = document.createElement('span');
-      txtSpan.textContent = (text || '当前对话轮次').slice(0, 52);
-      tip.appendChild(badge);
-      tip.appendChild(txtSpan);
+
+      if (previewStyle === 'detailed') {
+        const nav = safeGetConversationNav();
+        const total = nav && nav.total > 0 ? nav.total : Math.max(idx + 1, railTurnNodes.length);
+        const domTurn = (nav && typeof nav.getDomEl === 'function' && nav.getDomEl(idx)) || railTurnNodes[idx] || null;
+        const replyTxt = extractTurnReplyExcerpt(domTurn);
+
+        const qEl = document.createElement('div');
+        qEl.className = 'ag-ps-rail-tip-q';
+        qEl.textContent = (text || `第 ${idx + 1} 轮提问`).slice(0, 96);
+        tip.appendChild(qEl);
+
+        if (replyTxt) {
+          const aEl = document.createElement('div');
+          aEl.className = 'ag-ps-rail-tip-a';
+          aEl.textContent = replyTxt;
+          tip.appendChild(aEl);
+        }
+
+        const metaEl = document.createElement('div');
+        metaEl.className = 'ag-ps-rail-tip-meta';
+        metaEl.textContent = `第 ${idx + 1} / ${total} 轮`;
+        tip.appendChild(metaEl);
+      } else {
+        const badge = document.createElement('span');
+        badge.className = 'ag-ps-rail-tip-idx';
+        badge.textContent = `#${idx + 1}`;
+        const txtSpan = document.createElement('span');
+        txtSpan.textContent = (text || '当前对话轮次').slice(0, 52);
+        tip.appendChild(badge);
+        tip.appendChild(txtSpan);
+      }
 
       const rect = dotBtn.getBoundingClientRect();
-      const tipTop = Math.max(12, Math.min(window.innerHeight - 40, Math.round(rect.top + rect.height * 0.5 - 14)));
+      const estH = previewStyle === 'detailed' ? 96 : 30;
+      const tipTop = Math.max(12, Math.min(window.innerHeight - estH - 12, Math.round(rect.top + rect.height * 0.5 - estH * 0.5)));
       setAttr(tip, 'data-side', side === 'left' ? 'left' : 'right');
       if (side === 'left') {
         const leftPx = Math.max(12, Math.min(window.innerWidth - 290, Math.round(rect.right + 10)));
@@ -2076,6 +2245,13 @@
         if (disposed) return;
         const turnEl = e.target && e.target.closest && e.target.closest('[data-testid="conversation-navigator-turn"]');
         if (!turnEl) return;
+        if (
+          resolveOutlinePreviewStyle(getPrefs()) === 'detailed' &&
+          (turnEl.hasAttribute('data-base-ui-tooltip-trigger') || turnEl.hasAttribute('data-hover-card-trigger'))
+        ) {
+          hideRailTip();
+          return;
+        }
         let idx = Number(turnEl.getAttribute('data-turn-index'));
         if (!Number.isFinite(idx) || idx < 0) {
           const allTurns = navEl.querySelectorAll('[data-testid="conversation-navigator-turn"]');
@@ -2371,9 +2547,11 @@
     function syncOutlineRail() {
       const prefs = getPrefs();
       const railMode = resolveOutlineRailMode(prefs);
+      const previewStyle = resolveOutlinePreviewStyle(prefs);
       const html = document.documentElement;
       if (html) {
         setAttr(html, 'data-ag-ps-nav-off', railMode === 'off' ? '1' : '');
+        setAttr(html, 'data-ag-ps-rail-preview', railMode !== 'off' && previewStyle === 'compact' ? 'compact' : '');
       }
 
       if (railMode === 'off') {
@@ -2386,7 +2564,18 @@
         const hostNavEl = getVisibleHostConversationNavigator();
         if (hostNavEl) {
           removeOutlineRail(true);
-          attachHostNavEnhancer(hostNavEl);
+          const hostHasNativeCard = Boolean(
+            hostNavEl.querySelector && hostNavEl.querySelector('[data-base-ui-tooltip-trigger], [data-hover-card-trigger]')
+          );
+          // Strictly show ONLY ONE tooltip:
+          // - 'detailed' on modern host (with native hover card): let native multi-line card render alone (zero overlap!)
+          // - 'compact' (or legacy host without native hover card): show our #ag-ps-rail-tip (CSS hides native card in compact mode)
+          if (previewStyle === 'compact' || !hostHasNativeCard) {
+            attachHostNavEnhancer(hostNavEl);
+          } else {
+            detachHostNavEnhancer();
+            hideRailTip();
+          }
           return;
         }
       }
@@ -3543,6 +3732,459 @@
     }
 
     /* ========================================================================
+     * 10.6 Composer Intent Prediction (Tab Next-Prompt Ghost, Memory-Only)
+     * ======================================================================== */
+    const INTENT_FALLBACK_PROMPT = '继续检查还有没有细节需要优化';
+    const intentCacheByConv = new Map(); // pathname -> { turnCount, suggestion, dismissed }
+    let wasBusyForIntent = false;
+    let lastIntentConvKey = String(window.location.pathname || '');
+    let intentSeq = 0;
+    let intentGraceTimer = 0;
+    let intentLoadingTimer = 0;
+    let intentCompEndTimer = 0;
+    let intentInFlight = false;
+    let intentInFlightConv = '';
+    let intentComposing = false;
+    let intentGhostEl = null;
+    let intentGhostTextEl = null;
+    let intentGhostKbdEl = null;
+    let intentGhostHost = null;
+    let intentGhostHostSetRel = false;
+    let intentOpenBoxEl = null;
+
+    function setIntentConvEntry(convKey, entry) {
+      if (!convKey) return;
+      if (intentCacheByConv.has(convKey)) {
+        intentCacheByConv.delete(convKey);
+      } else if (intentCacheByConv.size >= 20) {
+        const oldest = intentCacheByConv.keys().next().value;
+        if (oldest !== undefined) intentCacheByConv.delete(oldest);
+      }
+      intentCacheByConv.set(convKey, entry);
+    }
+
+    function getComposerEditable(boxEl) {
+      if (!boxEl || typeof boxEl.querySelector !== 'function') return null;
+      return boxEl.querySelector('[data-lexical-editor="true"], [contenteditable="true"], textarea');
+    }
+
+    function isComposerEmpty(boxEl) {
+      const ed = getComposerEditable(boxEl);
+      if (!ed || intentComposing) return false;
+      const raw = (ed.value !== undefined ? ed.value : ed.textContent) || '';
+      return raw.replace(/\u200B|\n/g, '').trim().length === 0;
+    }
+
+    function extractIntentTurnContext() {
+      const nav = safeGetConversationNav();
+      const domTurns = nav && Array.isArray(nav.domTurns) && nav.domTurns.length ? nav.domTurns : getUserTurns();
+      const rawTurns = nav && nav.total > 0 ? nav.total : domTurns.length;
+      let lastUserText = '';
+      if (domTurns.length > 0) {
+        lastUserText = getTurnPreviewText(domTurns[domTurns.length - 1]);
+      } else if (nav && nav.total > 0 && typeof nav.getPreview === 'function') {
+        lastUserText = nav.getPreview(nav.total - 1) || '';
+      }
+
+      const vp = safeGetViewportEl() || document;
+      const respNodes = vp.querySelectorAll('[data-testid="planner-response-text"], [data-testid="agent-response"], [data-markdown-root]');
+      let lastAssistantText = '';
+      for (let i = respNodes.length - 1; i >= 0; i--) {
+        const rn = respNodes[i];
+        if (!rn || !rn.isConnected) continue;
+        if (rn.closest && rn.closest('[data-testid="user-message"], [data-testid="user-input-step"], [data-testid="thinking-collapsible"]')) {
+          continue;
+        }
+        const txt = (rn.textContent || '').replace(/\s+/g, ' ').trim();
+        if (txt) {
+          lastAssistantText = txt.slice(-1600);
+          break;
+        }
+      }
+      const turnCount = rawTurns > 0 ? rawTurns : (lastAssistantText ? 1 : 0);
+      return {
+        turnCount,
+        lastUserText: String(lastUserText || '').trim().slice(-1200),
+        lastAssistantText
+      };
+    }
+
+    function cancelIntentInFlight() {
+      ++intentSeq;
+      intentInFlight = false;
+      intentInFlightConv = '';
+      if (intentGraceTimer) {
+        clearTimeout(intentGraceTimer);
+        intentGraceTimer = 0;
+      }
+      if (intentLoadingTimer) {
+        clearTimeout(intentLoadingTimer);
+        intentLoadingTimer = 0;
+      }
+    }
+
+    function hideIntentGhost() {
+      if (intentGhostEl) {
+        setAttr(intentGhostEl, 'data-visible', '0');
+        setAttr(intentGhostEl, 'data-loading', '');
+      }
+      if (intentOpenBoxEl) {
+        intentOpenBoxEl.removeAttribute('data-ag-ps-intent-open');
+        intentOpenBoxEl = null;
+      }
+    }
+
+    function detachIntentGhostHost() {
+      hideIntentGhost();
+      if (intentGhostEl) {
+        intentGhostEl.remove();
+        intentGhostEl = null;
+        intentGhostTextEl = null;
+        intentGhostKbdEl = null;
+      }
+      if (intentGhostHost) {
+        if (intentGhostHostSetRel && intentGhostHost.style) {
+          intentGhostHost.style.removeProperty('position');
+        }
+        intentGhostHost = null;
+        intentGhostHostSetRel = false;
+      }
+    }
+
+    function teardownComposerIntent(clearCache = true) {
+      cancelIntentInFlight();
+      if (intentCompEndTimer) {
+        clearTimeout(intentCompEndTimer);
+        intentCompEndTimer = 0;
+      }
+      intentComposing = false;
+      detachIntentGhostHost();
+      if (clearCache) {
+        intentCacheByConv.clear();
+      }
+    }
+
+    function renderIntentGhost(boxEl, text, isLoading) {
+      const ed = getComposerEditable(boxEl);
+      const parent = ed && ed.parentElement;
+      if (!boxEl || !ed || !parent || !text) {
+        hideIntentGhost();
+        return;
+      }
+      if (!intentGhostEl || intentGhostHost !== parent || !intentGhostEl.isConnected) {
+        detachIntentGhostHost();
+        intentGhostHost = parent;
+        try {
+          const pCs = getComputedStyle(parent);
+          if (!parent.style.position && (!pCs || !pCs.position || pCs.position === 'static')) {
+            parent.style.position = 'relative';
+            intentGhostHostSetRel = true;
+          }
+        } catch {}
+        intentGhostEl = document.createElement('div');
+        intentGhostEl.className = 'ag-ps-intent-ghost';
+        intentGhostEl.setAttribute('aria-hidden', 'true');
+        intentGhostEl.setAttribute('data-ag-i18n-ignore', '1');
+        intentGhostTextEl = document.createElement('span');
+        intentGhostTextEl.className = 'ag-ps-intent-text';
+        intentGhostKbdEl = document.createElement('kbd');
+        intentGhostKbdEl.className = 'ag-ps-intent-tab';
+        intentGhostKbdEl.textContent = 'Tab';
+        intentGhostEl.appendChild(intentGhostTextEl);
+        intentGhostEl.appendChild(intentGhostKbdEl);
+        parent.appendChild(intentGhostEl);
+      }
+      try {
+        const cs = getComputedStyle(ed);
+        const pt = parseFloat(cs.paddingTop) || 0;
+        const pl = parseFloat(cs.paddingLeft) || 0;
+        const pr = parseFloat(cs.paddingRight) || 0;
+        intentGhostEl.style.top = `${Math.round((ed.offsetTop || 0) + pt)}px`;
+        intentGhostEl.style.left = `${Math.round((ed.offsetLeft || 0) + pl)}px`;
+        intentGhostEl.style.right = `${Math.max(8, Math.round(pr + 8))}px`;
+        if (cs.fontSize) intentGhostEl.style.fontSize = cs.fontSize;
+        if (cs.lineHeight && cs.lineHeight !== 'normal') intentGhostEl.style.lineHeight = cs.lineHeight;
+      } catch {}
+      if (intentGhostTextEl && intentGhostTextEl.textContent !== text) {
+        intentGhostTextEl.textContent = text;
+      }
+      if (intentGhostKbdEl) {
+        intentGhostKbdEl.hidden = Boolean(isLoading);
+      }
+      if (intentOpenBoxEl && intentOpenBoxEl !== boxEl) {
+        intentOpenBoxEl.removeAttribute('data-ag-ps-intent-open');
+      }
+      intentOpenBoxEl = boxEl;
+      setAttr(boxEl, 'data-ag-ps-intent-open', '1');
+      setAttr(intentGhostEl, 'data-loading', isLoading ? '1' : '');
+      setAttr(intentGhostEl, 'data-visible', '1');
+    }
+
+    function syncIntentGhostVisibility(boxOverride = null) {
+      if (disposed || !getPrefs().composerIntentSuggest || document.hidden || !isConversationRoute() || safeIsBusy()) {
+        hideIntentGhost();
+        return;
+      }
+      const boxEl = boxOverride || safeGetComposerEl();
+      if (!boxEl || !isComposerEmpty(boxEl)) {
+        hideIntentGhost();
+        return;
+      }
+      const convKey = String(window.location.pathname || '');
+      const { turnCount } = extractIntentTurnContext();
+      const entry = intentCacheByConv.get(convKey);
+      if (entry && entry.turnCount === turnCount && !entry.dismissed && entry.suggestion) {
+        renderIntentGhost(boxEl, entry.suggestion, false);
+        return;
+      }
+      if (!intentInFlight || intentInFlightConv !== convKey) {
+        hideIntentGhost();
+      }
+    }
+
+    function runIntentPrediction() {
+      intentGraceTimer = 0;
+      if (disposed || !getPrefs().composerIntentSuggest || document.hidden || !isConversationRoute() || safeIsBusy()) {
+        return;
+      }
+      const boxEl = safeGetComposerEl();
+      if (!boxEl || !isComposerEmpty(boxEl)) {
+        hideIntentGhost();
+        return;
+      }
+      const convKey = String(window.location.pathname || '');
+      const { turnCount, lastUserText, lastAssistantText } = extractIntentTurnContext();
+      if (turnCount < 1 || (!lastUserText && !lastAssistantText)) return;
+      const existing = intentCacheByConv.get(convKey);
+      if (existing && existing.turnCount === turnCount && (existing.suggestion || existing.dismissed)) {
+        syncIntentGhostVisibility(boxEl);
+        return;
+      }
+      const mySeq = ++intentSeq;
+      intentInFlight = true;
+      intentInFlightConv = convKey;
+      if (intentLoadingTimer) clearTimeout(intentLoadingTimer);
+      intentLoadingTimer = setTimeout(() => {
+        intentLoadingTimer = 0;
+        if (disposed || mySeq !== intentSeq || !intentInFlight) return;
+        const curBox = safeGetComposerEl();
+        if (curBox && isComposerEmpty(curBox) && !safeIsBusy()) {
+          renderIntentGhost(curBox, '正在构思下一步建议…', true);
+        }
+      }, 160);
+
+      const hasProjectRpc = typeof window.__agProjectCall === 'function';
+      const reqPromise = hasProjectRpc
+        ? Promise.resolve(window.__agProjectCall('predictNextPrompt', { lastUserText, lastAssistantText }, 4000))
+        : Promise.resolve({ ok: true, suggestion: INTENT_FALLBACK_PROMPT });
+
+      reqPromise
+        .then((res) => {
+          if (disposed || mySeq !== intentSeq) return;
+          intentInFlight = false;
+          if (intentLoadingTimer) {
+            clearTimeout(intentLoadingTimer);
+            intentLoadingTimer = 0;
+          }
+          let sug = '';
+          if (typeof res === 'string') {
+            sug = res;
+          } else if (res && typeof res === 'object') {
+            if (res.skipped) {
+              hideIntentGhost();
+              return;
+            }
+            if (res.ok !== false) {
+              sug = String(res.suggestion || res.prompt || res.text || res.nextPrompt || '');
+            }
+          }
+          sug = sug.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+          if (!sug && !hasProjectRpc) {
+            sug = INTENT_FALLBACK_PROMPT;
+          }
+          if (!sug || String(window.location.pathname || '') !== convKey) {
+            hideIntentGhost();
+            return;
+          }
+          const latestTurns = Math.max(turnCount, extractIntentTurnContext().turnCount);
+          setIntentConvEntry(convKey, {
+            turnCount: latestTurns,
+            suggestion: sug,
+            dismissed: false
+          });
+          syncIntentGhostVisibility();
+        })
+        .catch(() => {
+          if (disposed || mySeq !== intentSeq) return;
+          intentInFlight = false;
+          if (intentLoadingTimer) {
+            clearTimeout(intentLoadingTimer);
+            intentLoadingTimer = 0;
+          }
+          hideIntentGhost();
+        });
+    }
+
+    function scheduleIntentPrediction(delayMs = 160) {
+      if (disposed || !getPrefs().composerIntentSuggest) return;
+      if (intentGraceTimer) clearTimeout(intentGraceTimer);
+      intentGraceTimer = setTimeout(runIntentPrediction, delayMs);
+    }
+
+    function syncComposerIntent(busy, reason) {
+      if (!getPrefs().composerIntentSuggest) {
+        wasBusyForIntent = false;
+        teardownComposerIntent(true);
+        return;
+      }
+      const curConvKey = String(window.location.pathname || '');
+      if (reason === 'route' || curConvKey !== lastIntentConvKey) {
+        lastIntentConvKey = curConvKey;
+        wasBusyForIntent = busy;
+        cancelIntentInFlight();
+        syncIntentGhostVisibility();
+        return;
+      }
+      if (!isConversationRoute()) {
+        wasBusyForIntent = false;
+        cancelIntentInFlight();
+        hideIntentGhost();
+        return;
+      }
+      if (busy) {
+        wasBusyForIntent = true;
+        cancelIntentInFlight();
+        hideIntentGhost();
+        return;
+      }
+      if (wasBusyForIntent && !busy) {
+        wasBusyForIntent = false;
+        scheduleIntentPrediction(160);
+        return;
+      }
+      syncIntentGhostVisibility();
+    }
+
+    function onIntentComposerActivate(e) {
+      if (disposed || !getPrefs().composerIntentSuggest || document.hidden) return;
+      const t = e && e.target;
+      if (!t || typeof t.closest !== 'function') return;
+      const boxEl = t.closest('[id="antigravity.agentSidePanelInputBox"]');
+      if (!boxEl || !isConversationRoute() || safeIsBusy()) return;
+      if (!isComposerEmpty(boxEl)) {
+        hideIntentGhost();
+        return;
+      }
+      const convKey = String(window.location.pathname || '');
+      const { turnCount } = extractIntentTurnContext();
+      if (turnCount < 1) return;
+      const entry = intentCacheByConv.get(convKey);
+      if (entry && entry.turnCount === turnCount) {
+        if (!entry.dismissed && entry.suggestion) {
+          syncIntentGhostVisibility(boxEl);
+        }
+        return;
+      }
+      if (!intentInFlight || intentInFlightConv !== convKey) {
+        scheduleIntentPrediction(160);
+      }
+    }
+
+    function onIntentKeyDown(e) {
+      if (disposed || !e || e.defaultPrevented || !getPrefs().composerIntentSuggest) return;
+      const boxEl = safeGetComposerEl();
+      if (!boxEl) return;
+      const activeInBox = Boolean(
+        (e.target && boxEl.contains(e.target)) ||
+        (document.activeElement && boxEl.contains(document.activeElement))
+      );
+      if (!activeInBox) return;
+
+      if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && !e.isComposing) {
+        if (!isComposerEmpty(boxEl)) return;
+        const convKey = String(window.location.pathname || '');
+        const { turnCount } = extractIntentTurnContext();
+        const entry = intentCacheByConv.get(convKey);
+        const sug = entry && entry.turnCount === turnCount && !entry.dismissed ? entry.suggestion : '';
+        if (!sug) return;
+        const ed = getComposerEditable(boxEl);
+        if (!ed) return;
+        e.preventDefault();
+        e.stopPropagation();
+        ed.focus();
+        if (ed.tagName === 'TEXTAREA') {
+          ed.value = sug;
+          ed.dispatchEvent(new Event('input', { bubbles: true }));
+        } else {
+          try { document.execCommand('insertText', false, sug); } catch {}
+          if (!((ed.textContent || '').trim())) {
+            ed.textContent = sug;
+            ed.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+        }
+        hideIntentGhost();
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        const ghostVisible = Boolean(intentGhostEl && intentGhostEl.getAttribute('data-visible') === '1');
+        if (!ghostVisible && !intentInFlight && !intentGraceTimer) return;
+        cancelIntentInFlight();
+        const convKey = String(window.location.pathname || '');
+        const { turnCount } = extractIntentTurnContext();
+        const prev = intentCacheByConv.get(convKey);
+        setIntentConvEntry(convKey, {
+          turnCount: Math.max(1, turnCount),
+          suggestion: prev && prev.turnCount === turnCount ? prev.suggestion : '',
+          dismissed: true
+        });
+        hideIntentGhost();
+      }
+    }
+
+    document.addEventListener('pointerdown', onIntentComposerActivate, { capture: true, passive: true, signal });
+    document.addEventListener('focusin', onIntentComposerActivate, { capture: true, passive: true, signal });
+    document.addEventListener('keydown', onIntentKeyDown, { capture: true, signal });
+    document.addEventListener('compositionstart', (e) => {
+      if (disposed || !getPrefs().composerIntentSuggest) return;
+      const boxEl = e && e.target && e.target.closest ? e.target.closest('[id="antigravity.agentSidePanelInputBox"]') : null;
+      if (!boxEl) return;
+      intentComposing = true;
+      cancelIntentInFlight();
+      syncIntentGhostVisibility(boxEl);
+    }, { capture: true, passive: true, signal });
+    document.addEventListener('compositionend', (e) => {
+      if (!intentComposing) {
+        const boxEl = e && e.target && e.target.closest ? e.target.closest('[id="antigravity.agentSidePanelInputBox"]') : null;
+        if (!boxEl) return;
+      }
+      intentComposing = false;
+      if (disposed || !getPrefs().composerIntentSuggest) return;
+      if (intentCompEndTimer) clearTimeout(intentCompEndTimer);
+      intentCompEndTimer = setTimeout(() => {
+        intentCompEndTimer = 0;
+        if (!disposed) syncIntentGhostVisibility();
+      }, 30);
+    }, { capture: true, passive: true, signal });
+    document.addEventListener('input', (e) => {
+      if (disposed || !getPrefs().composerIntentSuggest) return;
+      const boxEl = e && e.target && e.target.closest ? e.target.closest('[id="antigravity.agentSidePanelInputBox"]') : null;
+      if (!boxEl) return;
+      cancelIntentInFlight();
+      syncIntentGhostVisibility(boxEl);
+    }, { capture: true, passive: true, signal });
+    document.addEventListener('paste', (e) => {
+      if (disposed || !getPrefs().composerIntentSuggest) return;
+      const boxEl = e && e.target && e.target.closest ? e.target.closest('[id="antigravity.agentSidePanelInputBox"]') : null;
+      if (!boxEl) return;
+      cancelIntentInFlight();
+      hideIntentGhost();
+      setTimeout(() => {
+        if (!disposed) syncIntentGhostVisibility(boxEl);
+      }, 20);
+    }, { capture: true, passive: true, signal });
+
+    /* ========================================================================
      * 11. Unified State Sync & Event Wiring
      * ======================================================================== */
     function syncComposerOverlays() {
@@ -3604,10 +4246,12 @@
       }
 
       checkUnreadTransition(busy);
+      syncComposerIntent(busy, reason);
       applyBubbleTintAndCompact();
       syncSwitchReturnHelper();
 
       if (isConversationRoute()) {
+        checkAndHealOrphanedOverviewTransition(findActiveOverviewToggleBtn());
         const ovOpen = isOverviewOpenNow();
         if (ovOpen && nowMs - lastManualOverviewToggleAt > 350) {
           setWantedOverviewOpen(true);
@@ -3625,12 +4269,14 @@
           autoExpandCount = 0;
           lastOrbStageCheckAt = 0;
           lastObservedLayoutSig = curLayoutSig;
-          scheduleEnsureOverviewOpen('route', 210);
+          scheduleEnsureOverviewOpen('route', 95);
         } else if (curLayoutSig && lastObservedLayoutSig && curLayoutSig !== lastObservedLayoutSig) {
           lastObservedLayoutSig = curLayoutSig;
           if (!ovOpen && getWantedOverviewOpen() === true) {
             scheduleEnsureOverviewOpen('layout', 95);
           }
+        } else if (!ovOpen && getPrefs().keepOverviewOpen && getWantedOverviewOpen() === true && nowMs - lastManualOverviewToggleAt > 800) {
+          tryRestoreOverviewNow();
         } else if (curLayoutSig && !lastObservedLayoutSig) {
           lastObservedLayoutSig = curLayoutSig;
         }
@@ -3863,9 +4509,9 @@
           return `
             <div class="ag-ps-toggle-list">
               <div class="ag-ps-toggle-row">
-                <div class="ag-ps-toggle-label" data-ag-ps-tip="在浅色与深色全主题下为代码块、工具/变更卡片、提问气泡与 kbd 键帽赋予立体微切面高光，并将分屏条化为 1px 棱镜微光线">
+                <div class="ag-ps-toggle-label" data-ag-ps-tip="在浅色与深色全主题下为代码块、工具/变更/概览卡片与 kbd 键帽赋予立体微切面层次，并为分屏条提供悬停微光导引（不改动消息气泡配色）">
                   <span>光学立体切面与分割线</span>
-                  <span class="ag-ps-toggle-sub">全主题卡片层次 · 气泡微边 · 1px 分屏光丝</span>
+                  <span class="ag-ps-toggle-sub">全主题卡片层次 · 立体键帽 · 悬停分屏导引</span>
                 </div>
                 <button type="button" class="ag-ps-switch" data-fx-toggle="opticalFacets" data-on="${p.opticalFacets !== false ? '1' : '0'}" aria-label="光学立体切面与分割线"></button>
               </div>
@@ -4028,9 +4674,10 @@
         }
 
         if (activeTab === 'nav') {
+          const previewStyle = resolveOutlinePreviewStyle(p);
           const railSubDesc =
             railMode === 'smart'
-              ? '优先赋能左栏提问预览 · 自动收起右侧防冲突'
+              ? '优先使用左栏竖向蓝标 · 自动收起右侧防冲突'
               : railMode === 'right'
                 ? '轮次圆点目录（右侧常驻） · 自动避让右侧面板'
                 : '已隐藏左右轮次点阵导航';
@@ -4038,7 +4685,7 @@
           return `
             <div class="ag-ps-toggle-list">
               <div class="ag-ps-toggle-row">
-                <div class="ag-ps-toggle-label" data-ag-ps-tip="智能左栏：有原生左侧导航时自动收起右侧圆点（彻底避免遮挡滚动条）并为左栏补上中文提问预览；右侧：强制显示轮次圆点目录（右侧常驻）">
+                <div class="ag-ps-toggle-label" data-ag-ps-tip="智能左栏：有原生左侧导航时自动收起右侧圆点（彻底避免遮挡滚动条）；右侧：强制显示右侧常驻轮次圆点目录">
                   <span>侧边轮次点阵导航</span>
                   <span class="ag-ps-toggle-sub">${railSubDesc}</span>
                 </div>
@@ -4048,6 +4695,20 @@
                   <button type="button" class="ag-ps-seg-btn" data-fx-rail-mode="off" data-selected="${railMode === 'off' ? '1' : '0'}">关</button>
                 </div>
               </div>
+
+              ${
+                railMode !== 'off'
+                  ? `<div class="ag-ps-subcard">
+                      <div class="ag-ps-toggle-row">
+                        <span class="ag-ps-toggle-sub" data-ag-ps-tip="详细卡片展示多行问答预览与轮次时间；精简胶囊仅显示单行 #轮次 与提问摘要，不遮挡正文（两者互斥绝不重叠）">悬停预览样式</span>
+                        <div class="ag-ps-seg-group">
+                          <button type="button" class="ag-ps-seg-btn" data-fx-rail-preview="detailed" data-selected="${previewStyle === 'detailed' ? '1' : '0'}">详细卡片</button>
+                          <button type="button" class="ag-ps-seg-btn" data-fx-rail-preview="compact" data-selected="${previewStyle === 'compact' ? '1' : '0'}">精简胶囊</button>
+                        </div>
+                      </div>
+                    </div>`
+                  : ''
+              }
 
               <div class="ag-ps-toggle-row">
                 <div class="ag-ps-toggle-label" data-ag-ps-tip="记住你打开右侧「概览」面板的状态，切换对话或关闭工作台时不自动收起">
@@ -4072,8 +4733,28 @@
           `;
         }
 
+        const curTokenUnit = p.tokenUnit === 'kmb' ? 'kmb' : 'wan';
         return `
           <div class="ag-ps-toggle-list">
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="切换右侧概览、上下文环与用量统计中的 Token 数值单位">
+                <span>Token 数量单位</span>
+                <span class="ag-ps-toggle-sub">中文直觉 万/亿 · 国际标准 K/M</span>
+              </div>
+              <div class="ag-ps-seg-group">
+                <button type="button" class="ag-ps-seg-btn" data-fx-token-unit="wan" data-selected="${curTokenUnit === 'wan' ? '1' : '0'}">万 / 亿</button>
+                <button type="button" class="ag-ps-seg-btn" data-fx-token-unit="kmb" data-selected="${curTokenUnit === 'kmb' ? '1' : '0'}">K / M</button>
+              </div>
+            </div>
+
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="实验性：每轮回复完成后在空输入框给出浅灰续写建议，按 Tab 键填入（绝不自动发送），打字或按 Esc 立即消失；纯内存零落盘">
+                <span>输入框下一步提问建议</span>
+                <span class="ag-ps-toggle-sub">回复结束提示下步指令 · 按 Tab 填入不直发</span>
+              </div>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="composerIntentSuggest" data-on="${p.composerIntentSuggest ? '1' : '0'}" aria-label="输入框下一步提问建议"></button>
+            </div>
+
             <div class="ag-ps-toggle-row">
               <div class="ag-ps-toggle-label" data-ag-ps-tip="在输入框下方实时显示 5h 与每周剩余额度百分比，点击查看详情，按住 Shift 点击直达切号">
                 <span>底栏实时额度百分比</span>
@@ -4175,6 +4856,26 @@
           return false;
         }
 
+        const railPreviewBtn = target.closest('[data-fx-rail-preview]');
+        if (railPreviewBtn) {
+          const val = railPreviewBtn.getAttribute('data-fx-rail-preview');
+          if (val === 'detailed' || val === 'compact') {
+            bus.setPref('outlinePreviewStyle', val);
+            return true;
+          }
+          return false;
+        }
+
+        const tokenUnitBtn = target.closest('[data-fx-token-unit]');
+        if (tokenUnitBtn) {
+          const val = tokenUnitBtn.getAttribute('data-fx-token-unit');
+          if (val === 'wan' || val === 'kmb') {
+            bus.setPref('tokenUnit', val);
+            return true;
+          }
+          return false;
+        }
+
         const chatFontPresetBtn = target.closest('[data-fx-chat-font-preset]');
         if (chatFontPresetBtn) {
           const val = chatFontPresetBtn.getAttribute('data-fx-chat-font-preset') ?? '';
@@ -4200,7 +4901,13 @@
           const key = toggleBtn.getAttribute('data-fx-toggle');
           if (key && Object.prototype.hasOwnProperty.call(FX_DEFAULTS, key)) {
             const cur = getPrefs();
-            bus.setPref(key, !cur[key]);
+            const nextVal = !cur[key];
+            if (key === 'keepOverviewOpen' && nextVal) {
+              setWantedOverviewOpen(true);
+              lastManualOverviewToggleAt = 0;
+              setTimeout(() => { if (!disposed) tryRestoreOverviewNow(); }, 45);
+            }
+            bus.setPref(key, nextVal);
             return true;
           }
           return false;
@@ -4342,6 +5049,7 @@
       try { bus.unregisterPanelSection?.('fx'); } catch {}
 
       clearUnreadBadge();
+      teardownComposerIntent(true);
       clearHiddenSessionMarks();
       detachDprWatcher();
       clearAfterglowHost();
@@ -4370,6 +5078,7 @@
         html.removeAttribute('data-ag-ps-reduced-motion');
         html.removeAttribute('data-ag-ps-facets');
         html.removeAttribute('data-ag-ps-nav-off');
+        html.removeAttribute('data-ag-ps-rail-preview');
         html.removeAttribute('data-ag-ps-custom-chat-font');
         html.removeAttribute('data-ag-ps-custom-code-font');
         html.removeAttribute('data-ag-ps-orb-replace');

@@ -591,6 +591,8 @@ const PRISM_UI_ENUM_VALIDATORS = Object.freeze({
   thoughtMode: new Set(['off', 'bilingual', 'immersive']),
   composerBorderFx: new Set(['off', 'smart', 'beam', 'static']),
   outlineRailMode: new Set(['smart', 'right', 'off']),
+  outlinePreviewStyle: new Set(['detailed', 'compact']),
+  tokenUnit: new Set(['wan', 'kmb']),
   borderBeamMode: new Set(['always', 'busy']),
   borderBeamPalette: new Set(['theme', 'gemini', 'aurora', 'prism', 'neon', 'quota']),
   quotaRingPeriod: new Set(['auto', 'weekly', '5h']),
@@ -607,7 +609,7 @@ const PRISM_UI_BOOL_KEYS = new Set([
   'switchAutoReturn', 'autoDismissOnboarding', 'quotaHandoffAlert',
   'imageContextMenu', 'cleanCopy', 'sshPaste', 'inlineEditHelper', 'sessionFork', 'composerFileDrop', 'wslExplorerRevealFix',
   'showWorkbenchBtn', 'fastWindowRestore', 'ignoreReducedMotion',
-  'opticalFacets', 'semanticAfterglow', 'compactQuotaPill'
+  'opticalFacets', 'semanticAfterglow', 'compactQuotaPill', 'composerIntentSuggest'
 ]);
 
 const PRISM_UI_FONT_KEYS = Object.freeze(['chatFontFamily', 'codeFontFamily']);

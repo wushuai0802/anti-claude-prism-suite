@@ -1,16 +1,16 @@
 # Anti-Claude Prism Suite
 
 <p align="left">
-  <img src="https://img.shields.io/badge/version-v0.9.2-2563eb?style=flat-square" alt="Version v0.9.2" />
+  <img src="https://img.shields.io/badge/version-v0.9.3-2563eb?style=flat-square" alt="Version v0.9.3" />
   <img src="https://img.shields.io/badge/edition-All--in--One%20Standalone-059669?style=flat-square" alt="Standalone Edition" />
-  <img src="https://img.shields.io/badge/kernel-Anti--Claude%20v3.1.9%20Bundled-7c3aed?style=flat-square" alt="Bundled Anti-Claude v3.1.9" />
+  <img src="https://img.shields.io/badge/kernel-Anti--Claude%20v3.1.10%20Bundled-7c3aed?style=flat-square" alt="Bundled Anti-Claude v3.1.10" />
   <img src="https://img.shields.io/badge/dependencies-0%20npm%20packages-d97706?style=flat-square" alt="Zero Runtime Dependencies" />
   <img src="https://img.shields.io/badge/license-MIT-0f172a?style=flat-square" alt="MIT License" />
 </p>
 
 **面向 Google Antigravity Desktop（Windows / WSL2 / macOS / Linux）的一体化独立完整版体验增强、跨厂商模型会诊、受控电脑操控（CUA）与多账号工程工作台套件。**
 
-自 **v0.6.0+** 起，本项目已**原生内嵌继承增强版 [Anti-Claude](https://github.com/hongqi7/Anti-Claude) `v3.1.9` 运行时内核（`vendor/anti-claude/`）**，并在 **v0.9.2** 全面升级为涵盖 **「全界面 8 套主题同源联动 + 一键体验预设与四分类控制中心 + 120Hz/240Hz 纯 GPU 合成器流光与三态余晖 + 智能左栏导航去重 + 免预装 Node.js 一键安装器 + 七合一响应式工作台 + 默认关闭零开销电脑/网页协作助手」** 的全栈自包含套件：
+自 **v0.6.0+** 起，本项目已**原生内嵌继承增强版 [Anti-Claude](https://github.com/hongqi7/Anti-Claude) `v3.1.10` 运行时内核（`vendor/anti-claude/`）**，并在 **v0.9.3** 全面升级为涵盖 **「全界面 8 套主题同源联动 + 一键体验预设与四分类控制中心 + 120Hz/240Hz 纯 GPU 合成器流光与三态余晖 + 智能左栏导航去重 + 思考防误翻与 Tab 续写建议 + 免预装 Node.js 一键安装器 + 七合一响应式工作台 + 默认关闭零开销电脑/网页协作助手」** 的全栈自包含套件：
 - **真正零前置依赖（免装系统 Node.js 亦可运行）**：Windows 用户双击运行单个安装包，即使电脑未安装 Node.js 也会自动复用本机 `Antigravity.exe` 内置 Electron 运行时（`ELECTRON_RUN_AS_NODE=1`）一次性完成「底层 CDP 守护内核 + 棱镜视觉交互扩展 + Prism 七合一工作台 + 默认关闭的 `prism-cua` + Chrome/Edge 浏览器受控桥 + 内置规则与技能」全栈部署；
 - **默认关闭零上下文损耗 · 可视化虚拟指针防抢鼠 · 全局 `Esc` 急刹**：受控电脑与浏览器操控工具独立封装在同级插件 `prism-cua` 中并默认关闭，日常写代码聊天时 `0` 额外工具 Token 开销；操控期间渲染独立鼠标穿透 **AI 虚拟指针**，对已授权网页与标准桌面 UIA / Win32 控件实现 **`0px` 物理鼠标位移、零焦点抢占**，全链路硬拦截密码/验证码/支付框（含 `Ctrl+V` 剪贴板粘贴防护），并在系统任意窗口按下物理 **`Esc`** 键毫秒级中断急刹；
 - **老用户无感平滑升级 · 全链路杀软零误报卫生**：完整保留本地 `ui-prefs.json` 与已隐藏说明偏好，支持运行中进程免停机 `.old` 原子热替换，采用纯二进制 `[MS-SHLLINK]` `.lnk` 编解码与标准 `[ComImport] IShellLinkW` 彻底告别 `WScript.Shell` 误报特征；
@@ -23,7 +23,7 @@
 - [实机演示画廊](#-实机演示画廊)
 - [三层一体化架构](#-三层一体化架构)
 - [核心功能详解](#-核心功能详解)
-  - [一、内置增强版 Anti-Claude v3.1.9 内核与 Windows 原生适配](#一内置增强版-anti-claude-v319-内核与-windows-原生适配)
+  - [一、内置增强版 Anti-Claude v3.1.10 内核与 Windows 原生适配](#一内置增强版-anti-claude-v3110-内核与-windows-原生适配)
   - [二、顶栏「✦ 棱镜」视觉、像素伙伴与高效工作流套件](#二顶栏-棱镜视觉像素伙伴与高效工作流套件)
   - [三、Prism 七合一工作台（窄栏 & 全局宽屏自适应 MCP App）](#三prism-七合一工作台窄栏--全局宽屏自适应-mcp-app)
   - [四、受控电脑与浏览器操控桥（Default-Off `prism-cua` · `Esc` 急刹 · Chrome MV3 桥）](#四受控电脑与浏览器操控桥default-off-prism-cua--esc-急刹--chrome-mv3-桥)
@@ -51,7 +51,7 @@
 
 <p align="center">
   <img src="./assets/screenshots/installer-all-in-one.png" alt="Anti-Claude Prism Suite 一键安装器" width="84%" /><br />
-  <sub>双击即用：自动释放内置 <code>Anti-Claude v3.1.9</code> 增强内核、补齐桌面快捷方式 <code>--remote-debugging-port=0</code>、拉起后台无窗守护进程，并同步原地部署 Windows 与 WSL2 插件（保留目录句柄）</sub>
+  <sub>双击即用：自动释放内置 <code>Anti-Claude v3.1.10</code> 增强内核、补齐桌面快捷方式 <code>--remote-debugging-port=0</code>、拉起后台无窗守护进程，并同步原地部署 Windows 与 WSL2 插件（保留目录句柄）</sub>
 </p>
 
 ### 3. Prism 工作台核心视图（目录行号预览 · 多账号分层接力 · 官方自更新与上游雷达）
@@ -115,8 +115,8 @@
 
 ```mermaid
 flowchart TB
-  subgraph PKG["Anti-Claude Prism Suite v0.9.2（单包独立完整版 · 零外部 npm 依赖）"]
-    K["第 1 层 · 内置增强内核与本地 CUA Broker<br/>vendor/anti-claude/ + native/win-cua/ (v3.1.9 + 四级防抢鼠执行器 + 全局 Esc 急刹)"]
+  subgraph PKG["Anti-Claude Prism Suite v0.9.3（单包独立完整版 · 零外部 npm 依赖）"]
+    K["第 1 层 · 内置增强内核与本地 CUA Broker<br/>vendor/anti-claude/ + native/win-cua/ (v3.1.10 + 四级防抢鼠执行器 + 全局 Esc 急刹)"]
     E["第 2 层 · 棱镜前端扩展 & Chrome/Edge MV3 扩展桥<br/>extensions/prism-suite*.{css,js} + extensions/chrome-cua-bridge/"]
     P["第 3 层 · Prism 七合一工作台 & 双插件 MCP/Skills<br/>plugin/ (8 常驻工具) + plugin-cua/ (默认关闭 3 操控工具)"]
   end
@@ -127,7 +127,7 @@ flowchart TB
 
 | 仓库目录 | 部署目标路径 | 职责说明 |
 | --- | --- | --- |
-| `vendor/anti-claude/` & `native/win-cua/` | `~/.gemini/antigravity/anti-claude/runtime/` | 内置 `Anti-Claude v3.1.9` MIT 内核 + 现场编译的 `bin/prism-win-cua.exe`（含 `.sha256`）、本地 CUA Broker、全局 `Esc` 急刹监听、无窗 `git` 状态缓存与 WSL↔Win 桥接 |
+| `vendor/anti-claude/` & `native/win-cua/` | `~/.gemini/antigravity/anti-claude/runtime/` | 内置 `Anti-Claude v3.1.10` MIT 内核 + 现场编译的 `bin/prism-win-cua.exe`（含 `.sha256`）、本地 CUA Broker、全局 `Esc` 急刹监听、无窗 `git` 状态缓存与 WSL↔Win 桥接 |
 | `extensions/` | `~/.gemini/antigravity/anti-claude/user/extensions/` & `.../prism-suite/chrome-bridge/` | 6 个桌面增强扩展文件 + 跨端口偏好种子 `prism-suite-00-prefs.js` + Chrome/Edge MV3 受控浏览器桥（固定 ID `lbmibnghmlnidfiihkegicaejaacmkca`） |
 | `plugin/` | `~/.gemini/config/plugins/prism-files/` | 原生 MCP App 七合一工作台（含「电脑操控」总控看板）、严格 8 个常驻模型可见工具、自动文件卡片规则与 3 个内置 `skills/` |
 | `plugin-cua/` | `~/.gemini/config/plugins/prism-cua/` | **默认关闭（Default-Off）**的受控电脑与浏览器操控 MCP 插件（仅含 `cua_status` / `cua_observe` / `cua_act` 三个工具，平时零 Token 开销，按需启用） |
@@ -137,9 +137,9 @@ flowchart TB
 
 ## 核心功能详解
 
-### 一、内置增强版 `Anti-Claude v3.1.9` 内核与 Windows 原生适配
+### 一、内置增强版 `Anti-Claude v3.1.10` 内核与 Windows 原生适配
 
-1. **完整继承上游 `v3.1.9` 全部桌面能力**：
+1. **完整继承上游 `v3.1.10` 全部桌面能力**：
    - 右侧原生风格 **「概览（Overview）」面板**（工作区 Git 状态、上下文缓存命中率、一键 `/compact` 压缩、实时分池配额条、Sidechats 与连接器概览）；
    - 输入框底部 **上下文占用圆环**、**`tok/s · TTFT` 实时生成速率**、工具步骤展开计时器、长代码块折叠吸顶及 **Project 输入框拖拽/粘贴本地文件与目录**。
 2. **Windows / WSL2 深度原生化校准**：
@@ -248,7 +248,7 @@ flowchart TB
 
 1. 前往 [**GitHub Releases**](https://github.com/wushuai0802/anti-claude-prism-suite/releases/latest) 下载 **`Anti-Claude-Prism-Suite-Setup.exe`**（同时提供 `.sha256` 校验文件）；
 2. 双击运行，保持默认勾选：
-   - `内置 Anti-Claude v3.1.9 内核 + 棱镜扩展套件`（含 Chrome/Edge `chrome-bridge` 扩展目录与 `prism-win-cua.exe`）
+   - `内置 Anti-Claude v3.1.10 内核 + 棱镜扩展套件`（含 Chrome/Edge `chrome-bridge` 扩展目录与 `prism-win-cua.exe`）
    - `安装 Prism 工作台与受控电脑操控插件（prism-files + 默认关闭的 prism-cua）`
    - `同步安装至检测到的 WSL Antigravity 环境`（若本机装有 WSL2 会自动检出并勾选）
 3. 点击 **「一键安装 / 更新」**，完成后重启一次 Antigravity 即可全面启用。
@@ -266,7 +266,7 @@ flowchart TB
 git clone https://github.com/wushuai0802/anti-claude-prism-suite.git
 cd anti-claude-prism-suite
 
-# 一站式全量安装（内置 Anti-Claude v3.1.9 增强内核 + 棱镜扩展 + chrome-bridge + prism-files/prism-cua 双插件与内置 Skills）
+# 一站式全量安装（内置 Anti-Claude v3.1.10 增强内核 + 棱镜扩展 + chrome-bridge + prism-files/prism-cua 双插件与内置 Skills）
 node install.mjs
 ```
 
@@ -320,7 +320,7 @@ node install.mjs
 
 | 关联仓库 | 开源协议 | 关系定位与隔离边界 |
 | --- | --- | --- |
-| [`hongqi7/Anti-Claude`](https://github.com/hongqi7/Anti-Claude) | MIT | `host-runtime`：内嵌 `v3.1.9` 运行时底座并合入无窗子进程、Windows 快捷键校准、扩展热加载与双端桥接补丁，保留原作者 MIT 版权声明 |
+| [`hongqi7/Anti-Claude`](https://github.com/hongqi7/Anti-Claude) | MIT | `host-runtime`：内嵌 `v3.1.10` 运行时底座并合入无窗子进程、Windows 快捷键校准、扩展热加载与双端桥接补丁，保留原作者 MIT 版权声明 |
 | [`WhiteBr1ck/agy-powertools`](https://github.com/WhiteBr1ck/agy-powertools) | MIT | `feature-reference`：参考界面增量词条覆盖范围与防误报启动器思路 |
 | [`RMvdesi/obsidian-prism`](https://github.com/RMvdesi/obsidian-prism) | GPL-3.0 | `inspiration-only`：**严守 GPL Clean-Room 隔离红线**，仅从公开更新说明参考排版与动效构思，零源码接触或转写 |
 | [`anglee0323/agy-switch`](https://github.com/anglee0323/agy-switch) | MIT | `ecosystem-watch`：观察认证凭据目标名与格式变动信号 |
