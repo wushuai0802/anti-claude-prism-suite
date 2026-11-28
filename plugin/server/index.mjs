@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Prism Files MCP App Server (Clean-Room Original, MIT, Zero External Dependencies)
- * Part of Anti-Claude Prism Suite v0.9.5
+ * Part of Anti-Claude Prism Suite v0.9.6
  *
  * Implements MCP stdio JSON-RPC 2.0 + SEP-1865 MCP Apps UI resources:
  *   - Model-visible tools (strictly 8):
@@ -54,7 +54,7 @@ export const APP_URI = 'ui://prism-files/app.html';
 export const INLINE_URI = 'ui://prism-files/inline.html';
 export const APP_MIME_TYPE = 'text/html;profile=mcp-app';
 export const CUA_EXTENSION_ID = 'lbmibnghmlnidfiihkegicaejaacmkca';
-const SERVER_INFO = { name: 'prism-files', version: '0.9.5' };
+const SERVER_INFO = { name: 'prism-files', version: '0.9.6' };
 const MAX_TEXT_PREVIEW_BYTES = 256 * 1024;
 const MAX_IMAGE_PREVIEW_BYTES = 4 * 1024 * 1024;
 const MAX_SAVE_BYTES = 512 * 1024;
@@ -2607,7 +2607,7 @@ export function createPrismFilesServer({
   }
 
   function readCuaSettings(ctx) {
-    const defaults = { schema: 1, mouseMode: 'courteous', toolsEnabled: true };
+    const defaults = { schema: 1, mouseMode: 'courteous', toolsEnabled: true, autopilot: true };
     try {
       const settingsFile = resolveCuaSettingsFile(ctx);
       const st = fs.lstatSync(settingsFile, { throwIfNoEntry: false });
@@ -2616,7 +2616,8 @@ export function createPrismFilesServer({
       return {
         schema: 1,
         mouseMode: parsed?.mouseMode === 'strict_virtual' ? 'strict_virtual' : 'courteous',
-        toolsEnabled: parsed?.toolsEnabled !== false
+        toolsEnabled: parsed?.toolsEnabled !== false,
+        autopilot: parsed?.autopilot !== false
       };
     } catch {
       return defaults;
@@ -2631,6 +2632,7 @@ export function createPrismFilesServer({
         ? 'strict_virtual'
         : (patch.mouseMode === 'courteous' ? 'courteous' : prev.mouseMode),
       toolsEnabled: typeof patch.toolsEnabled === 'boolean' ? patch.toolsEnabled : prev.toolsEnabled,
+      autopilot: typeof patch.autopilot === 'boolean' ? patch.autopilot : prev.autopilot,
       updatedAt: new Date().toISOString()
     };
     try {
@@ -3563,6 +3565,24 @@ export function createPrismFilesServer({
         },
         required: ['enabled']
       },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'cua_bridge_set_autopilot',
+      description: 'App-only: toggle Codex-style zero-prompt Autopilot mode for Desktop & Chrome CUA',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          autopilot: { type: 'boolean' }
+        },
+        required: ['autopilot']
+      },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'cua_bridge_vault_setup',
+      description: 'App-only: open native Windows DPAPI dialog to configure isolated Vaultwarden AI sub-vault for blind autofill',
+      inputSchema: { type: 'object', properties: {} },
       _meta: { ui: { visibility: ['app'] } }
     },
     {
@@ -4542,8 +4562,10 @@ export function createPrismFilesServer({
         ...baseMeta,
         ok: true,
         brokerOnline: true,
+        autopilot: raw?.autopilot !== false,
+        vault: raw?.vault || null,
         controlState,
-        stateLabelZh,
+        stateLabelZh: raw?.autopilot !== false && controlState === 'act' ? '⚡ Autopilot 免确认自动就绪' : stateLabelZh,
         mouseMode: raw?.mouseMode === 'strict_virtual' ? 'strict_virtual' : 'courteous',
         expiresAtMs,
         remainingSeconds,
@@ -4666,6 +4688,43 @@ export function createPrismFilesServer({
               ? '已开启 CUA 工具暴露；注意宿主插件 prism-cua 当前仍处于关闭态，请在左侧栏「技能与自定义 → 插件」打开一次 prism-cua 即可生效'
               : '已开启 AI 电脑操控工具（cua_status / cua_observe / cua_act），新对话或重载插件后模型即可按需调用')
           : '已将 AI 电脑操控工具设为休眠隐藏（日常对话 0 工具 Token 占用）'
+      };
+      return { content: [{ type: 'text', text: out.message }], structuredContent: out };
+    }
+
+    if (name === 'cua_bridge_set_autopilot') {
+      if (typeof args?.autopilot !== 'boolean') {
+        const bad = { ok: false, error: 'autopilot 必须为布尔值' };
+        return { isError: true, content: [{ type: 'text', text: bad.error }], structuredContent: bad };
+      }
+      const wantAuto = Boolean(args.autopilot);
+      const ctx = resolveCuaBridgeContext();
+      writeCuaSettings(ctx, { autopilot: wantAuto });
+      const brokerRes = await callCuaBrokerAction('set_autopilot', { autopilot: wantAuto }, { timeoutMs: 4000 });
+      const out = {
+        ok: true,
+        autopilot: wantAuto,
+        brokerOnline: Boolean(brokerRes.reachable),
+        message: wantAuto
+          ? '已开启 Codex 同款「免确认全自动就绪 (Autopilot)」：免每 15 分钟弹窗，浏览器全部普通标签页自动可操作（敏感页硬屏蔽）'
+          : '已切换为「每次弹窗手动授权」模式'
+      };
+      return { content: [{ type: 'text', text: out.message }], structuredContent: out };
+    }
+
+    if (name === 'cua_bridge_vault_setup') {
+      const brokerRes = await callCuaBrokerAction('open_vault_setup', {}, { timeoutMs: 180000 });
+      if (!brokerRes.reachable) {
+        const offline = { ok: false, error: '未连接 Windows CUA Broker；请先启用 prism-cua 后再打开盲注配置窗口' };
+        return { content: [{ type: 'text', text: offline.error }], structuredContent: offline };
+      }
+      const raw = brokerRes.data?.result || brokerRes.data || {};
+      const out = {
+        ...raw,
+        ok: raw.ok !== false,
+        message: raw.message || (raw.cleared
+          ? '已清空本机 Vaultwarden 盲注子库配置'
+          : (raw.cancelled ? '已取消修改' : `Vaultwarden 盲注子库已同步就绪（${raw.vault?.itemCount ?? 0} 条可用凭据）`))
       };
       return { content: [{ type: 'text', text: out.message }], structuredContent: out };
     }

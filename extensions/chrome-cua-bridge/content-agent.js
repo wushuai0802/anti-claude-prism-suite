@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const AGENT_VERSION = '0.9.5';
+  const AGENT_VERSION = '0.9.6';
   if (window.__prismCuaContentAgent && window.__prismCuaContentAgent.version === AGENT_VERSION) {
     return;
   }
@@ -71,6 +71,68 @@
   const everPasswordElements = new WeakSet();
   let agentArmedActive = true;
   let localEscAbortedAt = 0;
+  let blindCurtainActive = false;
+  let blindCurtainStartUrl = '';
+  let blindCurtainInputs = [];
+
+  function maybeReleaseBlindCurtainAfterSpaNavigation() {
+    if (!blindCurtainActive) return;
+    try {
+      if (
+        blindCurtainStartUrl &&
+        window.location.href !== blindCurtainStartUrl &&
+        blindCurtainInputs.every((el) => !el || !el.isConnected) &&
+        !document.querySelector('input[type="password"]')
+      ) {
+        for (const el of blindCurtainInputs) {
+          try {
+            if (el) el.value = '';
+          } catch {}
+        }
+        blindCurtainInputs = [];
+        blindCurtainStartUrl = '';
+        blindCurtainActive = false;
+      }
+    } catch {}
+  }
+
+  function lockPasswordFieldAgainstUnmasking(el) {
+    if (!el || !(el instanceof HTMLInputElement)) return;
+    everPasswordElements.add(el);
+    try {
+      el.setAttribute('type', 'password');
+      el.setAttribute('autocomplete', 'off');
+      const origSetAttribute = el.setAttribute.bind(el);
+      el.setAttribute = function patchedSetAttribute(name, val) {
+        if (String(name || '').toLowerCase() === 'type' && String(val || '').toLowerCase() !== 'password') {
+          return;
+        }
+        return origSetAttribute(name, val);
+      };
+      Object.defineProperty(el, 'type', {
+        configurable: false,
+        enumerable: true,
+        get() {
+          return 'password';
+        },
+        set() {}
+      });
+    } catch {}
+  }
+
+  function isShowPasswordToggleElement(el) {
+    if (!el || !(el instanceof Element)) return false;
+    const meta = [
+      el.getAttribute('aria-label') || '',
+      el.getAttribute('title') || '',
+      el.getAttribute('name') || '',
+      el.getAttribute('id') || '',
+      el.getAttribute('class') || '',
+      el.getAttribute('data-testid') || '',
+      el.textContent || ''
+    ].join(' ');
+    return /(?:show[-_ ]?pass|reveal[-_ ]?pass|toggle[-_ ]?pass|password[-_ ]?visibility|显示密码|查看密码|明文显示)/i.test(meta);
+  }
 
   function onCaptureEscKeyDown(e) {
     if (!agentArmedActive) return;
@@ -387,6 +449,7 @@
     const originErr = verifyExpectedOrigin(opts);
     if (originErr) return originErr;
 
+    maybeReleaseBlindCurtainAfterSpaNavigation();
     scanAndRememberPasswordInputs(document);
     const { mode = 'compact', maxElements = MAX_REFS } = opts;
     const cap = Math.max(1, Math.min(MAX_REFS, Number(maxElements) || MAX_REFS));
@@ -456,10 +519,10 @@
         if (safeHref) item.href = safeHref;
       }
 
-      if (sensitive) {
-        item.isPassword = true;
+      if (sensitive || blindCurtainActive) {
+        item.isPassword = Boolean(sensitive);
         item.redacted = true;
-        item.valueRedacted = '[PASSWORD_REDACTED]';
+        item.valueRedacted = blindCurtainActive ? '[VAULT_CURTAIN_PROTECTED]' : '[PASSWORD_REDACTED]';
       } else if (tag === 'input' || tag === 'textarea') {
         if (
           inputType !== 'checkbox' &&
@@ -509,11 +572,28 @@
       captcha,
       totalInteractive,
       truncated: totalInteractive > cap,
+      ...(blindCurtainActive ? { blindCurtainActive: true } : {}),
       elements
     };
 
-    if (mode === 'full' || mode === 'text') {
-      out.textExcerpt = cleanText(document.body?.innerText || '', 2400);
+    if (!blindCurtainActive) {
+      try {
+        const statusNodes = document.querySelectorAll('[role="status"], [role="alert"], output, .done, .toast, .alert, h1, h2');
+        const statusParts = [];
+        for (const sn of statusNodes) {
+          if (!isElementVisible(sn)) continue;
+          const st = cleanText(sn.textContent || '', 180);
+          if (st && !statusParts.includes(st)) statusParts.push(st);
+          if (statusParts.length >= 6) break;
+        }
+        if (statusParts.length > 0) {
+          out.statusText = statusParts.join(' | ').slice(0, 600);
+        }
+      } catch {}
+
+      if (mode === 'full' || mode === 'text') {
+        out.textExcerpt = cleanText(document.body?.innerText || '', 2400);
+      }
     }
 
     return out;
@@ -866,6 +946,10 @@
         return { ok: false, code: 'MISSING_REF_OR_COORDS', error: '点击操作需要提供 ref (@eN) 或 (x, y) 坐标' };
       }
 
+      if (blindCurtainActive && isShowPasswordToggleElement(el)) {
+        return makeError('BLIND_CURTAIN_SHOW_PASSWORD_BLOCKED', '盲注防窥帘生效中：严禁点击显示密码按钮以防明文泄露');
+      }
+
       if (isSensitiveField(el)) {
         const msg = '目标字段为密码或支付敏感区域，已拦截自动点击，请人工操作';
         return {
@@ -917,6 +1001,10 @@
       if (!el) {
         return { ok: false, code: 'NO_TARGET_INPUT', error: '未指定输入目标 ref，且当前无已聚焦输入框' };
       }
+      if (blindCurtainActive && isShowPasswordToggleElement(el)) {
+        return makeError('BLIND_CURTAIN_SHOW_PASSWORD_BLOCKED', '盲注防窥帘生效中：严禁点击显示密码按钮以防明文泄露');
+      }
+
       if (isSensitiveField(el)) {
         const msg = '目标字段为密码或银行卡敏感输入框，已拦截自动输入，请人工填写';
         return {
@@ -1244,6 +1332,152 @@
         code: 'WAIT_TIMEOUT',
         waitedMs: Date.now() - started,
         error: `等待目标条件超时 (${timeoutMs}ms)`
+      };
+    }
+
+    if (action === 'vault_fill_and_submit' || action === 'vault_fill_totp') {
+      if (window !== window.top) {
+        return makeError('IFRAME_VAULT_FILL_BLOCKED', '安全护栏：拒绝向 iframe 子框架注入凭据');
+      }
+      const vaultMaterial = step.__brokerInjectedVault;
+      if (!vaultMaterial || typeof vaultMaterial !== 'object') {
+        return makeError('DIRECT_VAULT_INJECTION_FORBIDDEN', '缺少受控本地 Vault Broker 盲注载荷');
+      }
+      if (vaultMaterial.origin && String(vaultMaterial.origin).toLowerCase() !== window.location.origin.toLowerCase()) {
+        return makeError('ORIGIN_MISMATCH', `页面当前域 (${window.location.origin}) 与凭据匹配域 (${vaultMaterial.origin}) 不一致`);
+      }
+
+      let userEl = null;
+      let passEl = null;
+      let totpEl = null;
+      let submitEl = null;
+
+      if (step.usernameRef) {
+        const r = resolveRefElement(step.usernameRef);
+        if (!r.ok) return r;
+        userEl = r.el;
+      }
+      const pwRefRaw = step.passwordRef || (action === 'vault_fill_and_submit' ? rawRef : '');
+      if (pwRefRaw) {
+        const r = resolveRefElement(pwRefRaw);
+        if (!r.ok) return r;
+        passEl = r.el;
+      }
+      const totpRefRaw = step.totpRef || (action === 'vault_fill_totp' ? rawRef : '');
+      if (totpRefRaw) {
+        const r = resolveRefElement(totpRefRaw);
+        if (!r.ok) return r;
+        totpEl = r.el;
+      }
+      if (step.submitRef) {
+        const r = resolveRefElement(step.submitRef);
+        if (!r.ok) return r;
+        submitEl = r.el;
+      }
+
+      if (action === 'vault_fill_and_submit') {
+        if (!(passEl instanceof HTMLInputElement) || String(passEl.getAttribute('type') || passEl.type).toLowerCase() !== 'password') {
+          return makeError('NOT_PASSWORD_INPUT', 'vault_fill_and_submit 的 passwordRef 必须指向真实的 <input type="password"> 控件');
+        }
+      } else if (!(totpEl instanceof HTMLInputElement)) {
+        return makeError('NOT_TOTP_INPUT', 'vault_fill_totp 的 totpRef 必须指向有效的 <input> 控件');
+      }
+
+      const anchorInput = passEl || totpEl;
+      const enclosingForm = anchorInput?.form || submitEl?.form || anchorInput?.closest?.('form') || null;
+      for (const actAttr of [
+        enclosingForm?.getAttribute?.('action') || '',
+        submitEl?.getAttribute?.('formaction') || ''
+      ]) {
+        const trimmedAct = String(actAttr || '').trim();
+        if (!trimmedAct || trimmedAct.startsWith('#') || /^javascript:/i.test(trimmedAct)) continue;
+        try {
+          const resolvedFormOrigin = new URL(trimmedAct, window.location.href).origin.toLowerCase();
+          if (resolvedFormOrigin !== window.location.origin.toLowerCase()) {
+            return makeError(
+              'CROSS_ORIGIN_FORM_ACTION_BLOCKED',
+              `安全护栏：检测到表单提交目标指向外部域 (${resolvedFormOrigin})，已拒绝注入凭据`
+            );
+          }
+        } catch {
+          return makeError('INVALID_FORM_ACTION', '表单提交地址格式异常，已拒绝盲注');
+        }
+      }
+
+      // Engage Blind Curtain BEFORE writing a single character into DOM!
+      blindCurtainActive = true;
+      blindCurtainStartUrl = window.location.href;
+      blindCurtainInputs = [passEl, totpEl].filter(Boolean);
+      if (passEl) lockPasswordFieldAgainstUnmasking(passEl);
+
+      const fillInputCleanly = (inputEl, secretStr) => {
+        if (!(inputEl instanceof HTMLInputElement) || typeof secretStr !== 'string' || !secretStr) return false;
+        try {
+          const r = inputEl.getBoundingClientRect();
+          pulseVirtualCursor(r.left + r.width / 2, r.top + r.height / 2, 'type_text');
+        } catch {}
+        setNativeControlValue(inputEl, secretStr);
+        try {
+          inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: false, composed: true, inputType: 'insertReplacementText' }));
+        } catch {
+          inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      };
+
+      let filledUsername = false;
+      let filledPassword = false;
+      let filledTotp = false;
+
+      if (action === 'vault_fill_and_submit') {
+        if (userEl && vaultMaterial.username) {
+          filledUsername = fillInputCleanly(userEl, String(vaultMaterial.username));
+        }
+        if (passEl && vaultMaterial.password) {
+          filledPassword = fillInputCleanly(passEl, String(vaultMaterial.password));
+        }
+      }
+      if (totpEl && vaultMaterial.totpCode) {
+        filledTotp = fillInputCleanly(totpEl, String(vaultMaterial.totpCode));
+      }
+
+      await sleepMs(45);
+      if (localEscAbortedAt >= stepStartedAt) {
+        if (passEl) setNativeControlValue(passEl, '');
+        if (totpEl) setNativeControlValue(totpEl, '');
+        return { ok: false, code: 'USER_ESC_ABORTED', abortedByEsc: true, error: '用户按下 Esc 紧急中断，已清空已注入字段' };
+      }
+
+      let submitted = false;
+      if (submitEl) {
+        dispatchPointerClickSequence(submitEl, {});
+        submitted = true;
+      } else if (enclosingForm && typeof enclosingForm.requestSubmit === 'function') {
+        try {
+          enclosingForm.requestSubmit();
+          submitted = true;
+        } catch {}
+      } else if (anchorInput) {
+        dispatchKeyToElement(anchorInput, 'Enter');
+        submitted = true;
+      }
+
+      await sleepMs(140);
+      return {
+        ok: true,
+        action,
+        vaultFilled: true,
+        filledUsername,
+        filledPassword,
+        filledTotp,
+        submitted,
+        blindCurtainActive: true,
+        delivery: 'vault_blind_dom',
+        physicalCursorMoved: false,
+        url: window.location.href,
+        origin: window.location.origin,
+        title: cleanText(document.title || '', 160)
       };
     }
 

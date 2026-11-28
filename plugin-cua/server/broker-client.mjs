@@ -469,9 +469,15 @@ export function createBrokerClient({
       headers['Idempotency-Key'] = String(idempotencyKey);
     }
 
-    const isBrowserTarget = (p) =>
-      p?.target === 'browser' ||
-      ((p?.target === 'auto' || !p?.target) && p?.tabId !== undefined && p?.tabId !== null && !p?.hwnd && !p?.windowId);
+    const isBrowserTarget = (p) => {
+      if (p?.target === 'browser') return true;
+      if (p?.target === 'desktop') return false;
+      const stepOp = String(p?.step?.op || p?.op || '').trim().toLowerCase();
+      if (stepOp === 'vault_fill_and_submit' || stepOp === 'vault_fill_totp') return true;
+      const refProbe = String(p?.step?.ref || p?.step?.passwordRef || p?.step?.totpRef || '').trim();
+      if (/^@e\d+$/i.test(refProbe)) return true;
+      return (p?.target === 'auto' || !p?.target) && p?.tabId !== undefined && p?.tabId !== null && !p?.hwnd && !p?.windowId;
+    };
 
     let wireAction = op;
     if (op === 'observe') {
@@ -606,8 +612,24 @@ export function createBrokerClient({
     request,
     callExternalAdapter,
     getStatus: (params = {}, opts = {}) => request('status', params, opts),
-    requestConsent: ({ needAct = false, target = 'auto', reason = '' } = {}, opts = {}) =>
-      request('request_consent', { needAct: Boolean(needAct), target, reason }, opts),
+    requestConsent: (
+      { needAct = false, target = 'auto', reason = '', hwnd, tabId, processName, titleContains, workspace } = {},
+      opts = {}
+    ) =>
+      request(
+        'request_consent',
+        {
+          needAct: Boolean(needAct),
+          target,
+          reason,
+          ...(hwnd !== undefined ? { hwnd } : {}),
+          ...(tabId !== undefined ? { tabId } : {}),
+          ...(processName ? { processName } : {}),
+          ...(titleContains ? { titleContains } : {}),
+          ...(workspace ? { workspace } : {})
+        },
+        opts
+      ),
     pauseHandoff: ({ reason = '', kind = '', code = 'PAUSED_HANDOFF' } = {}, opts = {}) =>
       request('pause_handoff', { reason, kind, code }, opts),
     setMouseMode: (mouseMode, opts = {}) =>

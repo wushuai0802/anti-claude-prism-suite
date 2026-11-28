@@ -41,7 +41,7 @@ const MAX_STDIN_BUFFER_BYTES = 16 * 1024 * 1024;
 
 export const SERVER_INFO = Object.freeze({
   name: 'prism-cua_control',
-  version: '0.9.5'
+  version: '0.9.6'
 });
 
 const ASSERTION_SCHEMA = {
@@ -210,6 +210,26 @@ export const TOOLS = Object.freeze([
                 type: 'string',
                 description: '目标控件引用（如 "@w3" 或 "@e14"）'
               },
+              usernameRef: {
+                type: 'string',
+                description: 'vault_fill_and_submit 可选用户名输入框引用（如 "@e1"）'
+              },
+              passwordRef: {
+                type: 'string',
+                description: 'vault_fill_and_submit 密码输入框引用（如 "@e2"，由本地 Vaultwarden 子库零明文盲注）'
+              },
+              totpRef: {
+                type: 'string',
+                description: 'vault_fill_and_submit / vault_fill_totp 动态验证码输入框引用（本地实时计算 6 位 TOTP 盲注）'
+              },
+              submitRef: {
+                type: 'string',
+                description: 'vault_fill_and_submit / vault_fill_totp 填完后原子点击的登录提交按钮引用（如 "@e5"）'
+              },
+              accountHint: {
+                type: 'string',
+                description: '同域名存在多条 AI 子库凭据时的可选脱敏账号筛选提示'
+              },
               x: {
                 type: 'number',
                 description: '目标横坐标（与 y 成对提供）'
@@ -353,7 +373,8 @@ function formatCompactElementList(obs, maxItems = 80) {
         const labelPart = label ? ` "${label}"` : '';
         const valPart = val ? ` value="${val}"` : '';
         const guardPart = el.redacted ? ' [PASSWORD_PROTECTED]' : '';
-        items.push(`${ref} [${role}]${labelPart}${valPart}${boundsStr}${guardPart}`);
+        const vaultPart = typeof el.vaultHint === 'string' && el.vaultHint.trim() ? ` ${el.vaultHint.trim()}` : '';
+        items.push(`${ref} [${role}]${labelPart}${valPart}${boundsStr}${guardPart}${vaultPart}`);
       }
       if (Array.isArray(el.children)) {
         visit(el.children);
@@ -584,8 +605,10 @@ export function createPrismCuaServer({
       preferredCategory = 'browser';
     } else if (Array.isArray(args.actions)) {
       for (const st of args.actions) {
-        const ref = typeof st?.ref === 'string' ? st.ref.trim() : '';
-        if (/^@e\d+$/i.test(ref)) {
+        const ref = typeof (st?.ref ?? st?.passwordRef ?? st?.totpRef ?? st?.usernameRef ?? st?.submitRef) === 'string'
+          ? String(st.ref ?? st.passwordRef ?? st.totpRef ?? st.usernameRef ?? st.submitRef).trim()
+          : '';
+        if (/^@e\d+$/i.test(ref) || st?.op === 'vault_fill_and_submit' || st?.op === 'vault_fill_totp') {
           preferredCategory = 'browser';
           break;
         }
@@ -703,6 +726,7 @@ export function createPrismCuaServer({
           return {
             tabId: t.tabId ?? t.id ?? null,
             armed: Boolean(t.armed ?? true),
+            active: Boolean(t.active),
             title: String(t.title ?? '').slice(0, 120),
             url: String(t.url ?? '').slice(0, 200),
             blocked: false
@@ -714,23 +738,38 @@ export function createPrismCuaServer({
       ok: true,
       brokerOnline: true,
       state,
+      autopilot: Boolean(rawStatus?.autopilot),
       escKillSwitchActive: rawStatus?.escArmed !== false,
       windowCount: windows.length,
       armedTabCount: armedTabs.length,
       windows,
       armedTabs,
+      vault: rawStatus?.vault || null,
       externalAdapter,
       externalAdapterError
     };
+
+    const statusLines = [
+      `CUA 状态: ${state}${summary.autopilot ? ' (Autopilot 免确认自动就绪)' : ''} | Broker 在线 | 单键 Esc 急刹: ${summary.escKillSwitchActive ? '已布防' : '待命'}`,
+      `桌面窗口: ${windows.length} 个 | 可操作浏览器标签页: ${armedTabs.length} 个` +
+        (summary.vault?.configured
+          ? ` | Vaultwarden 盲注子库: 已就绪 (${summary.vault.itemCount ?? 0} 条凭据)`
+          : '')
+    ];
+    for (const w of windows.slice(0, 15)) {
+      if (w.blocked) continue;
+      statusLines.push(`  - [windowId=${w.windowId}] ${w.processName || 'app'} | "${w.title || ''}"`);
+    }
+    for (const t of armedTabs.slice(0, 20)) {
+      if (t.blocked) continue;
+      statusLines.push(`  - [tabId=${t.tabId}]${t.active ? ' ★前台' : ''} "${t.title || ''}" | ${t.url || ''}`);
+    }
 
     return {
       content: [
         {
           type: 'text',
-          text: [
-            `CUA 状态: ${state} | Broker 在线 | 单键 Esc 急刹: ${summary.escKillSwitchActive ? '已布防' : '待命'}`,
-            `桌面窗口: ${windows.length} 个 | 已授权 ARMED 标签页: ${armedTabs.length} 个`
-          ].join('\n')
+          text: statusLines.join('\n')
         }
       ],
       structuredContent: summary
@@ -902,6 +941,25 @@ export function createPrismCuaServer({
           code: 'CONSENT_DENIED',
           state: 'DISARMED',
           handoffRequired: true
+        }
+      };
+    }
+
+    if (obsResp?.ok === false) {
+      const errCode = obsResp.code || 'OBSERVE_FAILED';
+      const errMsg = obsResp.error || obsResp.message || '观察目标窗口或标签页失败';
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: `[${errCode}] ${errMsg}`
+          }
+        ],
+        structuredContent: {
+          ok: false,
+          code: errCode,
+          error: errMsg
         }
       };
     }

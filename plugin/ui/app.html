@@ -6727,7 +6727,7 @@
           accountsWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.9.5，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.9.6，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
                 `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
                 `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
               `</article>`
@@ -7529,7 +7529,7 @@
               ? `<span class="pill pill-warn">新版本 ${escapeHtml(suInfo.latestTag)}</span>`
               : st.radarLoading
                 ? '<span class="pill">检查中</span>'
-                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.9.5</span>');
+                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.9.6</span>');
         const expSnap = st.exposure || null;
         const expMcp = expSnap?.mcpExposure || appState.prefs?.mcpExposure || { fileTools: true, memoryTools: true, modelHubTools: true };
         const activeMcpCnt = (expMcp.fileTools !== false ? 2 : 0) + (expMcp.memoryTools !== false ? 4 : 0) + (expMcp.modelHubTools !== false ? 2 : 0);
@@ -7740,7 +7740,7 @@
           cuaWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-cua-action="refresh">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.9.5，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程；请在 Plugins Manager 重载插件或重启一次 Antigravity。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.9.6，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程；请在 Plugins Manager 重载插件或重启一次 Antigravity。</p>` +
               `</article>`
             : `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">读取电脑操控状态失败</span><button type="button" class="mini-btn is-primary" data-cua-action="refresh">重试</button></div>` +
@@ -7862,6 +7862,20 @@
               `<div class="search-card-actions" role="group" aria-label="虚拟鼠标策略切换">` +
                 `<button type="button" class="mini-btn${mouseMode === 'courteous' ? ' is-primary' : ''}" data-cua-action="set-mouse-mode" data-mode="courteous" ${st.acting ? 'disabled' : ''} title="优先后台无感虚拟指针，遇到自绘窗时自动检测键鼠空闲礼让并归位真光标">✨ 智能无感礼让</button>` +
                 `<button type="button" class="mini-btn${mouseMode === 'strict_virtual' ? ' is-primary' : ''}" data-cua-action="set-mouse-mode" data-mode="strict_virtual" ${st.acting ? 'disabled' : ''} title="100% 绝不触碰系统物理鼠标与窗口焦点">🔒 严格后台零触鼠</button>` +
+              `</div>` +
+            `</div>` +
+            `<div class="relay-card-head" style="margin-top:6px;padding-top:8px;border-top:1px dashed var(--color-border-secondary, var(--p-border));align-items:flex-start;flex-wrap:wrap;gap:8px;">` +
+              `<div style="display:flex;flex-direction:column;gap:2px;min-width:180px;flex:1;">` +
+                `<strong style="font-size:12px;color:var(--color-text-primary, var(--p-text));">⚡ 免确认自动就绪 (Autopilot) & 🔐 Vaultwarden 零明文盲注</strong>` +
+                `<span class="relay-sub">${d?.autopilot !== false
+                  ? '当前：⚡ <strong>Codex 同款免确认自动就绪</strong>（免 15 分钟弹窗，浏览器全部普通标签页自动可操作，敏感页与收银台底层硬屏蔽）'
+                  : '当前：🛡️ 每次操作前弹出手动授权窗'} · ${d?.vault?.configured
+                  ? `🔐 盲注子库已就绪（${escapeHtml(String(d.vault.accountMask || ''))} · <strong>${Number(d.vault.itemCount) || 0}</strong> 条凭据，AI 零接触明文）`
+                  : '🔐 尚未绑定独立 Vaultwarden AI 子库'}</span>` +
+              `</div>` +
+              `<div class="search-card-actions">` +
+                `<button type="button" class="mini-btn${d?.autopilot !== false ? ' is-primary' : ''}" data-cua-action="toggle-autopilot" data-next="${d?.autopilot !== false ? '0' : '1'}" ${st.acting ? 'disabled' : ''}>${d?.autopilot !== false ? '⚡ Autopilot 已开启' : '🛡️ 切换为免确认 Autopilot'}</button>` +
+                `<button type="button" class="mini-btn" data-cua-action="vault-setup" ${!brokerOnline || st.acting ? 'disabled' : ''} title="弹出本机原生 DPAPI 加密窗口配置 Vaultwarden 独立 AI 子账号（主密码绝不经过聊天或大模型）">🔐 配置 Vaultwarden 盲注子库</button>` +
               `</div>` +
             `</div>` +
           `</article>`;
@@ -8354,6 +8368,22 @@
               }
               showToast(res?.message || res?.error || '已更新操控工具暴露状态', !res?.ok);
               await loadCuaTab({ silent: true });
+            } else if (act === 'toggle-autopilot') {
+              const wantAuto = btn.dataset.next === '1';
+              appState.cua.acting = true;
+              renderCua();
+              const res = await callServerTool('cua_bridge_set_autopilot', { autopilot: wantAuto });
+              appState.cua.acting = false;
+              showToast(res?.message || res?.error || '已切换 Autopilot 模式', !res?.ok);
+              await loadCuaTab({ silent: true });
+            } else if (act === 'vault-setup') {
+              appState.cua.acting = true;
+              renderCua();
+              showToast('已在桌面打开本机 DPAPI 盲注配置窗口，请在弹窗中保存');
+              const res = await callServerTool('cua_bridge_vault_setup', {});
+              appState.cua.acting = false;
+              showToast(res?.message || res?.error || '配置完成', !res?.ok);
+              await loadCuaTab({ silent: true });
             } else if (act === 'register-nm') {
               appState.cua.acting = true;
               renderCua();
@@ -8769,7 +8799,7 @@
             appState.accounts.selfUpdateChecking = false;
             appState.accounts.selfUpdateInfo = info;
             renderAccounts();
-            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.9.5'}`);
+            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.9.6'}`);
           } else if (act === 'self-update-repair-ask') {
             appState.accounts.selfUpdateConfirmRepair = true;
             renderAccounts();
@@ -10335,7 +10365,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.9.5' },
+            appInfo: { name: 'prism-files', version: '0.9.6' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};

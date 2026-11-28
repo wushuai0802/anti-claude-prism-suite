@@ -1,5 +1,5 @@
 /**
- * Anti-Claude Prism Suite v0.9.5 — core/cua-broker.mjs
+ * Anti-Claude Prism Suite v0.9.6 — core/cua-broker.mjs
  * Zero-dependency Controlled Desktop & Browser CUA Session Broker + Native Messaging HTTP Relay.
  *
  * Security invariants:
@@ -18,6 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createVaultBlindBroker, normalizeSafeOrigin } from './vault-blind-broker.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,7 +27,7 @@ const SUITE_ROOT_CANDIDATE = path.resolve(__dirname, '..', '..', '..');
 
 export const CUA_EXTENSION_ID = 'lbmibnghmlnidfiihkegicaejaacmkca';
 export const CUA_NM_HOST_NAME = 'com.prism.cua.bridge';
-export const CUA_VERSION = '0.9.5';
+export const CUA_VERSION = '0.9.6';
 export const MAX_CUA_BODY_BYTES = 2 * 1024 * 1024;
 
 export const CUA_STATES = Object.freeze({
@@ -441,7 +442,9 @@ function normalizeArmedTab(raw) {
       id: idNum,
       title: typeof raw.title === 'string' ? raw.title : '',
       url: typeof raw.url === 'string' ? raw.url : '',
-      origin: typeof raw.origin === 'string' ? raw.origin : ''
+      origin: typeof raw.origin === 'string' ? raw.origin : '',
+      active: Boolean(raw.active),
+      auto: Boolean(raw.auto)
     };
   }
   return null;
@@ -568,7 +571,11 @@ export function createCuaBroker(options = {}) {
     wslAdapterIp,
     nmPollHoldMs = 15000,
     nmHeartbeatTtlMs = 35000,
-    defaultMouseMode = ''
+    defaultMouseMode = '',
+    autopilot: initialAutopilotOpt,
+    vaultConfigLoader = null,
+    vaultFetchFn = globalThis.fetch,
+    allowInsecureLocalVaultForTest = false
   } = options;
 
   const isSupportedPlatform = process.platform === 'win32' || Boolean(allowNonWin32ForTest);
@@ -584,28 +591,45 @@ export function createCuaBroker(options = {}) {
     return path.join(winSuiteDir, 'cua-settings.json');
   }
 
-  function loadPersistedMouseMode() {
-    if (defaultMouseMode) {
-      return normalizeCuaMouseMode(defaultMouseMode);
-    }
+  function readPersistedCuaSettings() {
     try {
       const f = resolveSettingsFilePath();
       const st = fs.lstatSync(f, { throwIfNoEntry: false });
       if (st && st.isFile() && !st.isSymbolicLink()) {
-        const parsed = JSON.parse(fs.readFileSync(f, 'utf8'));
-        return normalizeCuaMouseMode(parsed?.mouseMode);
+        return JSON.parse(fs.readFileSync(f, 'utf8'));
       }
     } catch {}
+    return null;
+  }
+
+  function loadPersistedMouseMode() {
+    if (defaultMouseMode) {
+      return normalizeCuaMouseMode(defaultMouseMode);
+    }
+    const parsed = readPersistedCuaSettings();
+    if (parsed) {
+      return normalizeCuaMouseMode(parsed?.mouseMode);
+    }
     return CUA_MOUSE_MODES.COURTEOUS;
   }
 
-  let state = CUA_STATES.DISARMED;
+  function loadPersistedAutopilot() {
+    if (typeof initialAutopilotOpt === 'boolean') return initialAutopilotOpt;
+    const parsed = readPersistedCuaSettings();
+    if (parsed && typeof parsed.autopilot === 'boolean') return parsed.autopilot;
+    return !allowNonWin32ForTest;
+  }
+
+  let autopilot = loadPersistedAutopilot();
+  let state = autopilot ? CUA_STATES.ARMED_INTERACTIVE : CUA_STATES.DISARMED;
   let leaseEpoch = 0;
   let pendingEscAbortUntil = 0;
   let mouseMode = loadPersistedMouseMode();
   let prePauseState = null;
   let handoffReason = '';
-  let scope = null;
+  let scope = autopilot
+    ? { type: 'desktop_safe', hwnd: null, title: '', processName: '', tabId: null }
+    : null;
   let expiresAt = null;
   let lastWindows = [];
   let armedTabs = [];
@@ -639,6 +663,29 @@ export function createCuaBroker(options = {}) {
   function resolveExePath() {
     return resolveDefaultCuaExePath({ homeDir, cuaExePath });
   }
+
+  const vaultBroker = createVaultBlindBroker({
+    fetchFn: vaultFetchFn,
+    allowInsecureLocalForTest: allowInsecureLocalVaultForTest,
+    configLoader:
+      typeof vaultConfigLoader === 'function'
+        ? vaultConfigLoader
+        : async () => {
+            if (process.platform !== 'win32' && !mockWorkerRunner) return null;
+            const res = await runWorker({
+              mode: 'cmd',
+              cmd: 'vault-read-config',
+              args: ['--cmd', 'vault-read-config'],
+              stdinObj: null,
+              timeoutMs: 4000,
+              trackAbort: false
+            });
+            if (res?.ok && res.configured && res.config && typeof res.config === 'object') {
+              return res.config;
+            }
+            return null;
+          }
+  });
 
   function pruneReplayCaches(now = Date.now()) {
     if (seenNonces.size > 512) {
@@ -708,7 +755,7 @@ export function createCuaBroker(options = {}) {
       try {
         const child = spawn(verified.exePath, ['--overlay', '--parent-pid', String(process.pid)], {
           stdio: ['pipe', 'pipe', 'ignore'],
-          windowsHide: true
+          windowsHide: false
         });
         child.stdin.on('error', () => {});
         overlayChild = child;
@@ -855,23 +902,32 @@ export function createCuaBroker(options = {}) {
     const hadInFlight = activeWorkerControllers.size > 0 || pendingBrowserRequests.size > 0;
     leaseEpoch += 1;
     abortInFlightActions('USER_ESC_ABORTED', reasonMsg);
-    state = CUA_STATES.DISARMED;
     prePauseState = null;
     handoffReason = '';
-    scope = null;
-    expiresAt = null;
-    if (!hadInFlight) {
-      pendingEscAbortUntil = Date.now() + 3000;
+    if (autopilot) {
+      state = CUA_STATES.ARMED_INTERACTIVE;
+      scope = { type: 'desktop_safe', hwnd: null, title: '', processName: '', tabId: null };
+      expiresAt = null;
+      pendingEscAbortUntil = Date.now() + 2500;
+    } else {
+      state = CUA_STATES.DISARMED;
+      scope = null;
+      expiresAt = null;
+      if (!hadInFlight) {
+        pendingEscAbortUntil = Date.now() + 3000;
+      }
+      stopOverlayProcess();
     }
     for (const [k, v] of idempotencyCache.entries()) {
       if (v && v.action === 'request_consent') idempotencyCache.delete(k);
     }
-    stopOverlayProcess();
     enqueueNmCommand({
       id: `evt-${Date.now()}`,
       type: 'cua_state',
       action: 'cua_state',
-      state: CUA_STATES.DISARMED,
+      state,
+      autopilot,
+      vaultServerOrigin: vaultBroker.getConfiguredServerOrigin(),
       leaseEpoch,
       reason: 'USER_ESC_ABORTED'
     });
@@ -883,7 +939,7 @@ export function createCuaBroker(options = {}) {
       timeoutMs: 2500,
       trackAbort: false
     }).catch(() => {});
-    return { ok: true, state: CUA_STATES.DISARMED, leaseEpoch };
+    return { ok: true, state, autopilot, leaseEpoch };
   }
 
   function disarmInternal({ releaseModifiers = false, reasonCode = 'REVOKED', reasonMsg = '用户已收回 Prism CUA 授权' } = {}) {
@@ -971,7 +1027,7 @@ export function createCuaBroker(options = {}) {
         try {
           child = spawn(verified.exePath, fullArgs, {
             stdio: ['pipe', 'pipe', 'pipe'],
-            windowsHide: true
+            windowsHide: mode !== 'consent' && mode !== 'overlay'
           });
           child.stdin.on('error', () => {});
         } catch (err) {
@@ -1144,6 +1200,7 @@ export function createCuaBroker(options = {}) {
     return {
       ok: true,
       state,
+      autopilot,
       leaseEpoch,
       expiresAt,
       expiresAtIso: expiresAt ? new Date(expiresAt).toISOString() : null,
@@ -1153,9 +1210,93 @@ export function createCuaBroker(options = {}) {
       windows: Array.isArray(windowsOverride) ? windowsOverride : lastWindows,
       armedTabs: [...armedTabs],
       mouseMode,
+      vault: vaultBroker.getPublicStatus(),
+      vaultServerOrigin: vaultBroker.getConfiguredServerOrigin(),
       extensionConnected: isExtensionConnected(now),
       extensionId: CUA_EXTENSION_ID,
       nmRegistered: isNmHostRegistered()
+    };
+  }
+
+  async function handleSetAutopilot(payload = {}) {
+    const wantAuto = Boolean(payload?.autopilot);
+    autopilot = wantAuto;
+    leaseEpoch += 1;
+    pendingEscAbortUntil = 0;
+    if (autopilot) {
+      state = CUA_STATES.ARMED_INTERACTIVE;
+      scope = { type: 'desktop_safe', hwnd: null, title: '', processName: '', tabId: null };
+      expiresAt = null;
+      prePauseState = null;
+      handoffReason = '';
+    } else {
+      state = CUA_STATES.DISARMED;
+      scope = null;
+      expiresAt = null;
+      stopOverlayProcess();
+    }
+    try {
+      const settingsFile = resolveSettingsFilePath();
+      const prevSettings = readPersistedCuaSettings() || {};
+      writePrivateJsonAtomic(settingsFile, {
+        ...prevSettings,
+        schema: 1,
+        autopilot,
+        mouseMode,
+        updatedAt: new Date().toISOString()
+      });
+    } catch {}
+    enqueueNmCommand({
+      id: `evt-${Date.now()}`,
+      type: 'cua_state',
+      action: 'cua_state',
+      state,
+      autopilot,
+      vaultServerOrigin: vaultBroker.getConfiguredServerOrigin(),
+      leaseEpoch
+    });
+    return { ok: true, autopilot, state, leaseEpoch };
+  }
+
+  async function handleOpenVaultSetup() {
+    const res = await runWorker({
+      mode: 'consent',
+      cmd: 'vault-setup',
+      args: ['--vault-setup'],
+      stdinObj: null,
+      timeoutMs: 180000,
+      trackAbort: false
+    });
+    if (res?.cleared) {
+      vaultBroker.clearMemory();
+      return { ok: true, cleared: true, vault: vaultBroker.getPublicStatus() };
+    }
+    if (res?.saved) {
+      try {
+        await vaultBroker.ensureSynced({ force: true });
+      } catch (err) {
+        return {
+          ok: false,
+          code: err?.code || 'VAULT_SYNC_FAILED',
+          error: String(err?.message || err),
+          vault: vaultBroker.getPublicStatus()
+        };
+      }
+      enqueueNmCommand({
+        id: `evt-${Date.now()}`,
+        type: 'cua_state',
+        action: 'cua_state',
+        state,
+        autopilot,
+        vaultServerOrigin: vaultBroker.getConfiguredServerOrigin(),
+        leaseEpoch
+      });
+    }
+    return {
+      ok: Boolean(res?.ok !== false),
+      saved: Boolean(res?.saved),
+      cancelled: Boolean(res?.cancelled),
+      vault: vaultBroker.getPublicStatus()
     };
   }
 
@@ -1469,6 +1610,16 @@ export function createCuaBroker(options = {}) {
 
   function validateDesktopAccess({ requireInteractive = false, requestedHwnd = null } = {}) {
     checkAndExpireConsent();
+    if (pendingEscAbortUntil > Date.now()) {
+      pendingEscAbortUntil = 0;
+      return {
+        ok: false,
+        code: 'USER_ESC_ABORTED',
+        abortedByEsc: true,
+        error: '用户按下 Esc 紧急中断',
+        state: autopilot ? state : CUA_STATES.DISARMED
+      };
+    }
     if (state === CUA_STATES.PAUSED_HANDOFF) {
       return {
         ok: false,
@@ -1477,16 +1628,6 @@ export function createCuaBroker(options = {}) {
       };
     }
     if (state === CUA_STATES.DISARMED) {
-      if (pendingEscAbortUntil > Date.now()) {
-        pendingEscAbortUntil = 0;
-        return {
-          ok: false,
-          code: 'USER_ESC_ABORTED',
-          abortedByEsc: true,
-          error: '用户按下 Esc 紧急中断',
-          state: CUA_STATES.DISARMED
-        };
-      }
       return {
         ok: false,
         code: 'CONSENT_REQUIRED',
@@ -1659,6 +1800,16 @@ export function createCuaBroker(options = {}) {
         error: '当前仅授予只读观察权限 (ARMED_READONLY)，禁止执行浏览器动作'
       };
     }
+    if (pendingEscAbortUntil > Date.now()) {
+      pendingEscAbortUntil = 0;
+      return {
+        ok: false,
+        code: 'USER_ESC_ABORTED',
+        abortedByEsc: true,
+        error: '用户按下 Esc 紧急中断',
+        state: autopilot ? state : CUA_STATES.DISARMED
+      };
+    }
     if (scope?.type === 'window') {
       return {
         ok: false,
@@ -1678,12 +1829,16 @@ export function createCuaBroker(options = {}) {
     if ((effectiveTabId === null || effectiveTabId === undefined) && scope?.type === 'browser_tab' && scope.tabId != null) {
       effectiveTabId = scope.tabId;
     }
+    if ((effectiveTabId === null || effectiveTabId === undefined) && armedTabs.length > 0) {
+      const preferredTab = armedTabs.find((t) => t.active) || armedTabs[0];
+      effectiveTabId = preferredTab?.tabId ?? preferredTab?.id;
+    }
     const tabNum = Number(effectiveTabId);
     if (!Number.isFinite(tabNum)) {
       return {
         ok: false,
         code: 'MISSING_TAB_ID',
-        error: '缺少有效的目标浏览器标签页 tabId'
+        error: '当前没有可操作的普通 http/https 浏览器标签页'
       };
     }
     if (scope?.type === 'browser_tab' && scope.tabId != null && Number(scope.tabId) !== tabNum) {
@@ -1698,10 +1853,23 @@ export function createCuaBroker(options = {}) {
       return {
         ok: false,
         code: 'TAB_NOT_ARMED',
-        error: `浏览器标签页 #${tabNum} 尚未在扩展中武装授权 (Armed)`
+        error: `浏览器标签页 #${tabNum} 不在可操作列表内（可能已关闭或属于受保护敏感页）`
       };
     }
-    return { ok: true, tabId: tabNum, armedOrigin: armedTabEntry.origin || '' };
+    const vaultOrig = vaultBroker.getConfiguredServerOrigin();
+    if (vaultOrig && normalizeSafeOrigin(armedTabEntry.url || armedTabEntry.origin) === vaultOrig) {
+      return {
+        ok: false,
+        code: 'VAULT_SELF_ORIGIN_BLOCKED',
+        error: '安全护栏：禁止 AI 观察或操作自建 Vaultwarden 密码库自身页面'
+      };
+    }
+    return {
+      ok: true,
+      tabId: tabNum,
+      armedOrigin: armedTabEntry.origin || '',
+      tabUrl: armedTabEntry.url || ''
+    };
   }
 
   async function handleBrowserObserve(payload = {}) {
@@ -1722,6 +1890,20 @@ export function createCuaBroker(options = {}) {
     );
     if (reply?.code === 'CAPTCHA_HANDOFF' || reply?.handoffRequired === true || reply?.pausedHandoff === true) {
       await handlePauseHandoff({ reason: reply.reason || reply.error });
+      return reply;
+    }
+    if (reply?.ok && Array.isArray(reply.elements)) {
+      try {
+        const vMatch = await vaultBroker.inspectOriginMatch(reply.url || check.tabUrl);
+        if (vMatch?.matched) {
+          const hintStr = `[VAULT_READY: account="${vMatch.accountHint}"${vMatch.hasTotp ? ' totp=true' : ''} -> 可调用 op="vault_fill_and_submit"]`;
+          for (const el of reply.elements) {
+            if (el && (el.isPassword || el.redacted)) {
+              el.vaultHint = hintStr;
+            }
+          }
+        }
+      } catch {}
     }
     return reply;
   }
@@ -1736,14 +1918,53 @@ export function createCuaBroker(options = {}) {
     sendOverlayUpdate('EXECUTING');
     try {
       const effectiveMouseMode = clampCuaMouseMode(payload?.step?.mouseMode ?? payload?.mouseMode, mouseMode);
-      const safeStep = payload?.step && typeof payload.step === 'object'
+      const cleanPayload = { ...payload };
+      delete cleanPayload.__brokerInjectedVault;
+
+      let safeStep = cleanPayload?.step && typeof cleanPayload.step === 'object'
         ? {
-            ...payload.step,
+            ...cleanPayload.step,
             mouseMode: effectiveMouseMode,
             ...(check.armedOrigin ? { armedOrigin: check.armedOrigin, expectedOrigin: check.armedOrigin } : {})
           }
         : undefined;
-      const rawBrowserOp = String(payload?.op || payload?.action || payload?.step?.op || payload?.step?.action || '').trim().toLowerCase();
+      if (safeStep) {
+        delete safeStep.__brokerInjectedVault;
+      }
+
+      const rawBrowserOp = String(cleanPayload?.op || cleanPayload?.action || safeStep?.op || safeStep?.action || '').trim().toLowerCase();
+      if (rawBrowserOp === 'vault_fill_and_submit' || rawBrowserOp === 'vault_fill_totp') {
+        let material;
+        try {
+          material = await vaultBroker.resolveBlindFillMaterial(check.tabUrl || check.armedOrigin, {
+            accountHintFilter: safeStep?.accountHint ?? cleanPayload?.accountHint ?? ''
+          });
+        } catch (vErr) {
+          return {
+            ok: false,
+            code: vErr?.code || 'VAULT_FILL_UNAVAILABLE',
+            error: String(vErr?.message || vErr)
+          };
+        }
+        const baseStep = safeStep || {
+          op: rawBrowserOp,
+          usernameRef: cleanPayload.usernameRef,
+          passwordRef: cleanPayload.passwordRef,
+          totpRef: cleanPayload.totpRef,
+          submitRef: cleanPayload.submitRef,
+          mouseMode: effectiveMouseMode,
+          ...(check.armedOrigin ? { armedOrigin: check.armedOrigin, expectedOrigin: check.armedOrigin } : {})
+        };
+        safeStep = {
+          ...baseStep,
+          __brokerInjectedVault: {
+            origin: material.origin,
+            username: material.username,
+            password: material.password,
+            totpCode: material.totpCode
+          }
+        };
+      }
       const rawWaitTimeout = Number(
         payload?.timeoutMs ?? payload?.ms ?? payload?.durationMs ??
         payload?.step?.timeoutMs ?? payload?.step?.ms ?? payload?.step?.durationMs
@@ -1754,7 +1975,7 @@ export function createCuaBroker(options = {}) {
       const reply = await dispatchBrowserCommand(
         'browser_act',
         {
-          ...payload,
+          ...cleanPayload,
           ...(safeStep ? { step: safeStep } : {}),
           ...(check.armedOrigin ? { armedOrigin: check.armedOrigin, expectedOrigin: check.armedOrigin } : {}),
           tabId: check.tabId,
@@ -1950,6 +2171,16 @@ export function createCuaBroker(options = {}) {
           break;
         case 'set_mouse_mode':
           result = await handleSetMouseMode(payload);
+          break;
+        case 'set_autopilot':
+          result = await handleSetAutopilot(payload);
+          break;
+        case 'open_vault_setup':
+          result = await handleOpenVaultSetup();
+          break;
+        case 'vault_sync':
+          await vaultBroker.ensureSynced({ force: true });
+          result = { ok: true, vault: vaultBroker.getPublicStatus() };
           break;
         default:
           result = { ok: false, code: 'UNKNOWN_ACTION', error: `Unsupported CUA action: ${action}` };
@@ -2279,6 +2510,10 @@ export function createCuaBroker(options = {}) {
     started = true;
     stopped = false;
     syncBrokerDiscoveryFiles();
+    if (!mockWorkerRunner && process.platform === 'win32') {
+      void handleRegisterNmHost().catch(() => {});
+    }
+    void vaultBroker.ensureSynced({ force: false }).catch(() => {});
     if (discoverWslGeminiDirs === fallbackDiscoverWslGeminiDirs && process.platform === 'win32') {
       void refreshWslGeminiDirsAsync({ force: true }).then(() => {
         if (started && !stopped) syncBrokerDiscoveryFiles();

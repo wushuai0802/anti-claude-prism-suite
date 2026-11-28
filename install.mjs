@@ -669,8 +669,27 @@ export function installPlugin({
     if (effectiveCuaSrc === path.resolve(cuaTargetDir)) {
       throw new Error(`Source and target CUA plugin directories are identical: ${cuaTargetDir}`);
     }
+    let preserveUserEnabledCua = false;
+    try {
+      const existingCuaManifest = path.join(cuaTargetDir, 'plugin.json');
+      const st = fs.lstatSync(existingCuaManifest, { throwIfNoEntry: false });
+      if (st && st.isFile() && !st.isSymbolicLink()) {
+        const prevParsed = JSON.parse(fs.readFileSync(existingCuaManifest, 'utf8'));
+        if (prevParsed && prevParsed.disabled === false) {
+          preserveUserEnabledCua = true;
+        }
+      }
+    } catch {}
     fs.mkdirSync(path.dirname(cuaTargetDir), { recursive: true });
     syncDirInPlace(effectiveCuaSrc, cuaTargetDir, cuaInstalled);
+    if (preserveUserEnabledCua) {
+      try {
+        const destManifestPath = path.join(cuaTargetDir, 'plugin.json');
+        const nextParsed = JSON.parse(fs.readFileSync(destManifestPath, 'utf8'));
+        nextParsed.disabled = false;
+        writeTextInPlace(destManifestPath, `${JSON.stringify(nextParsed, null, 2)}\n`, path.dirname(cuaTargetDir));
+      } catch {}
+    }
   }
 
   return cuaTargetDir
@@ -757,12 +776,73 @@ export function installAll({
           `${JSON.stringify({ schema: 1, noPlugin, noFileCardRule, noSkills, updatedAt: new Date().toISOString() }, null, 2)}\n`,
           path.dirname(suiteDir)
         );
+        const isSandboxRun =
+          userDir !== undefined ||
+          Boolean(readArgValue(argv, '--user-dir')) ||
+          Boolean(process.env.ANTI_CLAUDE_USER_DIR) ||
+          Boolean(process.env.ANTI_CLAUDE_STATE_DIR);
+        if (
+          kernel?.runtimeDir &&
+          process.platform === 'win32' &&
+          !argv.includes('--no-win-cua-build') &&
+          (!isSandboxRun || argv.includes('--force-win-cua-build'))
+        ) {
+          tryCompileWinCuaBinaryOnWindows({ suiteDir, runtimeDir: kernel.runtimeDir });
+        }
       } catch {}
     }
 
     return { kernel, extensions, chromeBridge, plugin };
   } finally {
     lock.release();
+  }
+}
+
+function tryCompileWinCuaBinaryOnWindows({ suiteDir, runtimeDir } = {}) {
+  const csPath = path.join(__dirname, 'native', 'win-cua', 'PrismWinCua.cs');
+  const icoPath = path.join(__dirname, 'installer', 'win', 'prism-suite.ico');
+  if (!fs.existsSync(csPath)) return false;
+  const cscCandidates = [
+    'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',
+    'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe'
+  ];
+  const cscExe = cscCandidates.find((p) => fs.existsSync(p));
+  if (!cscExe) return false;
+  const wpfDir = path.join(path.dirname(cscExe), 'WPF');
+  const tmpOut = path.join(os.tmpdir(), `prism-win-cua-${process.pid}-${Date.now()}.exe`);
+  try {
+    const args = [
+      '/nologo', '/target:winexe', '/optimize+', '/codepage:65001', '/utf8output',
+      ...(fs.existsSync(icoPath) ? [`/win32icon:${icoPath}`] : []),
+      `/out:${tmpOut}`,
+      ...(fs.existsSync(wpfDir) ? [`/lib:${wpfDir}`] : []),
+      '/reference:System.dll',
+      '/reference:System.Core.dll',
+      '/reference:System.Security.dll',
+      '/reference:System.Web.Extensions.dll',
+      '/reference:System.Windows.Forms.dll',
+      '/reference:System.Drawing.dll',
+      `/reference:${fs.existsSync(path.join(wpfDir, 'UIAutomationClient.dll')) ? path.join(wpfDir, 'UIAutomationClient.dll') : 'UIAutomationClient.dll'}`,
+      `/reference:${fs.existsSync(path.join(wpfDir, 'UIAutomationTypes.dll')) ? path.join(wpfDir, 'UIAutomationTypes.dll') : 'UIAutomationTypes.dll'}`,
+      `/reference:${fs.existsSync(path.join(wpfDir, 'WindowsBase.dll')) ? path.join(wpfDir, 'WindowsBase.dll') : 'WindowsBase.dll'}`,
+      csPath
+    ];
+    execFileSync(cscExe, args, { windowsHide: true, stdio: 'ignore', timeout: 25000 });
+    if (!fs.existsSync(tmpOut)) return false;
+    const hash = crypto.createHash('sha256').update(fs.readFileSync(tmpOut)).digest('hex').toLowerCase();
+    const shaContent = `${hash}  prism-win-cua.exe\n`;
+    for (const baseDir of [suiteDir, runtimeDir].filter(Boolean)) {
+      const binDir = path.join(baseDir, 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const destExe = path.join(binDir, 'prism-win-cua.exe');
+      copyFileInPlace(tmpOut, destExe);
+      writeTextInPlace(`${destExe}.sha256`, shaContent);
+    }
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try { fs.rmSync(tmpOut, { force: true }); } catch {}
   }
 }
 

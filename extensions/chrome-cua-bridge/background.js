@@ -1,27 +1,37 @@
 /**
  * Prism CUA Browser Bridge MV3 Service Worker (Clean-Room Original, MIT)
- * Security & Zero-Idle Architecture:
- * 1. ONLY tabs explicitly armed by user click in popup.js (persisted in chrome.storage.session) are ever inspected or acted upon.
- * 2. Navigating an armed tab to any different origin (or protected URL) immediately auto-disarms it.
- * 3. Native Messaging port ("com.prism.cua.bridge") + 24s heartbeat alarm run ONLY while armedTabs.size > 0;
- *    when 0 tabs are armed, port disconnects and alarm is cleared -> strictly 0 idle overhead.
+ *
+ * Autopilot + Hard-Denylist Architecture (v0.9.6):
+ * 1. In Autopilot mode (default when prism-cua is enabled), automatically exposes all normal
+ *    non-blocked http/https tabs to local CUA Broker without tedious per-tab clicking, seamlessly
+ *    following legitimate cross-origin navigations while hard-blocking sensitive URLs.
+ * 2. Hard-blocks chrome://*, extension pages, web stores, password vaults (including configured
+ *    self-hosted Vaultwarden origin & /admin), and payment card checkouts.
+ * 3. Enforces Blind Curtain during Vaultwarden blind autofill: suppresses visible-tab screenshots
+ *    until the tab navigates away from the credential-injected login document.
  */
 'use strict';
 
 const NATIVE_HOST_NAME = 'com.prism.cua.bridge';
 const HEARTBEAT_ALARM = 'prism-cua-nm-heartbeat';
-const HEARTBEAT_PERIOD_MINUTES = 0.4; // 24s keepalive while >= 1 tab is ARMED
+const HEARTBEAT_PERIOD_MINUTES = 0.4;
 const SESSION_STORAGE_KEY = 'prismArmedTabsV1';
-const BADGE_ARMED_TEXT = 'ARM';
+const LOCAL_PREFS_KEY = 'prismBrowserAutopilotPrefsV1';
+const BADGE_ARMED_TEXT = 'AUTO';
+const BADGE_MANUAL_TEXT = 'ARM';
 const BADGE_ARMED_BG = '#059669';
 
 /** @type {Map<number, { tabId: number, windowId: number, armedOrigin: string, url: string, title: string, armedAt: number }>} */
 const armedTabs = new Map();
+const mutedTabIds = new Set();
+let autopilotAllTabs = true;
+let dynamicBlockedOrigins = new Set();
 let hydrated = false;
 let hydratePromise = null;
 let nativePort = null;
 let lastNativeError = '';
-let brokerCuaState = 'UNKNOWN';
+let lastHostNotFoundAt = 0;
+let brokerCuaState = 'ARMED_INTERACTIVE';
 let currentBrokerLeaseEpoch = 0;
 
 function parseSafeOrigin(rawUrl) {
@@ -71,6 +81,10 @@ function checkUrlBlockReason(rawUrl) {
     return `不支持的协议 (${u.protocol})，仅允许 http/https 网页`;
   }
 
+  if (dynamicBlockedOrigins.has(u.origin.toLowerCase())) {
+    return '自托管 Vaultwarden 密码库受硬隔离保护，禁止 AI 直接访问';
+  }
+
   const host = u.hostname.toLowerCase();
   const fullPath = `${host}${u.pathname.toLowerCase()}`;
   if (
@@ -83,19 +97,30 @@ function checkUrlBlockReason(rawUrl) {
 
   if (
     host === 'passwords.google.com' ||
-    host === 'myaccount.google.com' && /\/(?:security|signinoptions\/password)/i.test(u.pathname) ||
-    /(?:^|\.)(?:1password\.com|bitwarden\.com|lastpass\.com|dashlane\.com)$/i.test(host)
+    (host === 'myaccount.google.com' && /\/(?:security|signinoptions\/password)/i.test(u.pathname)) ||
+    /(?:^|\.)(?:1password\.com|bitwarden\.com|lastpass\.com|dashlane\.com)$/i.test(host) ||
+    /\/#\/(?:vault|locks)\b/i.test(s)
   ) {
     return '密码库与账号核心凭据页面受硬拦截保护，禁止授权操控';
+  }
+
+  if (
+    host === 'checkout.stripe.com' ||
+    host === 'pay.google.com' ||
+    host === 'cashier.alipay.com' ||
+    host === 'excashier.alipay.com' ||
+    host === 'pay.weixin.qq.com'
+  ) {
+    return '支付收银台页面受硬拦截保护，请人工完成支付';
   }
 
   return '';
 }
 
-async function setBadgeForTab(tabId, isArmed) {
+async function setBadgeForTab(tabId, text = '') {
   try {
-    await chrome.action.setBadgeText({ tabId, text: isArmed ? BADGE_ARMED_TEXT : '' });
-    if (isArmed) {
+    await chrome.action.setBadgeText({ tabId, text });
+    if (text) {
       await chrome.action.setBadgeBackgroundColor({ tabId, color: BADGE_ARMED_BG });
       if (typeof chrome.action.setBadgeTextColor === 'function') {
         await chrome.action.setBadgeTextColor({ tabId, color: '#ffffff' });
@@ -114,26 +139,85 @@ async function persistArmedTabs() {
   } catch {}
 }
 
-function getArmedTabsPayload() {
-  const list = [];
-  for (const info of armedTabs.values()) {
-    list.push({
-      tabId: info.tabId,
-      windowId: info.windowId,
-      origin: info.armedOrigin,
-      armedOrigin: info.armedOrigin,
-      url: info.url,
-      title: info.title,
-      armedAt: info.armedAt
+async function persistLocalPrefs() {
+  try {
+    await chrome.storage.local.set({
+      [LOCAL_PREFS_KEY]: {
+        autopilotAllTabs,
+        mutedTabIds: Array.from(mutedTabIds)
+      }
+    });
+  } catch {}
+}
+
+async function collectAvailableTabsPayload() {
+  if (!autopilotAllTabs) {
+    const list = [];
+    for (const info of armedTabs.values()) {
+      list.push({
+        tabId: info.tabId,
+        id: info.tabId,
+        windowId: info.windowId,
+        origin: info.armedOrigin,
+        armedOrigin: info.armedOrigin,
+        url: info.url,
+        title: info.title,
+        active: false,
+        auto: false,
+        armedAt: info.armedAt
+      });
+    }
+    return list;
+  }
+
+  let allTabs = [];
+  try {
+    allTabs = await chrome.tabs.query({});
+  } catch {
+    allTabs = [];
+  }
+  const out = [];
+  for (const t of allTabs) {
+    if (!t || !Number.isInteger(t.id) || t.id <= 0) continue;
+    if (mutedTabIds.has(t.id)) continue;
+    if (checkUrlBlockReason(t.url)) continue;
+    const orig = parseSafeOrigin(t.url);
+    if (!orig) continue;
+    out.push({
+      tabId: t.id,
+      id: t.id,
+      windowId: t.windowId ?? 0,
+      origin: orig,
+      armedOrigin: orig,
+      url: t.url || '',
+      title: String(t.title || '').slice(0, 160),
+      active: Boolean(t.active),
+      auto: true,
+      armedAt: Date.now()
     });
   }
-  return list;
+  // Sort active tabs first so Broker defaults to foreground tab
+  out.sort((a, b) => Number(b.active) - Number(a.active));
+  return out;
 }
 
 async function ensureHydrated() {
   if (hydrated) return;
   if (hydratePromise) return hydratePromise;
   hydratePromise = (async () => {
+    try {
+      const localStored = await chrome.storage.local.get(LOCAL_PREFS_KEY);
+      const lp = localStored?.[LOCAL_PREFS_KEY];
+      if (lp && typeof lp === 'object') {
+        if (typeof lp.autopilotAllTabs === 'boolean') autopilotAllTabs = lp.autopilotAllTabs;
+        if (Array.isArray(lp.mutedTabIds)) {
+          for (const id of lp.mutedTabIds) {
+            if (Number.isInteger(id) && id > 0) mutedTabIds.add(id);
+          }
+        }
+      }
+    } catch {}
+
     try {
       const stored = await chrome.storage.session.get(SESSION_STORAGE_KEY);
       const rawMap = stored?.[SESSION_STORAGE_KEY];
@@ -153,9 +237,7 @@ async function ensureHydrated() {
                 title: liveTab.title || val.title || '',
                 armedAt: Number(val.armedAt) || Date.now()
               });
-              await setBadgeForTab(tabId, true);
-            } else {
-              await setBadgeForTab(tabId, false);
+              await setBadgeForTab(tabId, BADGE_MANUAL_TEXT);
             }
           } catch {}
         }
@@ -164,7 +246,7 @@ async function ensureHydrated() {
     } catch {}
     hydrated = true;
     hydratePromise = null;
-    await syncLifecycleWithArmedCount();
+    await syncLifecycle();
   })();
   return hydratePromise;
 }
@@ -181,12 +263,13 @@ function postNativeSafe(payload) {
   }
 }
 
-function sendSyncArmedTabs() {
-  const list = getArmedTabsPayload();
+async function sendSyncArmedTabs() {
+  const list = await collectAvailableTabsPayload();
   postNativeSafe({
     type: 'sync_armed_tabs',
     extensionId: chrome.runtime.id,
-    version: '0.9.5',
+    version: '0.9.6',
+    autopilotAllTabs,
     ts: Date.now(),
     tabs: list,
     armedTabs: list
@@ -195,6 +278,7 @@ function sendSyncArmedTabs() {
 
 function ensureNativeConnected() {
   if (nativePort) return true;
+  if (Date.now() - lastHostNotFoundAt < 15000) return false;
   try {
     const port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
     nativePort = port;
@@ -215,13 +299,18 @@ function ensureNativeConnected() {
 
     port.onDisconnect.addListener(() => {
       const errMsg = chrome.runtime?.lastError?.message || '';
-      if (errMsg) lastNativeError = errMsg;
+      if (errMsg) {
+        lastNativeError = errMsg;
+        if (/not found|forbidden|specified native messaging host/i.test(errMsg)) {
+          lastHostNotFoundAt = Date.now();
+        }
+      }
       if (nativePort === port) {
         nativePort = null;
       }
     });
 
-    sendSyncArmedTabs();
+    void sendSyncArmedTabs();
     return true;
   } catch (err) {
     lastNativeError = String(err?.message || err);
@@ -231,13 +320,13 @@ function ensureNativeConnected() {
 }
 
 function disconnectNativeIfIdle() {
-  if (armedTabs.size > 0) return;
+  if (autopilotAllTabs || armedTabs.size > 0) return;
   if (nativePort) {
     try {
       nativePort.postMessage({
         type: 'sync_armed_tabs',
         extensionId: chrome.runtime.id,
-        version: '0.9.5',
+        version: '0.9.6',
         ts: Date.now(),
         tabs: [],
         armedTabs: []
@@ -251,10 +340,10 @@ function disconnectNativeIfIdle() {
   chrome.alarms.clear(HEARTBEAT_ALARM).catch(() => {});
 }
 
-async function syncLifecycleWithArmedCount() {
-  if (armedTabs.size > 0) {
+async function syncLifecycle() {
+  if (autopilotAllTabs || armedTabs.size > 0) {
     ensureNativeConnected();
-    sendSyncArmedTabs();
+    await sendSyncArmedTabs();
     try {
       const existing = await chrome.alarms.get(HEARTBEAT_ALARM);
       if (!existing) {
@@ -286,32 +375,43 @@ function notifyTabContentAgentArmed(tabId, isArmed) {
   } catch {}
 }
 
-async function disarmSingleTab(tabId, { reason = 'manual' } = {}) {
+async function disarmSingleTab(tabId, { reason = 'manual', muteInAutopilot = false } = {}) {
   const numId = Number(tabId);
-  const existed = armedTabs.delete(numId);
-  await setBadgeForTab(numId, false);
-  if (existed) {
-    notifyTabContentAgentArmed(numId, false);
-    await persistArmedTabs();
-    if (armedTabs.size > 0) {
-      sendSyncArmedTabs();
-    } else {
-      disconnectNativeIfIdle();
-    }
+  if (muteInAutopilot) {
+    mutedTabIds.add(numId);
+    await persistLocalPrefs();
   }
-  return { ok: true, disarmed: existed, reason, armedCount: armedTabs.size };
+  const existed = armedTabs.delete(numId);
+  await setBadgeForTab(numId, '');
+  notifyTabContentAgentArmed(numId, false);
+  if (existed) {
+    await persistArmedTabs();
+  }
+  await sendSyncArmedTabs();
+  if (!autopilotAllTabs && armedTabs.size === 0) {
+    disconnectNativeIfIdle();
+  }
+  return { ok: true, disarmed: existed || muteInAutopilot, reason, armedCount: armedTabs.size };
 }
 
-async function disarmAllTabs({ reason = 'manual_all' } = {}) {
+async function disarmAllTabs({ reason = 'manual_all', disableAutopilot = false } = {}) {
+  if (disableAutopilot) {
+    autopilotAllTabs = false;
+    await persistLocalPrefs();
+  }
   const ids = Array.from(armedTabs.keys());
   armedTabs.clear();
   for (const id of ids) {
     notifyTabContentAgentArmed(id, false);
   }
-  await Promise.all(ids.map((id) => setBadgeForTab(id, false)));
+  await Promise.all(ids.map((id) => setBadgeForTab(id, '')));
   await persistArmedTabs();
-  disconnectNativeIfIdle();
-  return { ok: true, disarmedCount: ids.length, reason, armedCount: 0 };
+  if (!autopilotAllTabs) {
+    disconnectNativeIfIdle();
+  } else {
+    await sendSyncArmedTabs();
+  }
+  return { ok: true, disarmedCount: ids.length, reason, armedCount: 0, autopilotAllTabs };
 }
 
 async function armTabByUserGesture(tab) {
@@ -327,6 +427,9 @@ async function armTabByUserGesture(tab) {
     return { ok: false, blocked: true, error: '无法解析当前页面的安全同源域 (Origin)' };
   }
 
+  mutedTabIds.delete(tab.id);
+  await persistLocalPrefs();
+
   const record = {
     tabId: tab.id,
     windowId: tab.windowId ?? 0,
@@ -336,9 +439,10 @@ async function armTabByUserGesture(tab) {
     armedAt: Date.now()
   };
   armedTabs.set(tab.id, record);
-  await setBadgeForTab(tab.id, true);
+  await setBadgeForTab(tab.id, autopilotAllTabs ? BADGE_ARMED_TEXT : BADGE_MANUAL_TEXT);
   await persistArmedTabs();
-  await syncLifecycleWithArmedCount();
+  lastHostNotFoundAt = 0;
+  await syncLifecycle();
   ensureContentAgentLoaded(tab.id)
     .then(() => notifyTabContentAgentArmed(tab.id, true))
     .catch(() => {});
@@ -347,6 +451,7 @@ async function armTabByUserGesture(tab) {
     armed: true,
     tab: record,
     armedCount: armedTabs.size,
+    autopilotAllTabs,
     nativeConnected: Boolean(nativePort),
     nativeError: lastNativeError
   };
@@ -355,7 +460,7 @@ async function armTabByUserGesture(tab) {
 async function ensureContentAgentLoaded(tabId) {
   const probe = await chrome.scripting.executeScript({
     target: { tabId },
-    func: () => Boolean(window.__prismCuaContentAgent && window.__prismCuaContentAgent.version === '0.9.5')
+    func: () => Boolean(window.__prismCuaContentAgent && window.__prismCuaContentAgent.version === '0.9.6')
   });
   const alreadyLoaded = Boolean(probe && probe[0] && probe[0].result === true);
   if (!alreadyLoaded) {
@@ -369,6 +474,67 @@ async function ensureContentAgentLoaded(tabId) {
 async function verifyArmedTabLive(requestedTabId) {
   await ensureHydrated();
   let targetTabId = Number(requestedTabId);
+
+  if (autopilotAllTabs) {
+    if (!Number.isInteger(targetTabId) || targetTabId <= 0) {
+      const [activeFocused] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      if (activeFocused && activeFocused.id && !mutedTabIds.has(activeFocused.id) && !checkUrlBlockReason(activeFocused.url)) {
+        targetTabId = activeFocused.id;
+      } else {
+        const candidates = await collectAvailableTabsPayload();
+        if (candidates.length > 0) {
+          targetTabId = candidates[0].tabId;
+        } else {
+          return {
+            ok: false,
+            code: 'NO_AVAILABLE_BROWSER_TAB',
+            error: '当前浏览器没有可操作的普通 http/https 标签页（空白页或受保护系统页已屏蔽）'
+          };
+        }
+      }
+    }
+
+    if (mutedTabIds.has(targetTabId)) {
+      return {
+        ok: false,
+        code: 'TAB_MUTED_BY_USER',
+        error: `标签页 #${targetTabId} 已被用户手动设为暂停协助`
+      };
+    }
+
+    let liveTab;
+    try {
+      liveTab = await chrome.tabs.get(targetTabId);
+    } catch {
+      return { ok: false, code: 'TAB_CLOSED', error: `标签页 #${targetTabId} 已关闭或不存在` };
+    }
+
+    const blockReason = checkUrlBlockReason(liveTab.url);
+    if (blockReason) {
+      return { ok: false, code: 'BLOCKED_URL_DISARMED', error: blockReason };
+    }
+    const liveOrigin = parseSafeOrigin(liveTab.url);
+    if (!liveOrigin) {
+      return { ok: false, code: 'BLOCKED_URL_DISARMED', error: '不支持访问非 http/https 标签页' };
+    }
+
+    return {
+      ok: true,
+      tabId: targetTabId,
+      liveTab,
+      armedEntry: {
+        tabId: targetTabId,
+        windowId: liveTab.windowId ?? 0,
+        armedOrigin: liveOrigin,
+        url: liveTab.url || '',
+        title: String(liveTab.title || '').slice(0, 160),
+        auto: true,
+        armedAt: Date.now()
+      }
+    };
+  }
+
+  // Manual per-tab ARMED mode fallback
   if (!Number.isInteger(targetTabId) || targetTabId <= 0) {
     if (armedTabs.size === 1) {
       targetTabId = armedTabs.keys().next().value;
@@ -381,7 +547,7 @@ async function verifyArmedTabLive(requestedTabId) {
           ok: false,
           code: 'TAB_NOT_ARMED',
           error: armedTabs.size === 0
-            ? '当前没有任何已授权（ARMED）的浏览器标签页，请先在浏览器右上角点击 Prism 扩展图标授权目标标签页'
+            ? '当前没有任何已授权（ARMED）的浏览器标签页，请开启 Autopilot 或在扩展弹窗中点亮目标页'
             : '存在多个已授权标签页，请显式指定目标 tabId'
         };
       }
@@ -393,7 +559,7 @@ async function verifyArmedTabLive(requestedTabId) {
     return {
       ok: false,
       code: 'TAB_NOT_ARMED',
-      error: `标签页 #${targetTabId} 未经用户显式授权（ARMED），已拒绝访问`
+      error: `标签页 #${targetTabId} 未经用户授权（ARMED），已拒绝访问`
     };
   }
 
@@ -421,12 +587,6 @@ async function verifyArmedTabLive(requestedTabId) {
     };
   }
 
-  if (liveTab.url !== armedEntry.url || liveTab.title !== armedEntry.title) {
-    armedEntry.url = liveTab.url || armedEntry.url;
-    armedEntry.title = String(liveTab.title || '').slice(0, 160);
-    await persistArmedTabs();
-  }
-
   return { ok: true, tabId: targetTabId, liveTab, armedEntry };
 }
 
@@ -445,6 +605,25 @@ async function maybeCaptureArmedScreenshot(liveTab) {
   }
 }
 
+function applyBrokerMetadata(msg) {
+  if (!msg || typeof msg !== 'object') return;
+  const st = String(msg.state || msg.payload?.state || '').trim().toUpperCase();
+  if (st) brokerCuaState = st;
+  const incomingEpoch = Number(msg.leaseEpoch ?? msg.payload?.leaseEpoch);
+  if (Number.isFinite(incomingEpoch) && incomingEpoch > currentBrokerLeaseEpoch) {
+    currentBrokerLeaseEpoch = incomingEpoch;
+  }
+  const vaultOrig = String(msg.vaultServerOrigin || msg.payload?.vaultServerOrigin || '').trim().toLowerCase();
+  if (vaultOrig) {
+    dynamicBlockedOrigins.add(vaultOrig);
+  }
+  if (typeof msg.autopilot === 'boolean' && msg.autopilot !== autopilotAllTabs) {
+    autopilotAllTabs = msg.autopilot;
+    void persistLocalPrefs();
+    void sendSyncArmedTabs();
+  }
+}
+
 async function handleNativeMessage(msg) {
   if (!msg || typeof msg !== 'object') return;
   await ensureHydrated();
@@ -452,33 +631,15 @@ async function handleNativeMessage(msg) {
   const cmd = String(msg.cmd || msg.action || msg.type || '').trim();
   const reqId = msg.requestId ?? msg.id;
 
-  if (cmd === 'status_reply') {
-    const st = String(msg.state || '').trim().toUpperCase();
-    if (st) brokerCuaState = st;
-    if (Number.isFinite(Number(msg.leaseEpoch)) && Number(msg.leaseEpoch) > currentBrokerLeaseEpoch) {
-      currentBrokerLeaseEpoch = Number(msg.leaseEpoch);
-    }
-    return;
-  }
-
-  if (cmd === 'cua_state') {
-    const incomingState = String(msg.state || msg.payload?.state || '').trim().toUpperCase();
-    const incomingEpoch = Number(msg.leaseEpoch ?? msg.payload?.leaseEpoch);
-    if (Number.isFinite(incomingEpoch) && incomingEpoch > currentBrokerLeaseEpoch) {
-      currentBrokerLeaseEpoch = incomingEpoch;
-    } else if ((incomingState === 'DISARMED' || incomingState === 'PAUSED_HANDOFF') && !Number.isFinite(incomingEpoch)) {
-      currentBrokerLeaseEpoch += 1;
-    }
-    if (incomingState) {
-      brokerCuaState = incomingState;
-    }
+  if (cmd === 'status_reply' || cmd === 'cua_state') {
+    applyBrokerMetadata(msg);
     return;
   }
 
   if (cmd === 'revoke' || cmd === 'disarm_all') {
     brokerCuaState = 'DISARMED';
     currentBrokerLeaseEpoch += 1;
-    const res = await disarmAllTabs({ reason: 'broker_revoke' });
+    const res = await disarmAllTabs({ reason: 'broker_revoke', disableAutopilot: false });
     if (reqId !== undefined) {
       postNativeSafe({ type: 'cmd_result', id: reqId, requestId: reqId, ok: true, result: res });
     }
@@ -486,26 +647,29 @@ async function handleNativeMessage(msg) {
   }
 
   if (cmd === 'ping' || cmd === 'list_armed_tabs') {
-    const list = getArmedTabsPayload();
+    applyBrokerMetadata(msg);
+    const list = await collectAvailableTabsPayload();
     const result = {
       ok: true,
       pong: true,
       extensionId: chrome.runtime.id,
-      version: '0.9.5',
-      armedCount: armedTabs.size,
+      version: '0.9.6',
+      autopilotAllTabs,
+      armedCount: list.length,
       tabs: list,
       armedTabs: list
     };
     if (reqId !== undefined) {
       postNativeSafe({ type: 'cmd_result', id: reqId, requestId: reqId, ok: true, result });
     } else {
-      sendSyncArmedTabs();
+      await sendSyncArmedTabs();
     }
     return;
   }
 
   if (cmd === 'browser_observe' || cmd === 'browser_act') {
     const payload = (msg.payload && typeof msg.payload === 'object') ? msg.payload : {};
+    applyBrokerMetadata(msg);
     const cmdEpoch = Number(msg.leaseEpoch ?? payload.leaseEpoch);
     if (brokerCuaState === 'DISARMED' || brokerCuaState === 'PAUSED_HANDOFF') {
       const rejCode = brokerCuaState === 'PAUSED_HANDOFF' ? 'HANDOFF_PAUSED' : 'REVOKED';
@@ -566,9 +730,6 @@ async function handleNativeMessage(msg) {
     });
     const obs = (execRes && execRes[0] && execRes[0].result) || { ok: false, error: '无法读取页面无障碍快照' };
     obs.tabId = tabId;
-    if (obs.code === 'ORIGIN_MISMATCH') {
-      await disarmSingleTab(tabId, { reason: 'origin_mismatch_observe' });
-    }
 
     const wantsScreenshot =
       mode === 'screenshot' ||
@@ -579,13 +740,17 @@ async function handleNativeMessage(msg) {
       payload.includeScreenshot === true ||
       payload.screenshot === true;
     if (wantsScreenshot && obs.ok) {
-      const shot = await maybeCaptureArmedScreenshot(liveTab);
-      if (shot.dataUrl) {
-        obs.screenshotDataUrl = shot.dataUrl;
-        obs.screenshotBase64 = shot.dataUrl.replace(/^data:[^;]+;base64,/, '');
-        obs.mimeType = 'image/jpeg';
+      if (obs.blindCurtainActive) {
+        obs.screenshotNote = '盲注防窥帘生效中：离开登录页前已自动禁止截图回读';
+      } else {
+        const shot = await maybeCaptureArmedScreenshot(liveTab);
+        if (shot.dataUrl) {
+          obs.screenshotDataUrl = shot.dataUrl;
+          obs.screenshotBase64 = shot.dataUrl.replace(/^data:[^;]+;base64,/, '');
+          obs.mimeType = 'image/jpeg';
+        }
+        if (shot.note) obs.screenshotNote = shot.note;
       }
-      if (shot.note) obs.screenshotNote = shot.note;
     }
 
     postNativeSafe({ type: 'cmd_result', id: reqId, requestId: reqId, ok: Boolean(obs.ok), result: obs });
@@ -609,6 +774,35 @@ async function handleNativeMessage(msg) {
       armedOrigin: armedEntry.armedOrigin
     };
 
+    if (step.__brokerInjectedVault && typeof step.__brokerInjectedVault === 'object') {
+      let freshTab = null;
+      try {
+        freshTab = await chrome.tabs.get(tabId);
+      } catch {}
+      const freshOrigin = parseSafeOrigin(freshTab?.url || '').toLowerCase();
+      const expectedVaultOrigin = String(step.__brokerInjectedVault.origin || '').toLowerCase();
+      if (
+        !freshTab ||
+        freshTab.pendingUrl ||
+        checkUrlBlockReason(freshTab.url || '') ||
+        !expectedVaultOrigin ||
+        freshOrigin !== expectedVaultOrigin
+      ) {
+        postNativeSafe({
+          type: 'cmd_result',
+          id: reqId,
+          requestId: reqId,
+          ok: false,
+          result: {
+            ok: false,
+            code: 'ORIGIN_MISMATCH',
+            error: '盲注安全闸门：检测到目标标签页发生跳转或域不匹配，已在进入页面脚本前阻断凭据投递'
+          }
+        });
+        return;
+      }
+    }
+
     const execRes = await chrome.scripting.executeScript({
       target: { tabId },
       func: (s) => window.__prismCuaContentAgent.act(s),
@@ -617,20 +811,23 @@ async function handleNativeMessage(msg) {
     const actOut = (execRes && execRes[0] && execRes[0].result) || { ok: false, error: '页面动作执行未返回结果' };
     actOut.tabId = tabId;
     if (actOut.code === 'ORIGIN_MISMATCH') {
-      await disarmSingleTab(tabId, { reason: 'origin_mismatch_act' });
       postNativeSafe({ type: 'cmd_result', id: reqId, requestId: reqId, ok: false, result: actOut });
       return;
     }
 
-    // Re-check origin immediately after action in case click/submit navigated cross-origin
     try {
       const postTab = await chrome.tabs.get(tabId);
       const postOrigin = parseSafeOrigin(postTab.url);
-      const liveArmedEntry = armedTabs.get(tabId);
-      if (liveArmedEntry && (!postOrigin || checkUrlBlockReason(postTab.url) || postOrigin !== liveArmedEntry.armedOrigin)) {
+      const postBlocked = checkUrlBlockReason(postTab.url);
+      if (!postOrigin || postBlocked) {
+        if (!autopilotAllTabs) {
+          await disarmSingleTab(tabId, { reason: 'blocked_after_act' });
+        }
+        actOut.disarmedOnOriginChange = true;
+      } else if (!autopilotAllTabs && postOrigin !== armedEntry.armedOrigin) {
         await disarmSingleTab(tabId, { reason: 'origin_changed_after_act' });
         actOut.disarmedOnOriginChange = true;
-      } else if (step.includeSnapshot !== false && actOut.ok && liveArmedEntry) {
+      } else if (step.includeSnapshot !== false && actOut.ok) {
         try {
           await ensureContentAgentLoaded(tabId);
           const snapRes = await chrome.scripting.executeScript({
@@ -641,21 +838,28 @@ async function handleNativeMessage(msg) {
               expectedOrigin: expectedOrig,
               armedOrigin: expectedOrig
             }),
-            args: [liveArmedEntry.armedOrigin]
+            args: [postOrigin]
           });
           if (snapRes && snapRes[0] && snapRes[0].result?.ok) {
             actOut.snapshot = snapRes[0].result;
           }
         } catch {}
       }
+
+      const curtainActive = Boolean(actOut.blindCurtainActive || actOut.snapshot?.blindCurtainActive);
       if ((step.screenshot || msg.includeScreenshot || payload.includeScreenshot) && actOut.ok && !actOut.disarmedOnOriginChange) {
-        const shot = await maybeCaptureArmedScreenshot(postTab);
-        if (shot.dataUrl) {
-          actOut.screenshotDataUrl = shot.dataUrl;
-          actOut.screenshotBase64 = shot.dataUrl.replace(/^data:[^;]+;base64,/, '');
-          actOut.mimeType = 'image/jpeg';
+        if (curtainActive) {
+          actOut.screenshotNote = '盲注防窥帘生效中：离开登录页前已自动禁止截图回读';
+        } else {
+          const shot = await maybeCaptureArmedScreenshot(postTab);
+          if (shot.dataUrl) {
+            actOut.screenshotDataUrl = shot.dataUrl;
+            actOut.screenshotBase64 = shot.dataUrl.replace(/^data:[^;]+;base64,/, '');
+            actOut.mimeType = 'image/jpeg';
+          }
         }
       }
+      await sendSyncArmedTabs();
     } catch {
       await disarmSingleTab(tabId, { reason: 'tab_closed_after_act' });
     }
@@ -685,7 +889,7 @@ async function probeNativeHostTransient() {
     const finish = (res) => {
       if (settled) return;
       settled = true;
-      if (tempPort && armedTabs.size === 0) {
+      if (tempPort && !autopilotAllTabs && armedTabs.size === 0) {
         try { tempPort.disconnect(); } catch {}
       }
       resolve(res);
@@ -713,10 +917,9 @@ async function probeNativeHostTransient() {
     });
 
     try {
-      tempPort.postMessage({ type: 'get_status', id: 'probe-1', extensionId: chrome.runtime.id, version: '0.9.5', ts: Date.now() });
+      tempPort.postMessage({ type: 'get_status', id: 'probe-1', extensionId: chrome.runtime.id, version: '0.9.6', ts: Date.now() });
     } catch {}
 
-    // If Native Messaging host stayed alive for 220ms without immediate lastError disconnect, it is registered & reachable
     setTimeout(() => {
       finish({ hostRegistered: true, connected: true, error: '' });
     }, 220);
@@ -724,10 +927,25 @@ async function probeNativeHostTransient() {
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  mutedTabIds.delete(tabId);
   ensureHydrated()
     .then(() => {
       if (armedTabs.has(tabId)) {
         return disarmSingleTab(tabId, { reason: 'tab_removed' });
+      }
+      if (autopilotAllTabs && nativePort) {
+        return sendSyncArmedTabs();
+      }
+    })
+    .catch(() => {});
+});
+
+chrome.tabs.onActivated.addListener(() => {
+  ensureHydrated()
+    .then(() => {
+      if (autopilotAllTabs) {
+        ensureNativeConnected();
+        return sendSyncArmedTabs();
       }
     })
     .catch(() => {});
@@ -736,6 +954,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   ensureHydrated()
     .then(async () => {
+      if (autopilotAllTabs) {
+        if (changeInfo.status === 'complete' || changeInfo.url || changeInfo.title) {
+          ensureNativeConnected();
+          await sendSyncArmedTabs();
+        }
+        return;
+      }
       const entry = armedTabs.get(tabId);
       if (!entry) return;
       const candidateUrl = changeInfo.url || tab?.url || '';
@@ -752,9 +977,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
         entry.title = changeInfo.title.slice(0, 160);
       }
       if (changeInfo.status === 'complete' || changeInfo.url || changeInfo.title) {
-        await setBadgeForTab(tabId, true);
+        await setBadgeForTab(tabId, BADGE_MANUAL_TEXT);
         await persistArmedTabs();
-        sendSyncArmedTabs();
+        await sendSyncArmedTabs();
       }
     })
     .catch(() => {});
@@ -764,29 +989,19 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (!alarm || alarm.name !== HEARTBEAT_ALARM) return;
   ensureHydrated()
     .then(async () => {
-      for (const [tabId, entry] of Array.from(armedTabs.entries())) {
-        try {
-          const t = await chrome.tabs.get(tabId);
-          const liveOrig = parseSafeOrigin(t?.url);
-          if (!t || checkUrlBlockReason(t.url) || !liveOrig || liveOrig !== entry.armedOrigin) {
-            await disarmSingleTab(tabId, { reason: 'heartbeat_origin_mismatch' });
-          }
-        } catch {
-          await disarmSingleTab(tabId, { reason: 'heartbeat_tab_missing' });
-        }
-      }
-      if (armedTabs.size === 0) {
+      if (!autopilotAllTabs && armedTabs.size === 0) {
         disconnectNativeIfIdle();
         return;
       }
       ensureNativeConnected();
-      const list = getArmedTabsPayload();
+      const list = await collectAvailableTabsPayload();
       postNativeSafe({
         type: 'heartbeat',
         extensionId: chrome.runtime.id,
-        version: '0.9.5',
+        version: '0.9.6',
+        autopilotAllTabs,
         ts: Date.now(),
-        armedCount: armedTabs.size,
+        armedCount: list.length,
         tabs: list,
         armedTabs: list
       });
@@ -821,11 +1036,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     if (msg.type === 'content_esc_brake') {
       const senderTabId = sender?.tab?.id;
-      if (!Number.isInteger(senderTabId) || !armedTabs.has(senderTabId)) {
+      if (!Number.isInteger(senderTabId) || (!autopilotAllTabs && !armedTabs.has(senderTabId))) {
         sendResponse({ ok: false, code: 'TAB_NOT_ARMED', error: '来源标签页未处于受控授权态' });
         return;
       }
-      brokerCuaState = 'DISARMED';
       currentBrokerLeaseEpoch += 1;
       ensureNativeConnected();
       postNativeSafe({
@@ -835,7 +1049,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         reason: 'USER_ESC_ABORTED',
         tabId: senderTabId,
         extensionId: chrome.runtime.id,
-        version: '0.9.5',
+        version: '0.9.6',
         ts: Date.now()
       });
       sendResponse({ ok: true, emergencyStopped: true });
@@ -848,17 +1062,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const url = activeTab?.url || '';
       const blockReason = activeTab ? checkUrlBlockReason(url) : '未检测到活跃标签页';
       const origin = parseSafeOrigin(url);
+      const isMuted = Boolean(tabId && mutedTabIds.has(tabId));
       const armedEntry = tabId ? armedTabs.get(tabId) || null : null;
+      const effectiveArmed = autopilotAllTabs ? (!blockReason && Boolean(origin) && !isMuted) : Boolean(armedEntry);
+      const allAvail = await collectAvailableTabsPayload();
 
       let hostStatus = { hostRegistered: Boolean(nativePort), connected: Boolean(nativePort), error: lastNativeError };
       if (!nativePort) {
-        hostStatus = await probeNativeHostTransient();
+        lastHostNotFoundAt = 0;
+        ensureNativeConnected();
+        hostStatus = nativePort
+          ? { hostRegistered: true, connected: true, error: '' }
+          : await probeNativeHostTransient();
       }
 
       sendResponse({
         ok: true,
         extensionId: chrome.runtime.id,
-        version: '0.9.5',
+        version: '0.9.6',
+        autopilotAllTabs,
         activeTab: activeTab
           ? {
               tabId,
@@ -866,12 +1088,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               url,
               origin,
               blockReason,
-              isArmed: Boolean(armedEntry),
-              armedOrigin: armedEntry?.armedOrigin || ''
+              isMuted,
+              isArmed: effectiveArmed,
+              armedOrigin: armedEntry?.armedOrigin || origin || ''
             }
           : null,
-        armedCount: armedTabs.size,
-        armedTabs: getArmedTabsPayload(),
+        armedCount: allAvail.length,
+        armedTabs: allAvail,
         nativeHost: hostStatus
       });
       return;
@@ -881,6 +1104,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!activeTab || !activeTab.id) {
         sendResponse({ ok: false, error: '未找到当前活跃标签页' });
+        return;
+      }
+      if (autopilotAllTabs) {
+        if (mutedTabIds.has(activeTab.id)) {
+          mutedTabIds.delete(activeTab.id);
+          await persistLocalPrefs();
+          await sendSyncArmedTabs();
+          sendResponse({ ok: true, isArmed: true, autopilotAllTabs });
+        } else {
+          const res = await disarmSingleTab(activeTab.id, { reason: 'user_popup_mute', muteInAutopilot: true });
+          sendResponse({ ...res, isArmed: false, autopilotAllTabs });
+        }
         return;
       }
       if (armedTabs.has(activeTab.id)) {
@@ -894,8 +1129,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     if (msg.type === 'popup_disarm_all') {
-      const res = await disarmAllTabs({ reason: 'user_popup_disarm_all' });
-      sendResponse(res);
+      const nextAuto = !autopilotAllTabs;
+      if (!nextAuto) {
+        const res = await disarmAllTabs({ reason: 'user_popup_pause_autopilot', disableAutopilot: true });
+        sendResponse(res);
+      } else {
+        autopilotAllTabs = true;
+        mutedTabIds.clear();
+        await persistLocalPrefs();
+        lastHostNotFoundAt = 0;
+        await syncLifecycle();
+        sendResponse({ ok: true, autopilotAllTabs: true });
+      }
       return;
     }
 
@@ -914,3 +1159,5 @@ chrome.runtime.onStartup?.addListener(() => {
 chrome.runtime.onInstalled?.addListener(() => {
   ensureHydrated().catch(() => {});
 });
+
+ensureHydrated().catch(() => {});

@@ -9,6 +9,7 @@ using System.IO;
 using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
@@ -16,10 +17,10 @@ using System.Windows.Automation;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Prism Win32 CUA Helper & Native Messaging Bridge")]
-[assembly: AssemblyDescription("Anti-Claude Prism Suite v0.9.5 Controlled Desktop & Browser CUA Helper")]
+[assembly: AssemblyDescription("Anti-Claude Prism Suite v0.9.6 Controlled Desktop & Browser CUA Helper")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.9.5.0")]
-[assembly: AssemblyFileVersion("0.9.5.0")]
+[assembly: AssemblyVersion("0.9.6.0")]
+[assembly: AssemblyFileVersion("0.9.6.0")]
 
 namespace AntiClaudePrismWinCua
 {
@@ -4558,11 +4559,11 @@ namespace AntiClaudePrismWinCua
 
             ConsentScopeOption desktopOpt = new ConsentScopeOption();
             desktopOpt.ScopeType = "desktop_safe";
-            desktopOpt.DisplayLabel = "桌面安全窗口（自动屏蔽 Antigravity / 凭据 / 密钥）";
+            desktopOpt.DisplayLabel = "桌面安全窗口 + 已授权网页（自动屏蔽 Antigravity / 凭据 / 密钥）";
             options.Add(desktopOpt);
             if (selectedIdx < 0)
             {
-                selectedIdx = liveWins.Count > 0 ? 0 : 0;
+                selectedIdx = options.Count - 1;
             }
 
             for (int i = 0; i < options.Count; i++)
@@ -5242,6 +5243,244 @@ namespace AntiClaudePrismWinCua
         }
     }
 
+    internal static class VaultDpapiStore
+    {
+        private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("PrismSuite.VaultwardenBlindBroker.v1");
+
+        public static string GetVaultFilePath()
+        {
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string dir = Path.Combine(Path.Combine(Path.Combine(home, ".gemini"), "antigravity"), "prism-suite");
+            Directory.CreateDirectory(dir);
+            return Path.Combine(dir, "cua-vault.dpapi");
+        }
+
+        public static Dictionary<string, object> LoadRawDict()
+        {
+            string fp = GetVaultFilePath();
+            if (!File.Exists(fp)) return null;
+            byte[] enc = File.ReadAllBytes(fp);
+            if (enc == null || enc.Length == 0) return null;
+            byte[] plain = ProtectedData.Unprotect(enc, Entropy, DataProtectionScope.CurrentUser);
+            string json = Encoding.UTF8.GetString(plain);
+            return JsonUtil.DeserializeDict(json);
+        }
+
+        public static void SaveRawDict(Dictionary<string, object> cfg)
+        {
+            string fp = GetVaultFilePath();
+            string json = JsonUtil.Serialize(cfg);
+            byte[] plain = Encoding.UTF8.GetBytes(json);
+            byte[] enc = ProtectedData.Protect(plain, Entropy, DataProtectionScope.CurrentUser);
+            string tmp = fp + ".tmp-" + Process.GetCurrentProcess().Id.ToString();
+            File.WriteAllBytes(tmp, enc);
+            if (File.Exists(fp)) File.Delete(fp);
+            File.Move(tmp, fp);
+        }
+
+        public static void Clear()
+        {
+            string fp = GetVaultFilePath();
+            if (File.Exists(fp)) File.Delete(fp);
+        }
+
+        public static Dictionary<string, object> ReadConfigForBroker()
+        {
+            Dictionary<string, object> res = new Dictionary<string, object>();
+            try
+            {
+                Dictionary<string, object> cfg = LoadRawDict();
+                if (cfg == null)
+                {
+                    res["ok"] = true;
+                    res["configured"] = false;
+                    return res;
+                }
+                res["ok"] = true;
+                res["configured"] = true;
+                res["config"] = cfg;
+                return res;
+            }
+            catch (Exception ex)
+            {
+                res["ok"] = false;
+                res["code"] = "DPAPI_READ_FAILED";
+                res["error"] = ex.Message;
+                return res;
+            }
+        }
+    }
+
+    internal sealed class VaultSetupForm : Form
+    {
+        public Dictionary<string, object> ResultPayload;
+
+        public VaultSetupForm()
+        {
+            float dpi = 1.0f;
+            try
+            {
+                using (Graphics g = Graphics.FromHwnd(IntPtr.Zero))
+                {
+                    if (g.DpiX > 0) dpi = Math.Max(1.0f, Math.Min(3.5f, g.DpiX / 96f));
+                }
+            }
+            catch { }
+            Func<int, int> S = delegate(int px) { return (int)Math.Round(px * dpi); };
+
+            Dictionary<string, object> existing = null;
+            try { existing = VaultDpapiStore.LoadRawDict(); } catch { }
+
+            AutoScaleMode = AutoScaleMode.None;
+            Text = "Prism CUA · Vaultwarden 独立 AI 子库盲注配置";
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            StartPosition = FormStartPosition.CenterScreen;
+            TopMost = true;
+            ClientSize = new Size(S(540), S(476));
+            BackColor = Color.FromArgb(248, 250, 252);
+            Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular);
+
+            Panel header = new Panel();
+            header.Dock = DockStyle.Top;
+            header.Height = S(68);
+            header.BackColor = Color.FromArgb(15, 23, 42);
+
+            Label lblTitle = new Label();
+            lblTitle.Text = "🔐 Vaultwarden 零明文盲注子库配置 (DPAPI 本机加密)";
+            lblTitle.ForeColor = Color.White;
+            lblTitle.Font = new Font("Microsoft YaHei UI", 10.5f, FontStyle.Bold);
+            lblTitle.AutoSize = true;
+            lblTitle.Location = new Point(S(18), S(12));
+
+            Label lblSub = new Label();
+            lblSub.Text = "强烈建议使用独立的「AI 专用子账号」与你个人主库物理隔离 · AI 大模型全程零接触明文密码与 TOTP";
+            lblSub.ForeColor = Color.FromArgb(148, 163, 184);
+            lblSub.Font = new Font("Microsoft YaHei UI", 7.8f, FontStyle.Regular);
+            lblSub.AutoSize = true;
+            lblSub.Location = new Point(S(18), S(39));
+
+            header.Controls.Add(lblTitle);
+            header.Controls.Add(lblSub);
+            Controls.Add(header);
+
+            int y = 82;
+            Func<string, string, bool, TextBox> addField = delegate(string labelTxt, string initVal, bool isPwd)
+            {
+                Label l = new Label();
+                l.Text = labelTxt;
+                l.ForeColor = Color.FromArgb(51, 65, 85);
+                l.Font = new Font("Microsoft YaHei UI", 8.6f, FontStyle.Bold);
+                l.AutoSize = true;
+                l.Location = new Point(S(20), S(y));
+                Controls.Add(l);
+
+                TextBox tb = new TextBox();
+                tb.Text = initVal ?? string.Empty;
+                if (isPwd) tb.UseSystemPasswordChar = true;
+                tb.Location = new Point(S(20), S(y + 21));
+                tb.Size = new Size(S(500), S(26));
+                Controls.Add(tb);
+                y += 56;
+                return tb;
+            };
+
+            string envDefaultUrl = Environment.GetEnvironmentVariable("PRISM_VAULT_DEFAULT_URL") ?? string.Empty;
+            string initUrl = JsonUtil.GetString(existing, "serverUrl", envDefaultUrl.Trim());
+            TextBox txtUrl = addField("1. Vaultwarden 服务地址 (HTTPS，如 https://vault.example.com)：", initUrl, false);
+            TextBox txtEmail = addField("2. AI 专用子账号邮箱：", JsonUtil.GetString(existing, "email", ""), false);
+            TextBox txtMaster = addField("3. AI 子账号主密码 (仅本机内存派生解密密钥，绝不外发)：", JsonUtil.GetString(existing, "masterPassword", ""), true);
+            TextBox txtClientId = addField("4. 可选 Personal API Key client_id (开启邮件验证时推荐填写 user.xxx)：", JsonUtil.GetString(existing, "clientId", ""), false);
+            TextBox txtClientSecret = addField("5. 可选 Personal API Key client_secret：", JsonUtil.GetString(existing, "clientSecret", ""), true);
+            TextBox txtAllow = addField("6. 可选域名白名单 (逗号分隔；留空则允许该 AI 子库内全部精确匹配站点)：", JsonUtil.GetString(existing, "allowedOrigins", ""), false);
+
+            Button btnClear = new Button();
+            btnClear.Text = "清空已存配置";
+            btnClear.Size = new Size(S(120), S(36));
+            btnClear.Location = new Point(S(20), S(424));
+            btnClear.FlatStyle = FlatStyle.Flat;
+            btnClear.BackColor = Color.FromArgb(254, 226, 226);
+            btnClear.ForeColor = Color.FromArgb(185, 28, 28);
+            btnClear.Click += delegate
+            {
+                VaultDpapiStore.Clear();
+                Dictionary<string, object> r = new Dictionary<string, object>();
+                r["ok"] = true;
+                r["cleared"] = true;
+                r["configured"] = false;
+                ResultPayload = r;
+                DialogResult = DialogResult.OK;
+                Close();
+            };
+            Controls.Add(btnClear);
+
+            Button btnCancel = new Button();
+            btnCancel.Text = "取消";
+            btnCancel.Size = new Size(S(100), S(36));
+            btnCancel.Location = new Point(S(276), S(424));
+            btnCancel.FlatStyle = FlatStyle.Flat;
+            btnCancel.BackColor = Color.FromArgb(241, 245, 249);
+            btnCancel.Click += delegate
+            {
+                Dictionary<string, object> r = new Dictionary<string, object>();
+                r["ok"] = true;
+                r["cancelled"] = true;
+                ResultPayload = r;
+                DialogResult = DialogResult.Cancel;
+                Close();
+            };
+            Controls.Add(btnCancel);
+
+            Button btnSave = new Button();
+            btnSave.Text = "加密保存并同步";
+            btnSave.Size = new Size(S(134), S(36));
+            btnSave.Location = new Point(S(386), S(424));
+            btnSave.FlatStyle = FlatStyle.Flat;
+            btnSave.BackColor = Color.FromArgb(37, 99, 235);
+            btnSave.ForeColor = Color.White;
+            btnSave.Click += delegate
+            {
+                string u = txtUrl.Text.Trim();
+                string em = txtEmail.Text.Trim();
+                string mp = txtMaster.Text;
+                if (u.Length == 0 || em.Length == 0 || mp.Length == 0)
+                {
+                    MessageBox.Show(this, "请完整填写 Vaultwarden 地址、AI 子账号邮箱与主密码。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                string devId = JsonUtil.GetString(existing, "deviceIdentifier", "");
+                if (devId.Trim().Length == 0) devId = Guid.NewGuid().ToString();
+
+                Dictionary<string, object> cfg = new Dictionary<string, object>();
+                cfg["enabled"] = true;
+                cfg["serverUrl"] = u;
+                cfg["email"] = em;
+                cfg["masterPassword"] = mp;
+                cfg["clientId"] = txtClientId.Text.Trim();
+                cfg["clientSecret"] = txtClientSecret.Text.Trim();
+                cfg["allowedOrigins"] = txtAllow.Text.Trim();
+                cfg["deviceIdentifier"] = devId;
+                cfg["updatedAt"] = DateTime.UtcNow.ToString("o");
+                VaultDpapiStore.SaveRawDict(cfg);
+
+                Dictionary<string, object> r = new Dictionary<string, object>();
+                r["ok"] = true;
+                r["saved"] = true;
+                r["configured"] = true;
+                ResultPayload = r;
+                DialogResult = DialogResult.OK;
+                Close();
+            };
+            Controls.Add(btnSave);
+
+            Dictionary<string, object> defRes = new Dictionary<string, object>();
+            defRes["ok"] = true;
+            defRes["cancelled"] = true;
+            ResultPayload = defRes;
+        }
+    }
+
     internal static class Program
     {
         private static IntPtr _selfJobHandle = IntPtr.Zero;
@@ -5265,7 +5504,7 @@ namespace AntiClaudePrismWinCua
             {
                 Dictionary<string, object> ver = new Dictionary<string, object>();
                 ver["ok"] = true;
-                ver["version"] = "0.9.5";
+                ver["version"] = "0.9.6";
                 ver["platform"] = "win32";
                 WriteJsonLine(ver);
                 return 0;
@@ -5284,6 +5523,11 @@ namespace AntiClaudePrismWinCua
             if (HasFlag(args, "--consent"))
             {
                 return RunConsentMode();
+            }
+
+            if (HasFlag(args, "--vault-setup"))
+            {
+                return RunVaultSetupMode();
             }
 
             if (HasFlag(args, "--overlay"))
@@ -5487,6 +5731,38 @@ namespace AntiClaudePrismWinCua
             }
         }
 
+        private static void ForceShowFormDefeatingStartupHide(Form form, bool activate)
+        {
+            IntPtr h = form.Handle;
+            form.Show();
+            if (!form.Visible)
+            {
+                NativeMethods.ShowWindow(h, activate ? 5 : NativeMethods.SW_SHOWNOACTIVATE);
+                form.Visible = true;
+            }
+            if (activate)
+            {
+                form.BringToFront();
+                form.Activate();
+            }
+        }
+
+        private static int RunVaultSetupMode()
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            using (VaultSetupForm dlg = new VaultSetupForm())
+            {
+                ForceShowFormDefeatingStartupHide(dlg, true);
+                if (dlg.Visible && !dlg.IsDisposed)
+                {
+                    Application.Run(new ApplicationContext(dlg));
+                }
+                WriteJsonLine(dlg.ResultPayload);
+            }
+            return 0;
+        }
+
         private static int RunConsentMode()
         {
             Dictionary<string, object> req = ReadStdinJsonDict();
@@ -5494,7 +5770,11 @@ namespace AntiClaudePrismWinCua
             Application.SetCompatibleTextRenderingDefault(false);
             using (ConsentDialogForm dlg = new ConsentDialogForm(req))
             {
-                Application.Run(dlg);
+                ForceShowFormDefeatingStartupHide(dlg, true);
+                if (dlg.Visible && !dlg.IsDisposed)
+                {
+                    Application.Run(new ApplicationContext(dlg));
+                }
                 WriteJsonLine(dlg.ResultPayload);
             }
             return 0;
@@ -5685,7 +5965,11 @@ namespace AntiClaudePrismWinCua
                         escPollTimer.Start();
                         stdinThread.Start();
                     };
-                    Application.Run(pill);
+                    ForceShowFormDefeatingStartupHide(pill, false);
+                    if (pill.Visible && !pill.IsDisposed)
+                    {
+                        Application.Run(new ApplicationContext(pill));
+                    }
                 }
                 finally
                 {
@@ -5731,6 +6015,11 @@ namespace AntiClaudePrismWinCua
                 {
                     Dictionary<string, object> req = ReadStdinJsonDict();
                     WriteJsonLine(DesktopWorker.RunAct(req));
+                    return 0;
+                }
+                if (subCmd == "vault-read-config")
+                {
+                    WriteJsonLine(VaultDpapiStore.ReadConfigForBroker());
                     return 0;
                 }
                 WriteJsonLine(DesktopWorker.ErrorResult("UNKNOWN_SUBCOMMAND", "未知的 --cmd 子命令: " + subCmd));

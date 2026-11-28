@@ -48,14 +48,20 @@
     const tab = st.activeTab;
     const armedCount = Number(st.armedCount) || 0;
     const isArmed = Boolean(tab?.isArmed);
+    const isAuto = Boolean(st.autopilotAllTabs);
 
     stateCard.classList.toggle('is-armed', isArmed);
-    if (isArmed) {
+    if (isAuto) {
+      armBadge.className = isArmed ? 'status-badge is-ok' : 'status-badge is-muted';
+      armBadge.textContent = isArmed
+        ? `⚡ 全标签页自动就绪（共 ${armedCount} 页）`
+        : (tab?.isMuted ? '本页已手动暂停协助' : '本页受安全规则自动屏蔽');
+    } else if (isArmed) {
       armBadge.className = 'status-badge is-ok';
       armBadge.textContent = `已允许 AI 协助（共 ${armedCount} 页）`;
     } else {
       armBadge.className = 'status-badge is-muted';
-      armBadge.textContent = armedCount > 0 ? `本页未开启（其他 ${armedCount} 页协助中）` : '未允许 AI 操作';
+      armBadge.textContent = armedCount > 0 ? `本页未开启（其他 ${armedCount} 页协助中）` : '单页手动模式（未开启）';
     }
 
     if (!tab) {
@@ -68,11 +74,11 @@
       blockNotice.hidden = false;
       btnToggleArm.disabled = true;
       btnToggleArm.classList.remove('is-disarm');
-      btnToggleArm.textContent = '允许 AI 协助此网页';
+      btnToggleArm.textContent = '受安全护栏屏蔽';
     } else {
       originBox.textContent = `当前网站：${tab.origin || tab.armedOrigin || '-'}`;
       if (!nh.hostRegistered) {
-        blockNotice.textContent = '首次使用请先在 Antigravity 打开「工作台 → 电脑操控」，点击第 1 步「一键连接浏览器助手」。';
+        blockNotice.textContent = '开启 Prism CUA 后将自动连接 Antigravity 守护进程。';
         blockNotice.hidden = false;
       } else {
         blockNotice.hidden = true;
@@ -80,17 +86,17 @@
       btnToggleArm.disabled = false;
       if (isArmed) {
         btnToggleArm.classList.add('is-disarm');
-        btnToggleArm.textContent = '停止协助此网页';
+        btnToggleArm.textContent = isAuto ? '仅暂停此网页协助' : '停止协助此网页';
       } else {
         btnToggleArm.classList.remove('is-disarm');
-        btnToggleArm.textContent = '允许 AI 协助此网页';
+        btnToggleArm.textContent = isAuto ? '恢复此网页自动协助' : '允许 AI 协助此网页';
       }
     }
 
-    btnDisarmAll.disabled = armedCount <= 0;
-    btnDisarmAll.textContent = armedCount > 0
-      ? `停止全部网页协助 (${armedCount})`
-      : '停止全部网页协助';
+    btnDisarmAll.disabled = false;
+    btnDisarmAll.textContent = isAuto
+      ? `切换为逐页手动模式 (当前自动 ${armedCount} 页)`
+      : '⚡ 开启全标签页免确认 Autopilot';
   }
 
   async function refresh() {

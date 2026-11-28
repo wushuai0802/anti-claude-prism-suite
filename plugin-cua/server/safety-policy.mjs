@@ -108,6 +108,8 @@ const SENSITIVE_FILENAMES = [
   'cc-switch.db',
   'prism-profile.json',
   'cua-broker.json',
+  'cua-vault.dpapi',
+  'cua-vault.json',
   'account-vault.json',
   'id_rsa',
   'id_ed25519',
@@ -823,6 +825,22 @@ export function evaluateActionSafety(action, context = {}) {
     if (!targetEl) {
       targetEl = flatElements.find((el) => (el.ref ?? el.id) === action.ref) ?? null;
     }
+  }
+
+  if (op === 'vault_fill_and_submit' || op === 'vault_fill_totp') {
+    if (
+      action.text !== undefined ||
+      action.value !== undefined ||
+      action.password !== undefined ||
+      action.secret !== undefined
+    ) {
+      return {
+        allowed: false,
+        code: SAFETY_CODES.FORBIDDEN_OPERATION_BLOCKED,
+        reason: `${op} 严禁由模型传入明文凭据参数，仅允许由本地 Vault Broker 按可信同源域盲注`
+      };
+    }
+    return { allowed: true, code: SAFETY_CODES.OK };
   }
 
   const passwordSensitiveOps = new Set([

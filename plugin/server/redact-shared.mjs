@@ -110,7 +110,7 @@ const SENSITIVE_SHORTNAME_SEG_RE =
   /^(?:ssh|aws|gnupg|codex|claude|cc-swi|kube|docker|azure|gcloud)~\d+(?:\..+)?$/i;
 
 const SENSITIVE_READ_BASENAME_RE =
-  /^(?:\.env(?:\..+)?|\.envrc|\.npmrc|\.pypirc|\.netrc|\.git-credentials|\.pgpass|\.my\.cnf|oauth_creds\.json|google_accounts\.json|auth\.json|credentials\.json|cc-switch\.db|prism-profile\.json|cua-broker\.json|handoff-memory\.sqlite(?:-wal|-shm|-journal)?|handoff-catalog\.json|handoff-memories\.jsonl|handoff-snapshot\.json|jetski-standalone-oauth-token|credential-user-scope|id_(?:rsa|ed25519|ecdsa|dsa)(?:\.pub)?|.*\.tfstate(?:\..+)?|.*\.(?:pem|key|p12|pfx|kdbx))$/i;
+  /^(?:\.env(?:\..+)?|\.envrc|\.npmrc|\.pypirc|\.netrc|\.git-credentials|\.pgpass|\.my\.cnf|oauth_creds\.json|google_accounts\.json|auth\.json|credentials\.json|cc-switch\.db|prism-profile\.json|cua-broker\.json|cua-vault\.dpapi|cua-vault\.json|handoff-memory\.sqlite(?:-wal|-shm|-journal)?|handoff-catalog\.json|handoff-memories\.jsonl|handoff-snapshot\.json|jetski-standalone-oauth-token|credential-user-scope|id_(?:rsa|ed25519|ecdsa|dsa)(?:\.pub)?|.*\.tfstate(?:\..+)?|.*\.(?:pem|key|p12|pfx|kdbx|dpapi))$/i;
 
 const WRITE_ONLY_BLOCKED_BASENAMES = new Set([
   '.bashrc',
@@ -137,6 +137,8 @@ const PRISM_PROTECTED_FILES = new Set([
   'upstream-cache.json',
   'prism-profile.json',
   'cua-broker.json',
+  'cua-vault.dpapi',
+  'cua-vault.json',
   'cua-settings.json',
   'ui-prefs.json'
 ]);

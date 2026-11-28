@@ -1528,7 +1528,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.9.5');
+    assert.equal(pkgJson.version, '0.9.6');
     assert.equal(pluginJson.version, pkgJson.version);
     assert.ok(Array.isArray(pluginJson.suggested_prompts) && pluginJson.suggested_prompts.length <= 3);
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
@@ -4965,7 +4965,8 @@ test('v0.9.5 CUA includeTree=false explicit notice + scoped ref preservation, Cl
   );
 
   // 1) SERVER_INFO version parity on plugin-cua
-  assert.equal(CUA_SERVER_INFO.version, '0.9.5');
+  const expectedVer = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version;
+  assert.equal(CUA_SERVER_INFO.version, expectedVer);
 
   // 2) cua_observe({ includeTree: false }) forwards includeElements=false, prints explicit [includeTree=false] notice, and preserves prior @w1 observation
   const observePayloads = [];
@@ -5065,4 +5066,318 @@ test('v0.9.5 CUA includeTree=false explicit notice + scoped ref preservation, Cl
   assert.equal(trRes.ok, true);
   assert.match(trRes.translated, /🚀/);
   assert.match(trRes.translated, /`\/etc\/hosts`/);
+});
+
+test('v0.9.6 Codex-style Autopilot CUA/Chrome + zero-dep Vaultwarden E2EE Blind Autofill, RFC 6238 TOTP, Blind Curtain, and CUA enable preservation', async () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-v096-vault-'));
+  let broker = null;
+  let stopPoll = false;
+  let pollLoop = null;
+  try {
+    const {
+      deriveBitwardenMasterKey,
+      stretchMasterKey,
+      encryptBitwardenEncBytesForTest,
+      generateTotpCode,
+      createVaultBlindBroker
+    } = await import(pathToFileURL(path.join(repoRoot, 'vendor', 'anti-claude', 'core', 'vault-blind-broker.mjs')).href);
+    const { createCuaBroker } = await import(
+      pathToFileURL(path.join(repoRoot, 'vendor', 'anti-claude', 'core', 'cua-broker.mjs')).href
+    );
+    const { createPrismCuaServer } = await import(
+      pathToFileURL(path.join(repoRoot, 'plugin-cua', 'server', 'index.mjs')).href
+    );
+
+    // 1) Verify installPlugin preserves user-enabled prism-cua (disabled: false) across updates
+    const pluginsDir = path.join(tmp, 'plugins');
+    const initInstall = installPlugin({ pluginsDir });
+    const cuaJsonPath = path.join(initInstall.cuaTargetDir, 'plugin.json');
+    assert.equal(JSON.parse(fs.readFileSync(cuaJsonPath, 'utf8')).disabled, true);
+    const enabledObj = { ...JSON.parse(fs.readFileSync(cuaJsonPath, 'utf8')), disabled: false };
+    fs.writeFileSync(cuaJsonPath, JSON.stringify(enabledObj, null, 2) + '\n', 'utf8');
+    installPlugin({ pluginsDir });
+    assert.equal(
+      JSON.parse(fs.readFileSync(cuaJsonPath, 'utf8')).disabled,
+      false,
+      'Re-running installPlugin must preserve user-enabled prism-cua state'
+    );
+
+    // 2) Verify Bitwarden/Vaultwarden E2EE roundtrip + RFC 6238 TOTP (RFC test vector & Base32)
+    const totpFixed = generateTotpCode('JBSWY3DPEHPK3PXP', 1700000000000);
+    assert.ok(totpFixed && /^\d{6}$/.test(totpFixed.code));
+
+    const aiEmail = 'aibot@example.test';
+    const aiMasterPw = 'MockVaultMaster#2026!';
+    const kdfIter = 10000;
+    const mk = deriveBitwardenMasterKey({ password: aiMasterPw, email: aiEmail, kdf: 0, kdfIterations: kdfIter });
+    const stretched = stretchMasterKey(mk);
+    const userSymKey64 = Buffer.alloc(64, 0x42);
+    const encProfileKey = encryptBitwardenEncBytesForTest(userSymKey64, stretched.fullKey64);
+    const encStr = (plain) => encryptBitwardenEncBytesForTest(Buffer.from(plain, 'utf8'), userSymKey64);
+
+    const secretPasswordPlain = 'UltraBlindVaultPwd!9988';
+    const mockSyncPayload = {
+      profile: { key: encProfileKey, organizations: [] },
+      ciphers: [
+        {
+          id: 'cipher-1',
+          type: 1,
+          deletedDate: null,
+          name: encStr('Demo Portal Login'),
+          login: {
+            username: encStr('aibot@example.test'),
+            password: encStr(secretPasswordPlain),
+            totp: encStr('otpauth://totp/Demo:aibot?secret=JBSWY3DPEHPK3PXP&digits=6&period=30'),
+            uris: [
+              { uri: encStr('https://portal.example.test/'), match: 2 }, // StartsWith
+              { uri: encStr('^https://evil\\.regex\\.test/.*$'), match: 4 }, // Regex must be safely skipped
+              { uri: encStr('https://never.example.test/login'), match: 5 }, // Never autofill
+              { uri: encStr('https://vault.example.test/#/vault'), match: null } // Self vault origin must be auto-stripped!
+            ]
+          }
+        }
+      ]
+    };
+
+    const mockVaultFetch = async (url) => {
+      const u = String(url);
+      if (u.endsWith('/identity/accounts/prelogin')) {
+        return new Response(JSON.stringify({ kdf: 0, kdfIterations: kdfIter }), { status: 200 });
+      }
+      if (u.endsWith('/identity/connect/token')) {
+        return new Response(JSON.stringify({ access_token: 'mock-jwt-access-tok' }), { status: 200 });
+      }
+      if (u.includes('/api/sync')) {
+        return new Response(JSON.stringify(mockSyncPayload), { status: 200 });
+      }
+      return new Response('not found', { status: 404 });
+    };
+
+    const vb = createVaultBlindBroker({
+      fetchFn: mockVaultFetch,
+      configLoader: async () => ({
+        enabled: true,
+        serverUrl: 'https://vault.example.test',
+        email: aiEmail,
+        masterPassword: aiMasterPw,
+        clientId: 'user.ai-sub-vault',
+        clientSecret: 'mock-client-secret-val'
+      })
+    });
+
+    const selfMatch = await vb.inspectOriginMatch('https://vault.example.test/#/login');
+    assert.equal(selfMatch.matched, false, 'Vaultwarden server origin itself must NEVER be auto-filled');
+    const evilSubdomain = await vb.inspectOriginMatch('https://evil.portal.example.test/login');
+    assert.equal(evilSubdomain.matched, false, 'Subdomain mismatch must NEVER match');
+
+    const okMatch = await vb.inspectOriginMatch('https://portal.example.test/auth');
+    assert.equal(okMatch.matched, true);
+    assert.equal(okMatch.accountHint, 'ai***@example.test');
+    assert.equal(okMatch.hasTotp, true);
+    assert.doesNotMatch(JSON.stringify(okMatch), new RegExp(secretPasswordPlain.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+    // 3) End-to-end Autopilot Broker + MCP Server + Blind Vault Fill (zero consent popup, zero plaintext exposure)
+    const suiteDir = path.join(tmp, 'suite');
+    fs.mkdirSync(suiteDir, { recursive: true });
+    let capturedBrowserStep = null;
+
+    broker = createCuaBroker({
+      allowNonWin32ForTest: true,
+      autopilot: true,
+      homeDir: tmp,
+      prismSuiteDir: suiteDir,
+      wslAdapterIp: null,
+      vaultFetchFn: mockVaultFetch,
+      vaultConfigLoader: async () => ({
+        enabled: true,
+        serverUrl: 'https://vault.example.test',
+        email: aiEmail,
+        masterPassword: aiMasterPw,
+        clientId: 'user.ai-sub-vault',
+        clientSecret: 'mock-client-secret-val'
+      }),
+      mockWorkerRunner: async ({ cmd }) => {
+        if (cmd === 'consent') {
+          throw new Error('Autopilot mode must NEVER invoke WinForms consent modal');
+        }
+        if (cmd === 'list-windows') {
+          return {
+            ok: true,
+            windows: [{ hwnd: '0x00401122', title: 'Demo App', processName: 'notepad.exe', isElectron: false, isElevated: false }]
+          };
+        }
+        return { ok: true };
+      }
+    });
+
+    const started = await broker.start();
+    const nmBase = started.endpoints[0];
+    const nmHeaders = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${started.token}`,
+      'x-prism-relay-session': 'sess-auto-1'
+    };
+
+    // Simulate Chrome MV3 extension connecting in Autopilot mode with 2 tabs (foreground portal + background docs)
+    await fetch(`${nmBase}/v1/nm-push`, {
+      method: 'POST',
+      headers: nmHeaders,
+      body: JSON.stringify({
+        type: 'sync_armed_tabs',
+        autopilotAllTabs: true,
+        armedTabs: [
+          { tabId: 701, id: 701, active: true, auto: true, title: 'Portal Login', url: 'https://portal.example.test/login', origin: 'https://portal.example.test' },
+          { tabId: 702, id: 702, active: false, auto: true, title: 'Docs', url: 'https://docs.example.test/', origin: 'https://docs.example.test' }
+        ]
+      })
+    });
+
+    // Background long-poll loop responder simulating Chrome MV3 background.js + content-agent.js
+    let portalLoggedIn = false;
+    pollLoop = (async () => {
+      while (!stopPoll) {
+        try {
+          const pollRes = await fetch(`${nmBase}/v1/nm-poll`, {
+            method: 'POST',
+            headers: nmHeaders,
+            body: '{}',
+            signal: AbortSignal.timeout(800)
+          });
+          const data = await pollRes.json();
+          for (const cmd of data.commands || []) {
+            if (cmd.action === 'browser_observe') {
+              await fetch(`${nmBase}/v1/nm-push`, {
+                method: 'POST',
+                headers: nmHeaders,
+                body: JSON.stringify({
+                  type: 'cmd_result',
+                  id: cmd.id,
+                  requestId: cmd.requestId,
+                  ok: true,
+                  result: portalLoggedIn
+                    ? {
+                        ok: true,
+                        tabId: cmd.payload.tabId,
+                        url: 'https://portal.example.test/dashboard',
+                        origin: 'https://portal.example.test',
+                        title: 'Portal Dashboard',
+                        statusText: '登录成功 · 控制台首页',
+                        elements: [{ ref: '@e1', tag: 'button', name: '新建项目' }]
+                      }
+                    : {
+                        ok: true,
+                        tabId: cmd.payload.tabId,
+                        url: 'https://portal.example.test/login',
+                        origin: 'https://portal.example.test',
+                        title: 'Portal Login',
+                        statusText: '欢迎登录控制台',
+                        elements: [
+                          { ref: '@e1', tag: 'input', type: 'text', name: '用户名' },
+                          { ref: '@e2', tag: 'input', type: 'password', name: '密码', isPassword: true, redacted: true },
+                          { ref: '@e3', tag: 'input', type: 'text', name: 'TOTP 动态码', isPassword: true, redacted: true },
+                          { ref: '@e4', tag: 'button', name: '登录' }
+                        ]
+                      }
+                })
+              });
+            } else if (cmd.action === 'browser_act') {
+              capturedBrowserStep = cmd.payload.step;
+              portalLoggedIn = true;
+              await fetch(`${nmBase}/v1/nm-push`, {
+                method: 'POST',
+                headers: nmHeaders,
+                body: JSON.stringify({
+                  type: 'cmd_result',
+                  id: cmd.id,
+                  requestId: cmd.requestId,
+                  ok: true,
+                  result: {
+                    ok: true,
+                    tabId: cmd.payload.tabId,
+                    action: 'vault_fill_and_submit',
+                    vaultFilled: true,
+                    submitted: true,
+                    blindCurtainActive: true,
+                    url: 'https://portal.example.test/dashboard',
+                    origin: 'https://portal.example.test',
+                    title: 'Portal Dashboard',
+                    snapshot: {
+                      ok: true,
+                      tabId: cmd.payload.tabId,
+                      url: 'https://portal.example.test/dashboard',
+                      origin: 'https://portal.example.test',
+                      title: 'Portal Dashboard',
+                      statusText: '登录成功 · 控制台首页',
+                      elements: [{ ref: '@e1', tag: 'button', name: '新建项目' }]
+                    }
+                  }
+                })
+              });
+            }
+          }
+        } catch {
+          if (stopPoll) break;
+          await new Promise((r) => setTimeout(r, 25));
+        }
+      }
+    })();
+
+    const cuaSrv = createPrismCuaServer({
+      brokerFilePath: path.join(suiteDir, 'cua-broker.json'),
+      minPacingMs: 0
+    });
+
+    const stOut = await cuaSrv.handleToolCall('cua_status', { includeWindows: true, includeTabs: true });
+    assert.match(stOut.content[0].text, /Autopilot 免确认自动就绪/);
+    assert.match(stOut.content[0].text, /\[windowId=0x00401122\]/);
+    assert.match(stOut.content[0].text, /\[tabId=701\] ★前台/);
+
+    // Omit tabId -> Autopilot auto-selects foreground active tab #701 and attaches [VAULT_READY] hint without plaintext!
+    const obsPortal = await cuaSrv.handleToolCall('cua_observe', { target: 'browser' });
+    assert.equal(obsPortal.structuredContent.ok, true);
+    assert.match(obsPortal.content[0].text, /\[VAULT_READY: account="ai\*\*\*@example\.test" totp=true/);
+    assert.doesNotMatch(obsPortal.content[0].text, /UltraBlindVaultPwd/);
+
+    // Reject model attempting to pass plaintext text to vault_fill_and_submit
+    const badVaultAct = await cuaSrv.handleToolCall('cua_act', {
+      target: 'browser',
+      actions: [{ op: 'vault_fill_and_submit', passwordRef: '@e2', text: 'illegal-plaintext' }]
+    });
+    assert.equal(badVaultAct.isError, true);
+    assert.equal(badVaultAct.structuredContent.code, 'INVALID_ACTION_ARG');
+
+    // Execute atomic blind autofill + statusText expectAfter assertion
+    const blindAct = await cuaSrv.handleToolCall('cua_act', {
+      target: 'browser',
+      actions: [
+        {
+          op: 'vault_fill_and_submit',
+          usernameRef: '@e1',
+          passwordRef: '@e2',
+          totpRef: '@e3',
+          submitRef: '@e4',
+          expectAfter: { textContains: '登录成功' }
+        }
+      ]
+    });
+    assert.equal(blindAct.structuredContent.ok, true);
+    assert.equal(capturedBrowserStep?.__brokerInjectedVault?.username, 'aibot@example.test');
+    assert.equal(capturedBrowserStep?.__brokerInjectedVault?.password, secretPasswordPlain);
+    assert.match(String(capturedBrowserStep?.__brokerInjectedVault?.totpCode || ''), /^\d{6}$/);
+    // Zero plaintext password or TOTP code in MCP response returned to LLM!
+    const serializedMcpOut = JSON.stringify(blindAct);
+    assert.doesNotMatch(serializedMcpOut, /UltraBlindVaultPwd/);
+    assert.doesNotMatch(serializedMcpOut, new RegExp(capturedBrowserStep.__brokerInjectedVault.totpCode));
+
+    stopPoll = true;
+    await broker.stop();
+    broker = null;
+    await pollLoop.catch(() => {});
+  } finally {
+    stopPoll = true;
+    if (broker) await broker.stop();
+    if (pollLoop) await pollLoop.catch(() => {});
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });

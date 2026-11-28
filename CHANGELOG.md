@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.6 - 2026-11-29
+
+- **Codex 同款免确认全自动就绪（Autopilot）桌面与 Chrome 全标签页操控（[cua-broker.mjs](vendor/anti-claude/core/cua-broker.mjs) / [background.js](extensions/chrome-cua-bridge/background.js) / [content-agent.js](extensions/chrome-cua-bridge/content-agent.js) / [popup.js](extensions/chrome-cua-bridge/popup.js) / [PrismWinCua.cs](native/win-cua/PrismWinCua.cs) / [install.mjs](install.mjs)）**：
+  - **开启即常驻就绪，彻底告别频繁确认弹窗**：`prism-cua` 启用后默认运行于 `Autopilot` 免确认模式（免去每 15 分钟弹 WinForms 授权窗，启动自动注册 Chrome/Edge Native Messaging 宿主），同时保留 `Antigravity.exe` 自防、UAC/LSASS/注册表、敏感目录与物理 **`Esc` 键一键急刹**；
+  - **Chrome 全普通标签页自动可操作（免逐页点击 `ARMED`）**：MV3 扩展桥在 `Autopilot` 下自动接管全部普通 `http/https` 标签页并无感跟随正常跨源登录跳转，底层硬屏蔽 `chrome://*`、扩展商店、自建 Vaultwarden 密码库与支付宝/微信/Stripe 收银台；支持在扩展弹窗随时单页暂停或切回手动模式；
+  - **真机实测链路加固**：修复 `windowsHide: true`（`SW_HIDE`）导致首次 WinForms 窗口不可见秒退的底层缺陷；`cua_status` 直接输出 `windowId` 与 `tabId` 清单且缺省 `tabId` 自动锁定前台激活标签页；补齐 `handleObserve` 错误透传与网页 `[role="status"]` 横幅文本后置断言；`install.mjs` 升级时保留用户已开启的 `prism-cua` 状态并在 Windows 自动调用 `csc.exe` 热编译更新 `prism-win-cua.exe`。
+- **自建 Vaultwarden 独立 AI 子库零明文盲注引擎与「盲注防窥帘（Blind Curtain）」（[vault-blind-broker.mjs](vendor/anti-claude/core/vault-blind-broker.mjs) / [PrismWinCua.cs](native/win-cua/PrismWinCua.cs) / [content-agent.js](extensions/chrome-cua-bridge/content-agent.js) / [batch-engine.mjs](plugin-cua/server/batch-engine.mjs) / [app.html](plugin/ui/app.html)）**：
+  - **纯 Node 原生零依赖 E2EE 内存解密 + RFC 6238 `TOTP` 实时计算**：内置 Bitwarden `PBKDF2-SHA256 / Argon2id + HKDF-Expand + AES-256-CBC-HMAC` 本地内存解密与 `TOTP` 六位动态验证码计算（推荐对接物理隔离的独立 AI 专用子账号，支持 Personal API Key 免新设备邮件验证）；本机主密码经 Windows **DPAPI (`ProtectedData`)** 加密存储于受保护文件 `cua-vault.dpapi`（配置全程在原生桌面窗口完成，绝不经过聊天或大模型）；
+  - **精确同源域盲注提交（`vault_fill_and_submit` / `vault_fill_totp`）+ 防截图回读**：`cua_observe` 仅向模型展示脱敏布尔提示 `[VAULT_READY]`；执行盲注时强制校验顶层窗口、精确 `Origin` 与同源 `<form action>`，注入前自动拉起 **「盲注防窥帘」**（锁死 `type="password"` 禁止改 `text`、拦截点击“显示密码”按钮、在离开当前登录页前硬封禁可见截图与输入值回读），确保大模型全程 **0 字符接触明文密码与动态码**。
+
 ## 0.9.5 - 2026-11-28
 
 - **模型中枢真实流式 `tok/s` 测速校准、混淆 ID 自动解码、地域路由 `400` 容灾降级与批量进度测速（[model-hub.mjs](plugin/server/model-hub.mjs) / [prism-profile.mjs](plugin/server/prism-profile.mjs) / [account-vault.mjs](plugin/server/account-vault.mjs) / [index.mjs](plugin/server/index.mjs) / [app.html](plugin/ui/app.html)）**：

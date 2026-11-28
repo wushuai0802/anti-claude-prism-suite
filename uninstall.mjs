@@ -41,7 +41,9 @@ const PURGE_USER_DATA_FILES = [
   'accounts-registry.json',
   'files-state.json',
   'self-update-state.json',
-  'cua-tools-state.json'
+  'cua-tools-state.json',
+  'cua-settings.json',
+  'cua-vault.dpapi'
 ];
 const WIN_NM_HOST_KEYS = [
   'HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.prism.cua.bridge',
@@ -57,6 +59,24 @@ function removeRegularFileIfPresent(filePath) {
   } catch {
     return false;
   }
+}
+
+function cleanManagedSuiteBinDir(suiteDir, removed = []) {
+  if (!suiteDir || path.basename(suiteDir).toLowerCase() !== 'prism-suite') return;
+  const binDir = path.join(suiteDir, 'bin');
+  try {
+    const binLst = fs.lstatSync(binDir, { throwIfNoEntry: false });
+    if (!binLst || binLst.isSymbolicLink() || !binLst.isDirectory()) return;
+    for (const ent of fs.readdirSync(binDir)) {
+      if (/^prism-win-cua\.exe(?:\.sha256|\.old(?:\.[0-9a-z-]+)?)?$/i.test(ent)) {
+        const fp = path.join(binDir, ent);
+        if (removeRegularFileIfPresent(fp)) removed.push(fp);
+      }
+    }
+    if (fs.readdirSync(binDir).length === 0) {
+      fs.rmdirSync(binDir);
+    }
+  } catch {}
 }
 
 function tryRemoveEmptyPrismSuiteDir(suiteDir) {
@@ -209,6 +229,7 @@ export function uninstallKernel({ userDir = resolveUserDir(), stateDir, deactiva
       }
     }
   }
+  cleanManagedSuiteBinDir(suiteDir, removed);
   tryRemoveEmptyPrismSuiteDir(suiteDir);
 
   if (deactivateDaemon) {
@@ -262,6 +283,7 @@ export function uninstallChromeBridge({ userDir = resolveUserDir(), stateDir, wi
         for (const metaFile of KERNEL_SUITE_METADATA_FILES) {
           removeRegularFileIfPresent(path.join(suiteDir, metaFile));
         }
+        cleanManagedSuiteBinDir(suiteDir, removed);
       }
       tryRemoveEmptyPrismSuiteDir(suiteDir);
     }

@@ -7,13 +7,21 @@ description: 基于 prism-cua_control MCP 服务（cua_status、cua_observe、cu
 
 本技能依托 `prism-cua_control` MCP 服务的 3 个核心工具（`cua_status`、`cua_observe`、`cua_act`），在显式授权、单键 `Esc` 急刹与敏感区硬护栏保护下执行桌面与已登录浏览器自动化。
 
-## 1. 授权状态机与工具职责
+## 1. 免确认自动就绪（Autopilot）与状态机
 
-Broker 维护四态受控状态机：
-- `DISARMED`：默认未布防状态；首次调用 `cua_observe` 会自动请求只读授权（`needAct: false`），调用 `cua_act` 会自动请求操控授权（`needAct: true`）。
-- `ARMED_READONLY`：仅允许观察窗口与 ARMED 标签页；若在此状态下发起 `cua_act`，会自动升级请求操控授权（`needAct: true`）。
-- `ARMED_ACT`：允许在受控窗口或已标记 `ARMED` 的浏览器标签页执行声明式动作。
-- `PAUSED_HANDOFF`：检测到验证码、登录凭据或安全接管事件时自动挂起，等待人工介入。
+默认启用 **Codex 同款免确认自动就绪模式（`Autopilot`）**：
+- 开启 `prism-cua` 后，桌面端安全窗口与 Chrome/Edge 全部普通 `http/https` 标签页**默认立即可观测与操作**，无需每 15 分钟弹模态确认框，也无需在浏览器逐个标签页手动点击 `ARMED`。
+- 调用 `cua_status` 会直接列出当前所有可观测桌面窗口的 `windowId` 以及所有可用浏览器标签页的 `tabId`（前台激活标签页带 `★前台` 标记；若 `cua_observe` / `cua_act` 未显式传 `tabId`，默认自动操作前台标签页）。
+- 硬红线护栏全程在底层生效：自动屏蔽 `Antigravity.exe` 自身窗口、UAC/LSASS/注册表、敏感目录（`.codex/.claude/.cc-switch/.ssh`）、浏览器内部页（`chrome://*`）、Vaultwarden 密码库自身页面与网银收银台；按物理 `Esc` 键毫秒级急刹中断当前动作批次。
+
+## 1b. Vaultwarden 独立 AI 子库零明文盲注（`vault_fill_and_submit` / `vault_fill_totp`）
+
+当网页观察结果中的密码框或验证码框带有 `[VAULT_READY: account="..." ...]` 提示时，严禁索要明文密码或用 `type_text` 填密，直接调用原子盲注动作（大模型全程零接触明文密码与 TOTP）：
+- 单页登录（含用户名 + 密码 + 可选同页 TOTP + 提交）：
+  `{ "op": "vault_fill_and_submit", "usernameRef": "@e1", "passwordRef": "@e2", "submitRef": "@e4" }`
+- 分步二阶段动态验证码（提交密码跳转后输入 6 位 TOTP）：
+  `{ "op": "vault_fill_totp", "totpRef": "@e1", "submitRef": "@e2" }`
+- 盲注执行后自动拉起「盲注防窥帘（Blind Curtain）」：在离开当前登录文档前自动封禁截图与明文回读，请直接等待跳转至登录后的目标页面再继续 `cua_observe`。
 
 三个模型可见工具：
 1. `cua_status`：查看 Broker 在线状态、当前授权档位、可观测桌面窗口清单与已标记 `ARMED` 的浏览器标签页。

@@ -121,7 +121,7 @@ try {
         if (Test-Path -LiteralPath $WpfDir -PathType Container) {
             $CuaRspLines.Add(('"/lib:{0}"' -f $WpfDir))
         }
-        foreach ($stdDll in @("System.dll", "System.Core.dll", "System.Web.Extensions.dll", "System.Windows.Forms.dll", "System.Drawing.dll")) {
+        foreach ($stdDll in @("System.dll", "System.Core.dll", "System.Security.dll", "System.Web.Extensions.dll", "System.Windows.Forms.dll", "System.Drawing.dll")) {
             $CuaRspLines.Add(("/reference:{0}" -f $stdDll))
         }
         foreach ($wpfDll in @("UIAutomationClient.dll", "UIAutomationTypes.dll", "WindowsBase.dll")) {

@@ -1,5 +1,5 @@
 /* ============================================================================
- * Anti-Claude Prism Suite v0.9.5 — Visual FX & Layout Polish (Clean-Room, MIT)
+ * Anti-Claude Prism Suite v0.9.6 — Visual FX & Layout Polish (Clean-Room, MIT)
  * Architecture:
  *   - Joins window.__agPrismBus (Frozen v4) safely regardless of script order
  *   - Single shared requestAnimationFrame scheduler (true 0fps idle/hidden/reduced)

@@ -38,7 +38,9 @@ export const ALLOWED_ACTION_OPS = Object.freeze([
   'scroll',
   'select_option',
   'focus_ref',
-  'wait_for'
+  'wait_for',
+  'vault_fill_and_submit',
+  'vault_fill_totp'
 ]);
 
 const ALLOWED_OP_SET = new Set(ALLOWED_ACTION_OPS);
@@ -260,6 +262,39 @@ export function validateSingleAction(step, index = 0) {
         error: `${prefix} (select_option) 必须提供字符串类型的 text 或 value`
       };
     }
+  } else if (op === 'vault_fill_and_submit' || op === 'vault_fill_totp') {
+    if (step.text !== undefined || step.value !== undefined || step.password !== undefined) {
+      return {
+        valid: false,
+        code: 'INVALID_ACTION_ARG',
+        error: `${prefix} (${op}) 严禁传入 text/value/password 明文，凭据由本地 Vault Broker 自动盲注`
+      };
+    }
+    for (const rk of ['usernameRef', 'passwordRef', 'totpRef', 'submitRef']) {
+      if (step[rk] !== undefined && step[rk] !== null) {
+        if (typeof step[rk] !== 'string' || !REF_TOKEN_RE.test(step[rk].trim())) {
+          return {
+            valid: false,
+            code: 'INVALID_ACTION_ARG',
+            error: `${prefix}.${rk} 必须为合法 @ref 标识符（如 "@e2"）`
+          };
+        }
+      }
+    }
+    if (op === 'vault_fill_and_submit' && !step.passwordRef && !hasRef) {
+      return {
+        valid: false,
+        code: 'INVALID_ACTION_ARG',
+        error: `${prefix} (vault_fill_and_submit) 必须指定 passwordRef（如 "@e2"）`
+      };
+    }
+    if (op === 'vault_fill_totp' && !step.totpRef && !hasRef) {
+      return {
+        valid: false,
+        code: 'INVALID_ACTION_ARG',
+        error: `${prefix} (vault_fill_totp) 必须指定 totpRef（如 "@e1"）`
+      };
+    }
   }
 
   if (step.mouseMode !== undefined && step.mouseMode !== null) {
@@ -328,6 +363,8 @@ function collectObservationRefsAndText(observation) {
   if (title) textChunks.push(title);
   if (url) textChunks.push(url);
   if (typeof observation.rawText === 'string') textChunks.push(observation.rawText);
+  if (typeof observation.statusText === 'string') textChunks.push(observation.statusText);
+  if (typeof observation.textExcerpt === 'string') textChunks.push(observation.textExcerpt);
   if (typeof observation.summary === 'string') textChunks.push(observation.summary);
 
   const visit = (arr) => {
