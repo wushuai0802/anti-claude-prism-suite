@@ -6,7 +6,7 @@
 (() => {
   'use strict';
 
-  const AGENT_VERSION = '0.9.3';
+  const AGENT_VERSION = '0.9.4';
   if (window.__prismCuaContentAgent && window.__prismCuaContentAgent.version === AGENT_VERSION) {
     return;
   }
@@ -34,9 +34,10 @@
     '[contenteditable=""]'
   ].join(', ');
 
-  const SENSITIVE_AUTOCOMPLETE_RE = /\b(?:current-password|new-password|one-time-code|cc-number|cc-csc|cc-exp|cc-[a-z0-9-]+)\b/i;
-  const SENSITIVE_NAME_RE = /(?:^|[\s_.-])(?:pass(?:word|wd|code)|pwd|pin|cvv|cvc|csc|card[_-]?num(?:ber)?|totp|otp)(?:$|[\s_.-])/i;
-  const SENSITIVE_IDENT_RE = /(?:密码|口令|验证码|安全码|动态码|支付密码|卡号|cvv|cvc|passcode|(?<![a-z])otp(?![a-z])|pin[-_ ]?code)/i;
+  const SENSITIVE_AUTOCOMPLETE_RE = /\b(?:password|current-password|new-password|one-time-code|cc-number|cc-csc|cc-cvc|cc-exp|cc-[a-z0-9-]+)\b/i;
+  const SENSITIVE_TOKEN_RE = /\b(?:password|passwd|passcode|pwd|cvv|cvv2|cvc|cvc2|csc|ccnum|totp|otp|pincode|pin)\b/i;
+  const SENSITIVE_PHRASE_RE = /\b(?:cc\s+(?:num|number|csc|cvc|cvv|exp)|card\s+(?:num|number|no)|credit\s+card|security\s+code|verification\s+code|one\s+time\s+(?:code|password|pin))\b/i;
+  const SENSITIVE_IDENT_RE = /(?:密码|口令|验证码|安全码|动态码|支付密码|交易密码|银行卡号|信用卡号|卡号|cvv2?|cvc2?|passcode|(?<![a-z])otp(?![a-z])|(?<![a-z])totp(?![a-z])|pin[-_ ]?code)/i;
   const PURE_SENSITIVE_NAV_KEYS = new Set([
     'Tab',
     'Escape',
@@ -67,6 +68,95 @@
   const CAPTCHA_TEXT_RE = /(?:verify you are human|confirm you are human|are you a robot|complete the security check|确认您是真人|验证您是真人|请完成安全验证|请完成人机验证|人机身份验证)/i;
 
   let lastRefMap = new Map();
+  const everPasswordElements = new WeakSet();
+  let agentArmedActive = true;
+  let localEscAbortedAt = 0;
+
+  function onCaptureEscKeyDown(e) {
+    if (!agentArmedActive) return;
+    if (!e || e.isTrusted !== true || e.key !== 'Escape') return;
+    localEscAbortedAt = Date.now();
+    try {
+      if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
+        const maybePromise = chrome.runtime.sendMessage({
+          type: 'content_esc_brake',
+          origin: window.location.origin,
+          url: window.location.href,
+          ts: localEscAbortedAt
+        });
+        if (maybePromise && typeof maybePromise.catch === 'function') {
+          maybePromise.catch(() => {});
+        }
+      }
+    } catch {}
+  }
+
+  if (typeof window.addEventListener === 'function') {
+    window.addEventListener('keydown', onCaptureEscKeyDown, true);
+  }
+
+  function normalizeFieldIdentifierTokens(raw) {
+    return String(raw ?? '')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+      .replace(/[\[\]()_.:\-\s/\\]+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }
+
+  function scanAndRememberPasswordInputs(root = document) {
+    try {
+      const pwInputs = root.querySelectorAll('input[type="password"]');
+      for (const el of pwInputs) {
+        everPasswordElements.add(el);
+      }
+    } catch {}
+  }
+
+  function extractAssociatedLabelText(el) {
+    if (!el || !(el instanceof Element)) return '';
+    const chunks = [];
+    try {
+      if (el.labels && el.labels.length > 0) {
+        for (const lbl of Array.from(el.labels)) {
+          if (lbl && lbl.textContent) chunks.push(lbl.textContent);
+        }
+      }
+    } catch {}
+    if (chunks.length === 0 && el.id) {
+      try {
+        const lbl = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+        if (lbl && lbl.textContent) chunks.push(lbl.textContent);
+      } catch {}
+    }
+    if (chunks.length === 0) {
+      const parentLbl = el.closest('label');
+      if (parentLbl && parentLbl.textContent) chunks.push(parentLbl.textContent);
+    }
+    const labelledBy = el.getAttribute('aria-labelledby');
+    if (labelledBy) {
+      for (const refId of labelledBy.split(/\s+/).filter(Boolean)) {
+        const refEl = document.getElementById(refId);
+        if (refEl && refEl.textContent) chunks.push(refEl.textContent);
+      }
+    }
+    return chunks.join(' ');
+  }
+
+  function verifyExpectedOrigin(optsOrStep) {
+    const expectedOrigin = String(
+      optsOrStep?.expectedOrigin ?? optsOrStep?.armedOrigin ?? ''
+    ).trim();
+    if (expectedOrigin && window.location.origin !== expectedOrigin) {
+      agentArmedActive = false;
+      return {
+        ok: false,
+        code: 'ORIGIN_MISMATCH',
+        error: `页面当前同源域 (${window.location.origin}) 与授权同源域 (${expectedOrigin}) 不匹配，已拒绝访问`
+      };
+    }
+    return null;
+  }
 
   function cleanText(str, maxLen = 120) {
     const norm = String(str ?? '').replace(/\s+/g, ' ').trim();
@@ -111,21 +201,60 @@
 
   function isSensitiveField(el) {
     if (!el || !(el instanceof Element)) return false;
+    if (everPasswordElements.has(el)) return true;
     const tag = (el.tagName || '').toLowerCase();
     if (tag === 'iframe') return true;
     const type = String(el.getAttribute('type') || (el.type ?? '')).toLowerCase();
-    if (type === 'password') return true;
+    if (type === 'password') {
+      everPasswordElements.add(el);
+      return true;
+    }
+    try {
+      const style = window.getComputedStyle(el);
+      const wts = String(
+        style?.webkitTextSecurity ||
+        style?.getPropertyValue?.('-webkit-text-security') ||
+        el.style?.webkitTextSecurity ||
+        ''
+      ).trim().toLowerCase();
+      if (wts && wts !== 'none') {
+        everPasswordElements.add(el);
+        return true;
+      }
+    } catch {}
     const ac = String(el.getAttribute('autocomplete') || '').trim();
     if (ac && SENSITIVE_AUTOCOMPLETE_RE.test(ac)) return true;
-    if (tag === 'input' || tag === 'textarea' || el.isContentEditable || el.getAttribute('role') === 'textbox') {
+
+    const role = String(el.getAttribute('role') || '').toLowerCase();
+    const isNonTextInput =
+      tag === 'input' &&
+      (type === 'button' || type === 'submit' || type === 'reset' || type === 'checkbox' || type === 'radio');
+    if (
+      !isNonTextInput &&
+      (tag === 'input' ||
+        tag === 'textarea' ||
+        el.isContentEditable ||
+        role === 'textbox' ||
+        role === 'searchbox' ||
+        role === 'combobox' ||
+        role === 'spinbutton')
+    ) {
+      const labelTxt = extractAssociatedLabelText(el);
       const ident = [
         el.getAttribute('name') || '',
         el.getAttribute('id') || '',
         el.getAttribute('aria-label') || '',
-        el.getAttribute('placeholder') || ''
+        el.getAttribute('placeholder') || '',
+        el.getAttribute('data-testid') || '',
+        labelTxt
       ].join(' ');
-      if (SENSITIVE_NAME_RE.test(ident)) return true;
-      if (SENSITIVE_IDENT_RE.test(ident) || /[a-z]Otp(?![a-z])/.test(ident)) return true;
+      const normalizedTokens = normalizeFieldIdentifierTokens(ident);
+      if (SENSITIVE_TOKEN_RE.test(normalizedTokens) || SENSITIVE_PHRASE_RE.test(normalizedTokens)) {
+        return true;
+      }
+      if (SENSITIVE_IDENT_RE.test(ident)) {
+        return true;
+      }
     }
     return false;
   }
@@ -253,7 +382,13 @@
     }
   }
 
-  function collectSnapshot({ mode = 'compact', maxElements = MAX_REFS } = {}) {
+  function collectSnapshot(opts = {}) {
+    agentArmedActive = true;
+    const originErr = verifyExpectedOrigin(opts);
+    if (originErr) return originErr;
+
+    scanAndRememberPasswordInputs(document);
+    const { mode = 'compact', maxElements = MAX_REFS } = opts;
     const cap = Math.max(1, Math.min(MAX_REFS, Number(maxElements) || MAX_REFS));
     const rawNodes = Array.from(document.querySelectorAll(INTERACTIVE_SELECTOR));
     const seen = new Set();
@@ -323,11 +458,21 @@
 
       if (sensitive) {
         item.isPassword = true;
+        item.redacted = true;
         item.valueRedacted = '[PASSWORD_REDACTED]';
       } else if (tag === 'input' || tag === 'textarea') {
-        if (inputType !== 'checkbox' && inputType !== 'radio' && inputType !== 'button' && inputType !== 'submit') {
-          const val = cleanText(el.value || '', 96);
-          if (val) item.value = val;
+        if (
+          inputType !== 'checkbox' &&
+          inputType !== 'radio' &&
+          inputType !== 'button' &&
+          inputType !== 'submit' &&
+          inputType !== 'reset'
+        ) {
+          const rawVal = String(el.value ?? '');
+          if (rawVal.length > 0) {
+            item.hasValue = true;
+            item.value = '[已填写]';
+          }
         }
       } else if (tag === 'select') {
         const selOpt = el.selectedOptions && el.selectedOptions[0];
@@ -335,8 +480,11 @@
         if (val) item.value = val;
       } else if (el.isContentEditable) {
         item.contentEditable = true;
-        const val = cleanText(el.innerText || el.textContent || '', 96);
-        if (val) item.value = val;
+        const rawVal = String(el.innerText || el.textContent || '').trim();
+        if (rawVal.length > 0) {
+          item.hasValue = true;
+          item.value = '[已填写]';
+        }
       }
 
       elements.push(item);
@@ -660,6 +808,13 @@
   }
 
   async function executeStep(step = {}) {
+    agentArmedActive = true;
+    const stepStartedAt = Date.now();
+    const originErr = verifyExpectedOrigin(step);
+    if (originErr) return originErr;
+
+    scanAndRememberPasswordInputs(document);
+
     const captchaBefore = detectCaptchaGate();
     if (captchaBefore.detected) {
       const msg = `检测到人机验证挑战（${captchaBefore.provider}），已按安全红线暂停自动操作，请人工完成验证`;
@@ -695,6 +850,11 @@
           try { el.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch {}
         }
         await sleepMs(25);
+        if (localEscAbortedAt >= stepStartedAt) {
+          return { ok: false, code: 'USER_ESC_ABORTED', abortedByEsc: true, error: '用户按下 Esc 紧急中断' };
+        }
+        const postScrollOriginErr = verifyExpectedOrigin(step);
+        if (postScrollOriginErr) return postScrollOriginErr;
       } else if (Number.isFinite(Number(step.x)) && Number.isFinite(Number(step.y))) {
         overrideX = Math.round(Number(step.x));
         overrideY = Math.round(Number(step.y));
@@ -1037,6 +1197,11 @@
 
       const started = Date.now();
       while (Date.now() - started <= timeoutMs) {
+        if (localEscAbortedAt >= stepStartedAt) {
+          return { ok: false, code: 'USER_ESC_ABORTED', abortedByEsc: true, error: '用户按下 Esc 紧急中断' };
+        }
+        const loopOriginErr = verifyExpectedOrigin(step);
+        if (loopOriginErr) return loopOriginErr;
         const gate = detectCaptchaGate();
         if (gate.detected) {
           return {
@@ -1092,6 +1257,9 @@
   window.__prismCuaContentAgent = {
     version: AGENT_VERSION,
     observe: (opts = {}) => collectSnapshot(opts),
-    act: (step = {}) => executeStep(step)
+    act: (step = {}) => executeStep(step),
+    setArmedState: (active) => {
+      agentArmedActive = Boolean(active);
+    }
   };
 })();

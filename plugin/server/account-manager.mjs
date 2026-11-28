@@ -71,8 +71,17 @@ function readGitSummaryReadOnly(cwd) {
   if (!cleanCwd || !fs.existsSync(cleanCwd)) {
     return { isRepo: false, branch: '', head: '', dirtyCount: 0 };
   }
+  const baseGitArgs = [
+    '-C',
+    cleanCwd,
+    '--no-optional-locks',
+    '-c',
+    'core.fsmonitor=false',
+    '-c',
+    'core.hooksPath=/dev/null'
+  ];
   const runGit = (args) =>
-    execFileSync('git', ['-C', cleanCwd, ...args], {
+    execFileSync('git', [...baseGitArgs, ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 3000,
@@ -1140,9 +1149,11 @@ export function createAccountManager(options = {}) {
       } catch (err) {
         if (!err || err.code !== 'EEXIST') throw err;
         let stale = false;
+        let staleToken = '';
         try {
           const rawLock = fs.readFileSync(lockFile, 'utf8');
           const existing = JSON.parse(rawLock);
+          staleToken = typeof existing?.lockToken === 'string' ? existing.lockToken : '';
           const age = Date.now() - Number(existing.createdAt || 0);
           const sameHost = !existing.hostname || existing.hostname === os.hostname();
           const samePidNamespace =
@@ -1159,7 +1170,28 @@ export function createAccountManager(options = {}) {
           } catch {}
         }
         if (stale && attempt < 2) {
-          try { fs.unlinkSync(lockFile); } catch {}
+          const staleTmp = `${lockFile}.stale-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+          let claimedStale = false;
+          try {
+            fs.renameSync(lockFile, staleTmp);
+            claimedStale = true;
+          } catch {
+            claimedStale = false;
+          }
+          if (claimedStale) {
+            let displacedFresh = false;
+            try {
+              const movedObj = JSON.parse(fs.readFileSync(staleTmp, 'utf8'));
+              if (staleToken && movedObj?.lockToken && movedObj.lockToken !== staleToken) {
+                displacedFresh = true;
+                try { fs.linkSync(staleTmp, lockFile); } catch {}
+              }
+            } catch {}
+            try { fs.rmSync(staleTmp, { force: true }); } catch {}
+            if (displacedFresh) {
+              throw Object.assign(new Error('已有切换事务正在进行中，请稍后再试'), { code: 'SWITCH_IN_PROGRESS' });
+            }
+          }
           continue;
         }
         throw Object.assign(new Error('已有切换事务正在进行中，请稍后再试'), { code: 'SWITCH_IN_PROGRESS' });
@@ -1634,16 +1666,16 @@ export function createAccountManager(options = {}) {
 
   function switchAccount(targetId, { dryRun = false, saveSnapshot = true, allowUncapturedActive = false, autoCaptureUncaptured = false, handoff = {} } = {}) {
     const cleanTargetId = sanitizeAccountId(targetId);
-    const state = loadState();
-    assertEnabled(state);
-
-    const target = state.accounts.find((a) => a.id === cleanTargetId);
-    if (!target) {
-      throw Object.assign(new Error(`目标账号槽位不存在: ${cleanTargetId}`), { code: 'ACCOUNT_NOT_FOUND' });
-    }
-
     const releaseLock = acquireSwitchLock(cleanTargetId);
     try {
+      const state = loadState();
+      assertEnabled(state);
+
+      const target = state.accounts.find((a) => a.id === cleanTargetId);
+      if (!target) {
+        throw Object.assign(new Error(`目标账号槽位不存在: ${cleanTargetId}`), { code: 'ACCOUNT_NOT_FOUND' });
+      }
+
       const targetSaved = vault.inspectSaved(cleanTargetId);
       if (!targetSaved.exists) {
         throw Object.assign(new Error(`目标账号 (${target.email}) 在隔离凭据库中无备份，请先登录该账号并捕获`), {
@@ -1757,7 +1789,19 @@ export function createAccountManager(options = {}) {
         });
       } catch (err) {
         if (autoCapturePlan) {
-          try { vault.deleteSaved(autoCapturePlan.id); } catch {}
+          if (err && err.activeSlotMutated && !err.rolledBack) {
+            // Active slot was already mutated AND rollback failed: NEVER destroy the sole backup credential!
+            if (!state.accounts.some((a) => a.id === autoCapturePlan.id)) {
+              const emergencyIso = new Date().toISOString();
+              state.accounts.push({
+                ...autoCapturePlan,
+                capturedAt: emergencyIso,
+                lastUsedAt: emergencyIso
+              });
+            }
+          } else {
+            try { vault.deleteSaved(autoCapturePlan.id); } catch {}
+          }
         }
         state.pendingSwitch = null;
         try { saveState(state); } catch {}

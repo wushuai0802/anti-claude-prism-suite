@@ -1166,7 +1166,7 @@ export function createAccountVault(options = {}) {
     let targetBuf = null;
     let verifyActiveBuf = null;
     let verifyBackupBuf = null;
-    let swapped = false;
+    let activeSlotMutated = false;
 
     try {
       const isWinCred = backendInfo.backend === 'win32-credman' || backendInfo.backend === 'wsl-wincred';
@@ -1230,8 +1230,8 @@ export function createAccountVault(options = {}) {
       }
 
       const expectedHash = fingerprintBuffer(targetBuf);
+      activeSlotMutated = true;
       writeActiveRaw(targetBuf);
-      swapped = true;
 
       const afterRaw = readActiveRaw();
       verifyActiveBuf = afterRaw.buf;
@@ -1268,7 +1268,7 @@ export function createAccountVault(options = {}) {
       };
     } catch (err) {
       let rolledBack = false;
-      if (swapped && prevRaw.exists && prevRaw.buf) {
+      if (activeSlotMutated && prevRaw.exists && prevRaw.buf) {
         try {
           writeActiveRaw(prevRaw.buf);
           rolledBack = true;
@@ -1276,7 +1276,10 @@ export function createAccountVault(options = {}) {
           rolledBack = false;
         }
       }
-      throw Object.assign(err instanceof Error ? err : new Error(String(err)), { rolledBack });
+      const wrappedErr = err instanceof Error ? err : new Error(String(err));
+      wrappedErr.activeSlotMutated = Boolean(activeSlotMutated);
+      wrappedErr.rolledBack = rolledBack;
+      throw wrappedErr;
     } finally {
       if (prevRaw.buf) prevRaw.buf.fill(0);
       if (targetBuf) targetBuf.fill(0);
@@ -1399,6 +1402,7 @@ export function createAccountVault(options = {}) {
     inspectSavedMany,
     saveActiveTo,
     swapActiveFromSaved,
+    activateSaved: swapActiveFromSaved,
     deleteSaved,
     getProviderSecret,
     setProviderSecret,

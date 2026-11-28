@@ -711,7 +711,11 @@
       }
 
       async function callServerTool(name, args = {}) {
-        const res = await sendRequest('tools/call', { name, arguments: args }, 20000);
+        const mergedArgs = {
+          ...(args && typeof args === 'object' ? args : {}),
+          ...(window.__PRISM_APP_TOKEN__ ? { _appToken: window.__PRISM_APP_TOKEN__ } : {})
+        };
+        const res = await sendRequest('tools/call', { name, arguments: mergedArgs }, 20000);
         if (res && res.isError) {
           const errText = res.structuredContent?.error || res.content?.find?.((c) => c.type === 'text')?.text || '工具调用失败';
           throw new Error(errText);
@@ -1237,7 +1241,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.9.3' },
+            appInfo: { name: 'prism-files', version: '0.9.4' },
             appCapabilities: {}
           }, 12000);
           state.hostCapabilities = initRes?.hostCapabilities || {};

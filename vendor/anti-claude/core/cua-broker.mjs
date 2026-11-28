@@ -1,5 +1,5 @@
 /**
- * Anti-Claude Prism Suite v0.9.3 — core/cua-broker.mjs
+ * Anti-Claude Prism Suite v0.9.4 — core/cua-broker.mjs
  * Zero-dependency Controlled Desktop & Browser CUA Session Broker + Native Messaging HTTP Relay.
  *
  * Security invariants:
@@ -26,7 +26,7 @@ const SUITE_ROOT_CANDIDATE = path.resolve(__dirname, '..', '..', '..');
 
 export const CUA_EXTENSION_ID = 'lbmibnghmlnidfiihkegicaejaacmkca';
 export const CUA_NM_HOST_NAME = 'com.prism.cua.bridge';
-export const CUA_VERSION = '0.9.3';
+export const CUA_VERSION = '0.9.4';
 export const MAX_CUA_BODY_BYTES = 2 * 1024 * 1024;
 
 export const CUA_STATES = Object.freeze({
@@ -40,6 +40,13 @@ export const CUA_MOUSE_MODES = Object.freeze({
   COURTEOUS: 'courteous',
   STRICT_VIRTUAL: 'strict_virtual'
 });
+
+const CUA_MOUSE_MODE_RANK = Object.freeze({
+  strict_virtual: 0,
+  courteous: 1,
+  physical: 2
+});
+const RANK_TO_CUA_MOUSE_MODE = Object.freeze(['strict_virtual', 'courteous', 'physical']);
 
 export function normalizeCuaMouseMode(raw, { allowPhysicalOverride = false, fallback = CUA_MOUSE_MODES.COURTEOUS } = {}) {
   const s = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
@@ -55,37 +62,53 @@ export function normalizeCuaMouseMode(raw, { allowPhysicalOverride = false, fall
   return fallback;
 }
 
-const WSL_IFACE_NAME_RE = /WSL|vEthernet/i;
-const WSL_PRIVATE_GATEWAY_RE = /^172\.(1[6-9]|2\d|3[01])\.\d+\.1$/;
+export function clampCuaMouseMode(requestedRaw, globalRaw = CUA_MOUSE_MODES.COURTEOUS) {
+  const globalMode = normalizeCuaMouseMode(globalRaw, {
+    allowPhysicalOverride: true,
+    fallback: CUA_MOUSE_MODES.COURTEOUS
+  });
+  const globalRank = CUA_MOUSE_MODE_RANK[globalMode] ?? 1;
+  if (requestedRaw === undefined || requestedRaw === null || String(requestedRaw).trim() === '') {
+    return globalMode;
+  }
+  const requestedMode = normalizeCuaMouseMode(requestedRaw, {
+    allowPhysicalOverride: true,
+    fallback: globalMode
+  });
+  const requestedRank = CUA_MOUSE_MODE_RANK[requestedMode] ?? globalRank;
+  const effectiveRank = Math.min(requestedRank, globalRank);
+  return RANK_TO_CUA_MOUSE_MODE[effectiveRank] || CUA_MOUSE_MODES.STRICT_VIRTUAL;
+}
+
+const WSL_IFACE_NAME_RE = /\bWSL\b/i;
 const SAFE_WSL_DISTRO_RE = /^[a-zA-Z0-9._-]+$/;
 const SHA256_HEX_RE = /^([0-9a-f]{64})(?:\s|$)/i;
+const MAX_CUA_EXE_HASH_CACHE_ENTRIES = 16;
+const cuaBinaryHashCache = new Map();
+const cuaShaFileCache = new Map();
 
 /**
  * Discover WSL host-side virtual adapter IPv4 address from os.networkInterfaces().
+ * Strictly matches adapter names containing standalone token "WSL" (e.g. "vEthernet (WSL)",
+ * "vEthernet (WSL (Hyper-V firewall))", "WSL") and NEVER binds to Hyper-V External/Default switches.
  * Never returns 0.0.0.0 or 127.0.0.1.
  */
 export function discoverWslAdapterIpv4(networkInterfaces = os.networkInterfaces()) {
   if (!networkInterfaces || typeof networkInterfaces !== 'object') return null;
 
-  let fallbackGatewayIp = null;
   for (const [ifName, addrs] of Object.entries(networkInterfaces)) {
     if (!Array.isArray(addrs)) continue;
-    const nameMatchesWsl = WSL_IFACE_NAME_RE.test(ifName);
+    if (!WSL_IFACE_NAME_RE.test(ifName)) continue;
     for (const entry of addrs) {
       if (!entry || entry.internal) continue;
       const isV4 = entry.family === 'IPv4' || entry.family === 4;
       if (!isV4) continue;
       const ip = String(entry.address || '').trim();
       if (!ip || ip === '0.0.0.0' || ip.startsWith('127.')) continue;
-      if (nameMatchesWsl) {
-        return ip;
-      }
-      if (!fallbackGatewayIp && WSL_PRIVATE_GATEWAY_RE.test(ip)) {
-        fallbackGatewayIp = ip;
-      }
+      return ip;
     }
   }
-  return fallbackGatewayIp;
+  return null;
 }
 
 const WSL_DISCOVERY_TTL_MS = 60_000;
@@ -247,6 +270,7 @@ export function resolveDefaultCuaExePath({ homeDir = os.homedir(), cuaExePath = 
 
 /**
  * Verify prism-win-cua.exe matches prism-win-cua.exe.sha256 alongside it.
+ * Caches binary SHA-256 keyed by `${resolvedExe}:${exeSt.size}:${exeSt.mtimeMs}` to avoid re-hashing on every step.
  */
 export function verifyCuaBinaryIntegrity(exePath) {
   const resolvedExe = path.resolve(String(exePath || ''));
@@ -268,17 +292,40 @@ export function verifyCuaBinaryIntegrity(exePath) {
         error: `缺少完整性校验文件: ${shaPath}`
       };
     }
-    const rawShaText = fs.readFileSync(shaPath, 'utf8').replace(/^\uFEFF/, '').trim();
-    const match = rawShaText.match(SHA256_HEX_RE);
-    if (!match) {
-      return {
-        ok: false,
-        code: 'BINARY_SHA256_MALFORMED',
-        error: `SHA-256 校验文件格式无效: ${shaPath}`
-      };
+
+    const shaCacheKey = `${shaPath}:${shaSt.size}:${shaSt.mtimeMs}`;
+    let expectedHex = cuaShaFileCache.get(shaCacheKey);
+    if (!expectedHex) {
+      const rawShaText = fs.readFileSync(shaPath, 'utf8').replace(/^\uFEFF/, '').trim();
+      const match = rawShaText.match(SHA256_HEX_RE);
+      if (!match) {
+        return {
+          ok: false,
+          code: 'BINARY_SHA256_MALFORMED',
+          error: `SHA-256 校验文件格式无效: ${shaPath}`
+        };
+      }
+      expectedHex = match[1].toLowerCase();
+      while (cuaShaFileCache.size >= MAX_CUA_EXE_HASH_CACHE_ENTRIES) {
+        const oldest = cuaShaFileCache.keys().next().value;
+        if (oldest === undefined) break;
+        cuaShaFileCache.delete(oldest);
+      }
+      cuaShaFileCache.set(shaCacheKey, expectedHex);
     }
-    const expectedHex = match[1].toLowerCase();
-    const actualHex = crypto.createHash('sha256').update(fs.readFileSync(resolvedExe)).digest('hex').toLowerCase();
+
+    const exeCacheKey = `${resolvedExe}:${exeSt.size}:${exeSt.mtimeMs}`;
+    let actualHex = cuaBinaryHashCache.get(exeCacheKey);
+    if (!actualHex) {
+      actualHex = crypto.createHash('sha256').update(fs.readFileSync(resolvedExe)).digest('hex').toLowerCase();
+      while (cuaBinaryHashCache.size >= MAX_CUA_EXE_HASH_CACHE_ENTRIES) {
+        const oldest = cuaBinaryHashCache.keys().next().value;
+        if (oldest === undefined) break;
+        cuaBinaryHashCache.delete(oldest);
+      }
+      cuaBinaryHashCache.set(exeCacheKey, actualHex);
+    }
+
     const expectedBuf = Buffer.from(expectedHex, 'utf8');
     const actualBuf = Buffer.from(actualHex, 'utf8');
     if (expectedBuf.length !== actualBuf.length || !crypto.timingSafeEqual(expectedBuf, actualBuf)) {
@@ -553,6 +600,8 @@ export function createCuaBroker(options = {}) {
   }
 
   let state = CUA_STATES.DISARMED;
+  let leaseEpoch = 0;
+  let pendingEscAbortUntil = 0;
   let mouseMode = loadPersistedMouseMode();
   let prePauseState = null;
   let handoffReason = '';
@@ -583,6 +632,7 @@ export function createCuaBroker(options = {}) {
 
   let expiryTimer = null;
   let wslSyncTimer = null;
+  let onProcessExitHook = null;
   let started = false;
   let stopped = false;
 
@@ -724,6 +774,41 @@ export function createCuaBroker(options = {}) {
     }, 250).unref?.();
   }
 
+  function isBrowserMutationOrObserveCmd(item) {
+    if (!item || typeof item !== 'object') return false;
+    const tag = String(item.cmd || item.action || item.type || '').trim();
+    return tag === 'browser_act' || tag === 'browser_observe';
+  }
+
+  function purgeQueuedBrowserCommands(matchRequestId = '') {
+    for (let i = nmCommandQueue.length - 1; i >= 0; i--) {
+      const item = nmCommandQueue[i];
+      if (!item || typeof item !== 'object') continue;
+      if (matchRequestId) {
+        const idMatches = item.requestId === matchRequestId || item.id === matchRequestId;
+        const staleEpoch =
+          isBrowserMutationOrObserveCmd(item) &&
+          item.leaseEpoch !== undefined &&
+          item.leaseEpoch !== leaseEpoch;
+        if (idMatches || staleEpoch) {
+          nmCommandQueue.splice(i, 1);
+        }
+      } else if (isBrowserMutationOrObserveCmd(item)) {
+        nmCommandQueue.splice(i, 1);
+      }
+    }
+  }
+
+  function filterDeliverableNmCommands(rawBatch) {
+    if (!Array.isArray(rawBatch)) return [];
+    return rawBatch.filter((item) => {
+      if (!isBrowserMutationOrObserveCmd(item)) return true;
+      if (state === CUA_STATES.DISARMED || state === CUA_STATES.PAUSED_HANDOFF) return false;
+      if (item.leaseEpoch !== undefined && item.leaseEpoch !== leaseEpoch) return false;
+      return true;
+    });
+  }
+
   function handleOverlayStdoutLine(rawLine) {
     const trimmed = String(rawLine || '').trim();
     if (!trimmed) return;
@@ -731,12 +816,14 @@ export function createCuaBroker(options = {}) {
     if (trimmed.startsWith('{')) {
       try {
         const parsed = JSON.parse(trimmed);
-        action = String(parsed?.action || parsed?.event || '').trim().toUpperCase();
+        action = String(parsed?.event || parsed?.action || '').trim().toUpperCase();
       } catch {
         return;
       }
     }
-    if (action === 'REVOKE') {
+    if (action === 'USER_ESC_ABORTED' || action === 'ESC_ABORTED' || action === 'EMERGENCY_STOP') {
+      void triggerEmergencyEscAbort('用户按下 Esc 紧急中断');
+    } else if (action === 'REVOKE') {
       void handleRevoke();
     } else if (action === 'RESUME') {
       void handleResumeHandoff();
@@ -744,9 +831,10 @@ export function createCuaBroker(options = {}) {
   }
 
   function abortInFlightActions(reasonCode = 'REVOKED', reasonMsg = 'CUA 授权已收回或中断') {
+    purgeQueuedBrowserCommands();
     for (const ac of activeWorkerControllers) {
       try {
-        ac.abort();
+        ac.abort({ code: reasonCode, error: reasonMsg });
       } catch {}
     }
     activeWorkerControllers.clear();
@@ -754,12 +842,53 @@ export function createCuaBroker(options = {}) {
     for (const [reqId, pending] of pendingBrowserRequests.entries()) {
       clearTimeout(pending.timer);
       pendingBrowserRequests.delete(reqId);
-      pending.resolve({ ok: false, code: reasonCode, error: reasonMsg });
+      pending.resolve({
+        ok: false,
+        code: reasonCode,
+        ...(reasonCode === 'USER_ESC_ABORTED' ? { abortedByEsc: true } : {}),
+        error: reasonMsg
+      });
     }
   }
 
-  function disarmInternal({ releaseModifiers = false } = {}) {
-    abortInFlightActions('REVOKED', '用户已收回 Prism CUA 授权');
+  async function triggerEmergencyEscAbort(reasonMsg = '用户按下 Esc 紧急中断') {
+    const hadInFlight = activeWorkerControllers.size > 0 || pendingBrowserRequests.size > 0;
+    leaseEpoch += 1;
+    abortInFlightActions('USER_ESC_ABORTED', reasonMsg);
+    state = CUA_STATES.DISARMED;
+    prePauseState = null;
+    handoffReason = '';
+    scope = null;
+    expiresAt = null;
+    if (!hadInFlight) {
+      pendingEscAbortUntil = Date.now() + 3000;
+    }
+    for (const [k, v] of idempotencyCache.entries()) {
+      if (v && v.action === 'request_consent') idempotencyCache.delete(k);
+    }
+    stopOverlayProcess();
+    enqueueNmCommand({
+      id: `evt-${Date.now()}`,
+      type: 'cua_state',
+      action: 'cua_state',
+      state: CUA_STATES.DISARMED,
+      leaseEpoch,
+      reason: 'USER_ESC_ABORTED'
+    });
+    await runWorker({
+      mode: 'release-modifiers',
+      cmd: 'release-modifiers',
+      args: ['--release-modifiers'],
+      stdinObj: null,
+      timeoutMs: 2500,
+      trackAbort: false
+    }).catch(() => {});
+    return { ok: true, state: CUA_STATES.DISARMED, leaseEpoch };
+  }
+
+  function disarmInternal({ releaseModifiers = false, reasonCode = 'REVOKED', reasonMsg = '用户已收回 Prism CUA 授权' } = {}) {
+    leaseEpoch += 1;
+    abortInFlightActions(reasonCode, reasonMsg);
     state = CUA_STATES.DISARMED;
     prePauseState = null;
     handoffReason = '';
@@ -770,7 +899,8 @@ export function createCuaBroker(options = {}) {
       id: `evt-${Date.now()}`,
       type: 'cua_state',
       action: 'cua_state',
-      state: CUA_STATES.DISARMED
+      state: CUA_STATES.DISARMED,
+      leaseEpoch
     });
     if (releaseModifiers) {
       void runWorker({
@@ -825,12 +955,14 @@ export function createCuaBroker(options = {}) {
         let settled = false;
         let stdoutText = '';
         let stderrText = '';
+        let timer = null;
+        let onAbort = null;
 
         const finish = (resObj) => {
           if (settled) return;
           settled = true;
-          clearTimeout(timer);
-          ac.signal.removeEventListener('abort', onAbort);
+          if (timer) clearTimeout(timer);
+          if (onAbort) ac.signal.removeEventListener('abort', onAbort);
           resolve(resObj);
         };
 
@@ -859,12 +991,18 @@ export function createCuaBroker(options = {}) {
           } catch {}
         };
 
-        const onAbort = () => {
+        onAbort = () => {
           killChildHard();
+          const reason = ac.signal.reason;
+          const abortCode = typeof reason?.code === 'string' && reason.code ? reason.code : 'ACTION_ABORTED';
+          const abortErr = typeof reason?.error === 'string' && reason.error
+            ? reason.error
+            : '当前操作已被紧急中止或收回授权';
           finish({
             ok: false,
-            code: 'ACTION_ABORTED',
-            error: '当前操作已被紧急中止或收回授权'
+            code: abortCode,
+            ...(abortCode === 'USER_ESC_ABORTED' ? { abortedByEsc: true } : {}),
+            error: abortErr
           });
         };
 
@@ -874,7 +1012,7 @@ export function createCuaBroker(options = {}) {
         }
         ac.signal.addEventListener('abort', onAbort, { once: true });
 
-        const timer = setTimeout(() => {
+        timer = setTimeout(() => {
           killChildHard();
           finish({
             ok: false,
@@ -950,7 +1088,9 @@ export function createCuaBroker(options = {}) {
   function flushNmWaiters() {
     if (nmPollWaiters.size === 0) return;
     if (nmCommandQueue.length === 0 && !stopped) return;
-    const batch = nmCommandQueue.splice(0, nmCommandQueue.length);
+    const rawBatch = nmCommandQueue.splice(0, nmCommandQueue.length);
+    const batch = filterDeliverableNmCommands(rawBatch);
+    if (batch.length === 0 && !stopped) return;
     const firstWaiter = nmPollWaiters.values().next().value;
     if (firstWaiter) {
       nmPollWaiters.delete(firstWaiter);
@@ -967,20 +1107,23 @@ export function createCuaBroker(options = {}) {
   function dispatchBrowserCommand(actionName, payloadObj, timeoutMs = 5000) {
     const requestId = `br-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
     const tabId = Number(payloadObj?.tabId);
+    const commandEpoch = leaseEpoch;
     const wireCmd = {
       id: requestId,
       requestId,
       type: actionName,
       action: actionName,
       cmd: actionName,
+      leaseEpoch: commandEpoch,
       tabId,
       step: payloadObj?.step || null,
-      payload: { ...payloadObj, tabId }
+      payload: { ...payloadObj, tabId, leaseEpoch: commandEpoch }
     };
 
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         pendingBrowserRequests.delete(requestId);
+        purgeQueuedBrowserCommands(requestId);
         resolve({
           ok: false,
           code: 'BROWSER_BRIDGE_TIMEOUT',
@@ -989,7 +1132,7 @@ export function createCuaBroker(options = {}) {
       }, timeoutMs);
       timer.unref?.();
 
-      pendingBrowserRequests.set(requestId, { resolve, timer, actionName });
+      pendingBrowserRequests.set(requestId, { resolve, timer, actionName, leaseEpoch: commandEpoch });
       nmCommandQueue.push(wireCmd);
       flushNmWaiters();
     });
@@ -1001,6 +1144,7 @@ export function createCuaBroker(options = {}) {
     return {
       ok: true,
       state,
+      leaseEpoch,
       expiresAt,
       expiresAtIso: expiresAt ? new Date(expiresAt).toISOString() : null,
       remainingSec: getRemainingSec(now),
@@ -1050,6 +1194,7 @@ export function createCuaBroker(options = {}) {
       type: 'cua_state',
       action: 'cua_state',
       state,
+      leaseEpoch,
       mouseMode,
       scope,
       expiresAt
@@ -1058,6 +1203,7 @@ export function createCuaBroker(options = {}) {
       ok: true,
       mouseMode,
       state,
+      leaseEpoch,
       remainingSec: getRemainingSec()
     };
   }
@@ -1085,6 +1231,7 @@ export function createCuaBroker(options = {}) {
       return consentInFlightByScope.get(scopeKey);
     }
     const runConsent = async () => {
+      pendingEscAbortUntil = 0;
       if (lastWindows.length === 0) {
         await handleListWindows().catch(() => {});
       }
@@ -1100,6 +1247,8 @@ export function createCuaBroker(options = {}) {
         target: typeof payload?.target === 'string' ? payload.target : '',
         hwnd: payload?.hwnd ?? null,
         tabId: payload?.tabId ?? null,
+        processName: typeof payload?.processName === 'string' ? payload.processName.slice(0, 120) : '',
+        titleContains: typeof payload?.titleContains === 'string' ? payload.titleContains.slice(0, 160) : '',
         requestedMinutes,
         windows: lastWindows
       };
@@ -1109,7 +1258,8 @@ export function createCuaBroker(options = {}) {
         cmd: 'consent',
         args: ['--consent'],
         stdinObj: consentReq,
-        timeoutMs: 47000
+        timeoutMs: 47000,
+        trackAbort: true
       });
 
       if (!res || res.ok === false) {
@@ -1143,6 +1293,8 @@ export function createCuaBroker(options = {}) {
         ? Math.max(1, Math.min(60, Math.round(grantedMinutesRaw)))
         : 15;
 
+      leaseEpoch += 1;
+      pendingEscAbortUntil = 0;
       state = res.state === CUA_STATES.ARMED_INTERACTIVE
         ? CUA_STATES.ARMED_INTERACTIVE
         : CUA_STATES.ARMED_READONLY;
@@ -1165,6 +1317,7 @@ export function createCuaBroker(options = {}) {
         type: 'cua_state',
         action: 'cua_state',
         state,
+        leaseEpoch,
         scope,
         expiresAt
       });
@@ -1173,6 +1326,7 @@ export function createCuaBroker(options = {}) {
         ok: true,
         granted: true,
         state,
+        leaseEpoch,
         scope,
         expiresAt,
         expiresAtIso: new Date(expiresAt).toISOString(),
@@ -1190,6 +1344,7 @@ export function createCuaBroker(options = {}) {
   }
 
   async function handleRevoke() {
+    leaseEpoch += 1;
     abortInFlightActions('REVOKED', '用户已收回 Prism CUA 授权');
     state = CUA_STATES.DISARMED;
     prePauseState = null;
@@ -1204,7 +1359,8 @@ export function createCuaBroker(options = {}) {
       id: `evt-${Date.now()}`,
       type: 'cua_state',
       action: 'cua_state',
-      state: CUA_STATES.DISARMED
+      state: CUA_STATES.DISARMED,
+      leaseEpoch
     });
     await runWorker({
       mode: 'release-modifiers',
@@ -1214,7 +1370,7 @@ export function createCuaBroker(options = {}) {
       timeoutMs: 2500,
       trackAbort: false
     }).catch(() => {});
-    return { ok: true, state: CUA_STATES.DISARMED };
+    return { ok: true, state: CUA_STATES.DISARMED, leaseEpoch };
   }
 
   async function handlePauseHandoff(payload = {}) {
@@ -1226,6 +1382,7 @@ export function createCuaBroker(options = {}) {
         error: '当前未处于已授权状态，无法切换人工接管'
       };
     }
+    leaseEpoch += 1;
     abortInFlightActions('HANDOFF_PAUSED', '检测到验证码或敏感页面，已暂停自动操作等待人工处理');
     if (state !== CUA_STATES.PAUSED_HANDOFF) {
       prePauseState = state;
@@ -1235,9 +1392,19 @@ export function createCuaBroker(options = {}) {
       ? payload.reason.trim()
       : '🟠 检测到验证码/敏感页，等待人工处理';
     sendOverlayUpdate('PAUSED_HANDOFF');
+    enqueueNmCommand({
+      id: `evt-${Date.now()}`,
+      type: 'cua_state',
+      action: 'cua_state',
+      state: CUA_STATES.PAUSED_HANDOFF,
+      leaseEpoch,
+      scope,
+      expiresAt
+    });
     return {
       ok: true,
       state,
+      leaseEpoch,
       reason: handoffReason,
       scope,
       expiresAt,
@@ -1254,15 +1421,26 @@ export function createCuaBroker(options = {}) {
         error: '当前会话未处于等待人工处理状态'
       };
     }
+    leaseEpoch += 1;
     state = prePauseState === CUA_STATES.ARMED_INTERACTIVE
       ? CUA_STATES.ARMED_INTERACTIVE
       : CUA_STATES.ARMED_READONLY;
     prePauseState = null;
     handoffReason = '';
     sendOverlayUpdate('ARMED');
+    enqueueNmCommand({
+      id: `evt-${Date.now()}`,
+      type: 'cua_state',
+      action: 'cua_state',
+      state,
+      leaseEpoch,
+      scope,
+      expiresAt
+    });
     return {
       ok: true,
       state,
+      leaseEpoch,
       scope,
       expiresAt,
       remainingSec: getRemainingSec()
@@ -1299,6 +1477,16 @@ export function createCuaBroker(options = {}) {
       };
     }
     if (state === CUA_STATES.DISARMED) {
+      if (pendingEscAbortUntil > Date.now()) {
+        pendingEscAbortUntil = 0;
+        return {
+          ok: false,
+          code: 'USER_ESC_ABORTED',
+          abortedByEsc: true,
+          error: '用户按下 Esc 紧急中断',
+          state: CUA_STATES.DISARMED
+        };
+      }
       return {
         ok: false,
         code: 'CONSENT_REQUIRED',
@@ -1379,7 +1567,8 @@ export function createCuaBroker(options = {}) {
       cmd: 'observe',
       args: ['--cmd', 'observe'],
       stdinObj: { ...payload, hwnd: check.hwnd },
-      timeoutMs: 4500
+      timeoutMs: 4500,
+      trackAbort: true
     });
   }
 
@@ -1391,16 +1580,16 @@ export function createCuaBroker(options = {}) {
     });
     if (!check.ok) return check;
 
-    const stepObj = payload?.step && typeof payload.step === 'object' ? payload.step : payload;
-    const effectiveMouseMode = normalizeCuaMouseMode(stepObj?.mouseMode ?? payload?.mouseMode, {
-      allowPhysicalOverride: true,
-      fallback: mouseMode
-    });
+    const rawStepObj = payload?.step && typeof payload.step === 'object' ? payload.step : payload;
+    const effectiveMouseMode = clampCuaMouseMode(rawStepObj?.mouseMode ?? payload?.mouseMode, mouseMode);
+    const stepObj = { ...rawStepObj, mouseMode: effectiveMouseMode };
     const rawDesktopOp = String(stepObj?.op || stepObj?.action || '').trim().toLowerCase();
+    const rawDesktopKey = String(stepObj?.key || stepObj?.keys || '').trim();
+    const isSyntheticEscKey = rawDesktopOp === 'press_key' && /^(?:esc|escape)$/i.test(rawDesktopKey);
     const desktopWorkerTimeoutMs = (rawDesktopOp === 'wait_for' || rawDesktopOp === 'wait')
       ? Math.min(35000, Math.max(6500, (Number(stepObj?.timeoutMs ?? stepObj?.ms ?? payload?.timeoutMs) || 5000) + 3000))
       : 6500;
-    sendOverlayUpdate('EXECUTING');
+    sendOverlayUpdate(isSyntheticEscKey ? 'SUSPEND_ESC' : 'EXECUTING');
     try {
       const res = await runWorker({
         mode: 'cmd',
@@ -1411,10 +1600,11 @@ export function createCuaBroker(options = {}) {
         trackAbort: true
       });
       if (res?.code === 'USER_ESC_ABORTED') {
-        disarmInternal({ releaseModifiers: true });
+        disarmInternal({ releaseModifiers: true, reasonCode: 'USER_ESC_ABORTED', reasonMsg: '用户按下 Esc 紧急中断' });
         return {
           ok: false,
           code: 'USER_ESC_ABORTED',
+          abortedByEsc: true,
           error: res.error || '用户按下 Esc 紧急中断',
           state: CUA_STATES.DISARMED
         };
@@ -1446,6 +1636,16 @@ export function createCuaBroker(options = {}) {
       };
     }
     if (state === CUA_STATES.DISARMED) {
+      if (pendingEscAbortUntil > Date.now()) {
+        pendingEscAbortUntil = 0;
+        return {
+          ok: false,
+          code: 'USER_ESC_ABORTED',
+          abortedByEsc: true,
+          error: '用户按下 Esc 紧急中断',
+          state: CUA_STATES.DISARMED
+        };
+      }
       return {
         ok: false,
         code: 'CONSENT_REQUIRED',
@@ -1493,15 +1693,15 @@ export function createCuaBroker(options = {}) {
         error: `目标标签页 (#${tabNum}) 不在已授权的标签页 (#${scope.tabId}) 范围内`
       };
     }
-    const isTabArmed = armedTabs.some((t) => Number(t.tabId ?? t.id) === tabNum);
-    if (!isTabArmed) {
+    const armedTabEntry = armedTabs.find((t) => Number(t.tabId ?? t.id) === tabNum);
+    if (!armedTabEntry) {
       return {
         ok: false,
         code: 'TAB_NOT_ARMED',
         error: `浏览器标签页 #${tabNum} 尚未在扩展中武装授权 (Armed)`
       };
     }
-    return { ok: true, tabId: tabNum };
+    return { ok: true, tabId: tabNum, armedOrigin: armedTabEntry.origin || '' };
   }
 
   async function handleBrowserObserve(payload = {}) {
@@ -1511,7 +1711,15 @@ export function createCuaBroker(options = {}) {
     });
     if (!check.ok) return check;
 
-    const reply = await dispatchBrowserCommand('browser_observe', { ...payload, tabId: check.tabId }, 5000);
+    const reply = await dispatchBrowserCommand(
+      'browser_observe',
+      {
+        ...payload,
+        tabId: check.tabId,
+        ...(check.armedOrigin ? { armedOrigin: check.armedOrigin, expectedOrigin: check.armedOrigin } : {})
+      },
+      5000
+    );
     if (reply?.code === 'CAPTCHA_HANDOFF' || reply?.handoffRequired === true || reply?.pausedHandoff === true) {
       await handlePauseHandoff({ reason: reply.reason || reply.error });
     }
@@ -1527,9 +1735,14 @@ export function createCuaBroker(options = {}) {
 
     sendOverlayUpdate('EXECUTING');
     try {
-      const effectiveMouseMode = normalizeCuaMouseMode(payload?.step?.mouseMode ?? payload?.mouseMode, {
-        fallback: mouseMode
-      });
+      const effectiveMouseMode = clampCuaMouseMode(payload?.step?.mouseMode ?? payload?.mouseMode, mouseMode);
+      const safeStep = payload?.step && typeof payload.step === 'object'
+        ? {
+            ...payload.step,
+            mouseMode: effectiveMouseMode,
+            ...(check.armedOrigin ? { armedOrigin: check.armedOrigin, expectedOrigin: check.armedOrigin } : {})
+          }
+        : undefined;
       const rawBrowserOp = String(payload?.op || payload?.action || payload?.step?.op || payload?.step?.action || '').trim().toLowerCase();
       const rawWaitTimeout = Number(
         payload?.timeoutMs ?? payload?.ms ?? payload?.durationMs ??
@@ -1540,14 +1753,21 @@ export function createCuaBroker(options = {}) {
         : 5000;
       const reply = await dispatchBrowserCommand(
         'browser_act',
-        { ...payload, tabId: check.tabId, mouseMode: effectiveMouseMode },
+        {
+          ...payload,
+          ...(safeStep ? { step: safeStep } : {}),
+          ...(check.armedOrigin ? { armedOrigin: check.armedOrigin, expectedOrigin: check.armedOrigin } : {}),
+          tabId: check.tabId,
+          mouseMode: effectiveMouseMode
+        },
         browserTimeoutMs
       );
       if (reply?.code === 'USER_ESC_ABORTED') {
-        disarmInternal({ releaseModifiers: true });
+        disarmInternal({ releaseModifiers: true, reasonCode: 'USER_ESC_ABORTED', reasonMsg: '用户按下 Esc 紧急中断' });
         return {
           ok: false,
           code: 'USER_ESC_ABORTED',
+          abortedByEsc: true,
           error: reply.error || '用户按下 Esc 紧急中断',
           state: CUA_STATES.DISARMED
         };
@@ -1811,19 +2031,32 @@ export function createCuaBroker(options = {}) {
       const pending = pendingBrowserRequests.get(reqId);
       clearTimeout(pending.timer);
       pendingBrowserRequests.delete(reqId);
+      if (pending.leaseEpoch !== undefined && pending.leaseEpoch !== leaseEpoch) {
+        pending.resolve({
+          ok: false,
+          code: 'STALE_LEASE_EPOCH',
+          error: '收到已过期的浏览器指令回执，已丢弃'
+        });
+        return { ok: false, staleLeaseEpoch: true, matchedRequestId: reqId };
+      }
       const unwrapped = body?.result && typeof body.result === 'object' ? body.result : body;
       pending.resolve(unwrapped);
       return { ok: true, matchedRequestId: reqId };
     }
 
-    if (msgType === 'revoke' || msgType === 'emergency_stop') {
+    if (msgType === 'emergency_stop') {
+      await triggerEmergencyEscAbort('用户在受控浏览器按下 Esc 紧急中断');
+      return { ok: true, state: CUA_STATES.DISARMED, leaseEpoch };
+    }
+
+    if (msgType === 'revoke') {
       await handleRevoke();
-      return { ok: true, state: CUA_STATES.DISARMED };
+      return { ok: true, state: CUA_STATES.DISARMED, leaseEpoch };
     }
 
     if (msgType === 'pause_handoff' || msgType === 'handoff') {
       const paused = await handlePauseHandoff({ reason: body?.reason });
-      return { ok: true, state: paused.state };
+      return { ok: true, state: paused.state, leaseEpoch };
     }
 
     if (msgType === 'get_status' || msgType === 'status') {
@@ -1847,9 +2080,12 @@ export function createCuaBroker(options = {}) {
     if (sessionId) activeRelaySessionId = sessionId;
 
     if (nmCommandQueue.length > 0 || stopped) {
-      const commands = nmCommandQueue.splice(0, nmCommandQueue.length);
-      sendJsonResponse(res, 200, { ok: true, commands });
-      return;
+      const rawCommands = nmCommandQueue.splice(0, nmCommandQueue.length);
+      const commands = filterDeliverableNmCommands(rawCommands);
+      if (commands.length > 0 || stopped) {
+        sendJsonResponse(res, 200, { ok: true, commands });
+        return;
+      }
     }
 
     let settled = false;
@@ -2065,6 +2301,15 @@ export function createCuaBroker(options = {}) {
     }, 30000);
     wslSyncTimer.unref?.();
 
+    if (!onProcessExitHook) {
+      onProcessExitHook = () => {
+        try {
+          stopSync();
+        } catch {}
+      };
+      process.once('exit', onProcessExitHook);
+    }
+
     return {
       token,
       endpoints: [...boundEndpoints],
@@ -2072,8 +2317,30 @@ export function createCuaBroker(options = {}) {
     };
   }
 
+  function cleanupAllDiscoveryFiles() {
+    for (const file of writtenBrokerFiles) {
+      removeBrokerFileIfOwned(file, process.pid);
+    }
+    writtenBrokerFiles.clear();
+    try {
+      const { winBrokerFile, wslBrokerFiles } = resolveBrokerDiscoveryPaths({
+        homeDir,
+        prismSuiteDir,
+        discoverWslGeminiDirs
+      });
+      removeBrokerFileIfOwned(winBrokerFile, process.pid);
+      for (const wslFile of wslBrokerFiles) {
+        removeBrokerFileIfOwned(wslFile, process.pid);
+      }
+    } catch {}
+  }
+
   function stopSync() {
     stopped = true;
+    if (onProcessExitHook) {
+      process.removeListener('exit', onProcessExitHook);
+      onProcessExitHook = null;
+    }
     if (expiryTimer) {
       clearInterval(expiryTimer);
       expiryTimer = null;
@@ -2090,14 +2357,14 @@ export function createCuaBroker(options = {}) {
       } catch {}
     }
     nmPollWaiters.clear();
-    for (const file of writtenBrokerFiles) {
-      removeBrokerFileIfOwned(file, process.pid);
-    }
-    writtenBrokerFiles.clear();
+    cleanupAllDiscoveryFiles();
   }
 
   async function stop() {
-    if (!started && servers.length === 0) return;
+    if (!started && servers.length === 0) {
+      cleanupAllDiscoveryFiles();
+      return;
+    }
     stopSync();
     const closers = servers.splice(0, servers.length).map(
       (srv) =>
@@ -2112,6 +2379,7 @@ export function createCuaBroker(options = {}) {
         })
     );
     await Promise.allSettled(closers);
+    cleanupAllDiscoveryFiles();
     boundEndpoints.length = 0;
     allowedHosts.clear();
     started = false;
@@ -2120,6 +2388,7 @@ export function createCuaBroker(options = {}) {
   return {
     start,
     stop,
+    close: stop,
     stopSync,
     get token() {
       return token;
@@ -2130,6 +2399,12 @@ export function createCuaBroker(options = {}) {
     get state() {
       checkAndExpireConsent();
       return state;
+    },
+    get leaseEpoch() {
+      return leaseEpoch;
+    },
+    get mouseMode() {
+      return mouseMode;
     },
     get mockOverlayHistory() {
       return [...mockOverlayHistory];

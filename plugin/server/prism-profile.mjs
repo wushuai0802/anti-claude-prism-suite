@@ -15,6 +15,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { redactSensitiveText } from './redact-shared.mjs';
 
 export const PRISM_PROFILE_SCHEMA_VERSION = 1;
 
@@ -157,8 +158,19 @@ export const BLOCKED_ENV_VAR_NAMES = new Set([
   'HTTP_PROXY',
   'HTTPS_PROXY',
   'ALL_PROXY',
-  'NO_PROXY'
+  'NO_PROXY',
+  // High-risk cross-service CI/cloud/registry credentials prohibited from model gateway binding
+  'GITHUB_TOKEN',
+  'GH_TOKEN',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_ACCESS_KEY_ID',
+  'NPM_TOKEN',
+  'AZURE_CLIENT_SECRET',
+  'GOOGLE_APPLICATION_CREDENTIALS'
 ]);
+
+export const BLOCKED_ENV_NAMES = BLOCKED_ENV_VAR_NAMES;
 
 /**
  * Strictly validates an environment variable name intended to supply an API key.
@@ -345,11 +357,7 @@ function stripControlChars(str, maxLen = 200) {
 }
 
 function redactErrorSnippet(text) {
-  return String(text ?? '')
-    .replace(/\bsk-(?:proj-|ant-|live-|test-|or-v1-)?[A-Za-z0-9_-]{12,}\b/g, '[REDACTED_KEY]')
-    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_TOKEN]')
-    .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, '[REDACTED_KEY]')
-    .replace(/\b(Bearer[ \t]+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1[REDACTED]')
+  return redactSensitiveText(String(text ?? ''))
     .replace(/[\x00-\x1f\x7f]+/g, ' ')
     .trim()
     .slice(0, 240);
@@ -979,18 +987,27 @@ export function createPrismProfileManager({
 
     let hasVaultKey = Boolean(existing?.hasVaultKey);
     const hasFreshApiKey = typeof providerInput.apiKey === 'string' && providerInput.apiKey.trim() !== '';
-    if (existing && hasVaultKey && !hasFreshApiKey && providerInput.clearVaultKey !== true && providerInput.apiKey !== null) {
+    if (existing) {
+      let oldOrigin = '';
+      let newOrigin = '';
       try {
-        const oldOrigin = new URL(existing.baseUrl).origin.toLowerCase();
-        const newOrigin = new URL(baseUrl).origin.toLowerCase();
-        if (oldOrigin !== newOrigin) {
+        oldOrigin = new URL(existing.baseUrl).origin.toLowerCase();
+        newOrigin = new URL(baseUrl).origin.toLowerCase();
+      } catch {}
+      if (oldOrigin && newOrigin && oldOrigin !== newOrigin) {
+        if (hasVaultKey && !hasFreshApiKey && providerInput.clearVaultKey !== true && providerInput.apiKey !== null) {
           throw Object.assign(
             new Error(`安全拦截：修改已绑定系统凭据库密钥的网关主机 (${oldOrigin} → ${newOrigin}) 时，必须重新录入 API Key 或先清除原凭据库密钥，以防密钥发往非预期端点`),
             { code: 'ORIGIN_REBIND_REQUIRES_KEY' }
           );
         }
-      } catch (err) {
-        if (err && err.code === 'ORIGIN_REBIND_REQUIRES_KEY') throw err;
+        const explicitlyResuppliedEnv = typeof providerInput.apiKeyEnv === 'string' && providerInput.apiKeyEnv.trim() !== '';
+        if (existing.apiKeyEnv && apiKeyEnv && providerInput.confirmOriginRebind !== true && !explicitlyResuppliedEnv) {
+          throw Object.assign(
+            new Error(`安全拦截：修改已绑定环境变量 (${existing.apiKeyEnv}) 的网关主机 (${oldOrigin} → ${newOrigin}) 时，必须显式确认 confirmOriginRebind 或重新指定 apiKeyEnv，以防密钥发往非预期端点`),
+            { code: 'ORIGIN_REBIND_REQUIRES_KEY' }
+          );
+        }
       }
     }
     if (providerInput.clearVaultKey === true || providerInput.apiKey === null) {

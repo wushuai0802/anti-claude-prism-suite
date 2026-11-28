@@ -520,6 +520,93 @@ function isEscAbortPayload(payloadOrErr) {
   return /USER_ESC_ABORTED/i.test(msg);
 }
 
+const MOUSE_MODE_RANK = Object.freeze({
+  strict_virtual: 0,
+  courteous: 1,
+  physical: 2
+});
+const RANK_TO_MOUSE_MODE = Object.freeze(['strict_virtual', 'courteous', 'physical']);
+const OBSERVATION_MAX_AGE_MS = 60_000;
+
+function normalizeMouseModeToken(raw, fallback = 'courteous') {
+  const s = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (s === 'strict_virtual' || s === 'virtual_only' || s === 'background') return 'strict_virtual';
+  if (s === 'courteous' || s === 'auto' || s === 'smart') return 'courteous';
+  if (s === 'physical' || s === 'hardware') return 'physical';
+  return fallback;
+}
+
+export function clampBatchMouseMode(requestedRaw, ceilingRaw = 'courteous') {
+  const ceilingMode = normalizeMouseModeToken(ceilingRaw, 'courteous');
+  const ceilingRank = MOUSE_MODE_RANK[ceilingMode] ?? 1;
+  if (requestedRaw === undefined || requestedRaw === null || String(requestedRaw).trim() === '') {
+    return ceilingMode;
+  }
+  const requestedMode = normalizeMouseModeToken(requestedRaw, ceilingMode);
+  const requestedRank = MOUSE_MODE_RANK[requestedMode] ?? ceilingRank;
+  const clampedRank = Math.min(requestedRank, ceilingRank);
+  return RANK_TO_MOUSE_MODE[clampedRank] || 'strict_virtual';
+}
+
+function normalizeHwndKeyForTarget(raw) {
+  if (raw === null || raw === undefined) return '';
+  const s = String(raw).trim();
+  if (!s) return '';
+  try {
+    if (/^0x[0-9a-f]+$/i.test(s) || /^\d+$/.test(s)) {
+      return `0x${BigInt(s).toString(16).toUpperCase()}`;
+    }
+  } catch {}
+  return s.toUpperCase();
+}
+
+function deriveBatchTargetKey(obs, { target, windowId, hwnd, tabId } = {}) {
+  const isBrowser =
+    (obs && obs.tabId !== undefined && obs.tabId !== null && !obs.window) ||
+    target === 'browser' ||
+    (tabId !== undefined && tabId !== null && !hwnd && !windowId) ||
+    (typeof obs?.url === 'string' && /^https?:/i.test(obs.url) && !obs?.window);
+  if (isBrowser) {
+    const tVal = obs?.tabId ?? tabId;
+    const cleanTab = tVal !== undefined && tVal !== null ? String(tVal).trim() : '';
+    return cleanTab ? `browser:${cleanTab}` : '';
+  }
+  const hVal = obs?.window?.hwnd ?? obs?.window?.windowId ?? obs?.hwnd ?? obs?.windowId ?? hwnd ?? windowId;
+  const normHwnd = normalizeHwndKeyForTarget(hVal);
+  return normHwnd ? `desktop:${normHwnd}` : '';
+}
+
+function isObservationCompatibleWithBatchTarget(obs, { target, windowId, hwnd, tabId } = {}, now = Date.now()) {
+  if (!obs || typeof obs !== 'object') return false;
+  const obsTs = Number(obs._observedAt ?? obs.observedAt);
+  if (Number.isFinite(obsTs) && now - obsTs > OBSERVATION_MAX_AGE_MS) {
+    return false;
+  }
+  const obsIsBrowser = Boolean((obs.tabId !== undefined && obs.tabId !== null && !obs.window) || (typeof obs.url === 'string' && /^https?:/i.test(obs.url) && !obs.window));
+  const obsIsDesktop = Boolean(obs.window || obs.hwnd || obs.windowId || obs.processName);
+
+  if (target === 'browser' && obsIsDesktop && !obsIsBrowser) return false;
+  if (target === 'desktop' && obsIsBrowser && !obsIsDesktop) return false;
+
+  const reqHwnd = hwnd ?? windowId;
+  if (reqHwnd !== undefined && reqHwnd !== null && String(reqHwnd).trim() !== '') {
+    if (obsIsBrowser && !obsIsDesktop) return false;
+    const obsHwnd = obs?.window?.hwnd ?? obs?.window?.windowId ?? obs?.hwnd ?? obs?.windowId;
+    if (!obsHwnd || normalizeHwndKeyForTarget(obsHwnd) !== normalizeHwndKeyForTarget(reqHwnd)) {
+      return false;
+    }
+  }
+
+  if (tabId !== undefined && tabId !== null && String(tabId).trim() !== '') {
+    if (obsIsDesktop && !obsIsBrowser) return false;
+    if (obs.tabId === undefined || obs.tabId === null || String(obs.tabId).trim() !== String(tabId).trim()) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function unwrapObservation(raw) {
   if (!raw || typeof raw !== 'object') return null;
   if (raw.observation && typeof raw.observation === 'object') {
@@ -558,6 +645,41 @@ export function createBatchEngine({
     maxEntries: idempotencyMaxEntries,
     nowFn
   });
+  const targetObservations = new Map();
+
+  function rememberTargetObservation(sanitizedObs, ctx) {
+    if (!sanitizedObs || typeof sanitizedObs !== 'object') return;
+    const now = nowFn();
+    for (const [k, v] of targetObservations.entries()) {
+      if (!v || now - v.observedAt > OBSERVATION_MAX_AGE_MS) {
+        targetObservations.delete(k);
+      }
+    }
+    try {
+      Object.defineProperty(sanitizedObs, '_observedAt', {
+        value: now,
+        enumerable: false,
+        configurable: true
+      });
+    } catch {}
+    const key = deriveBatchTargetKey(sanitizedObs, ctx);
+    if (key) {
+      targetObservations.set(key, { observedAt: now, observation: sanitizedObs });
+    }
+  }
+
+  function lookupCachedTargetObservation(ctx) {
+    const now = nowFn();
+    const key = deriveBatchTargetKey(null, ctx);
+    if (!key) return null;
+    const entry = targetObservations.get(key);
+    if (!entry) return null;
+    if (now - entry.observedAt > OBSERVATION_MAX_AGE_MS) {
+      targetObservations.delete(key);
+      return null;
+    }
+    return entry.observation;
+  }
 
   const doObserve = observeFn || (brokerClient ? (p) => brokerClient.observe(p) : null);
   const doAct = actFn || (brokerClient ? (step, meta) => brokerClient.act(step, meta) : null);
@@ -602,6 +724,7 @@ export function createBatchEngine({
     hwnd,
     tabId,
     mouseMode,
+    globalMouseMode,
     includeScreenshot = false,
     initialObservation = null,
     minPacingMs: callPacingMs
@@ -619,6 +742,15 @@ export function createBatchEngine({
         deduplicated: false
       };
     }
+
+    const targetCtx = { target, windowId, hwnd, tabId };
+    const ceilingMouseMode = globalMouseMode !== undefined && globalMouseMode !== null
+      ? normalizeMouseModeToken(globalMouseMode, 'courteous')
+      : 'courteous';
+    const clampedBatchMouseMode = mouseMode !== undefined && mouseMode !== null
+      ? clampBatchMouseMode(mouseMode, ceilingMouseMode)
+      : (globalMouseMode !== undefined && globalMouseMode !== null ? ceilingMouseMode : undefined);
+    const stepCeilingMouseMode = clampedBatchMouseMode || ceilingMouseMode;
 
     const cleanIdempotencyKey = typeof idempotencyKey === 'string' ? idempotencyKey.trim() : '';
     const batchFingerprint = cleanIdempotencyKey
@@ -679,8 +811,10 @@ export function createBatchEngine({
       return payload;
     };
 
-    // 1. Acquire initial observation if not supplied by caller.
-    let rawInitial = initialObservation;
+    // 1. Acquire target-matched, non-expired (<=60s) initial observation if not supplied by caller.
+    let rawInitial = isObservationCompatibleWithBatchTarget(initialObservation, targetCtx, nowFn())
+      ? initialObservation
+      : lookupCachedTargetObservation(targetCtx);
     if (!rawInitial && typeof doObserve === 'function') {
       try {
         const obsResp = await doObserve({ target, windowId, hwnd, tabId, includeScreenshot: false });
@@ -765,6 +899,9 @@ export function createBatchEngine({
     }
 
     const baselineObs = rawInitial ? sanitizeObservationTree(rawInitial) : null;
+    if (baselineObs) {
+      rememberTargetObservation(baselineObs, targetCtx);
+    }
     let currentObs = baselineObs;
     let mutatingStepsExecuted = 0;
     let lastMutatingFinishedAt = null;
@@ -832,6 +969,7 @@ export function createBatchEngine({
               });
             }
             currentObs = sanitizeObservationTree(unwrappedPre);
+            rememberTargetObservation(currentObs, targetCtx);
           }
         }
 
@@ -868,12 +1006,20 @@ export function createBatchEngine({
 
       let actResp;
       try {
-        const effectiveStepMouseMode = step.mouseMode ?? mouseMode;
+        const hasRequestedMouseMode =
+          (step.mouseMode !== undefined && step.mouseMode !== null) ||
+          (clampedBatchMouseMode !== undefined && clampedBatchMouseMode !== null);
+        const effectiveStepMouseMode = hasRequestedMouseMode
+          ? clampBatchMouseMode(step.mouseMode ?? clampedBatchMouseMode, stepCeilingMouseMode)
+          : undefined;
         const wireStep = {
           ...step,
           ...(step.clear === undefined && step.clearFirst !== undefined ? { clear: Boolean(step.clearFirst) } : {}),
           ...(effectiveStepMouseMode ? { mouseMode: effectiveStepMouseMode } : {})
         };
+        if (!effectiveStepMouseMode && 'mouseMode' in wireStep) {
+          delete wireStep.mouseMode;
+        }
         actResp = await doAct(wireStep, {
           stepIndex: i,
           target,
@@ -995,6 +1141,7 @@ export function createBatchEngine({
           });
         }
         currentObs = sanitizeObservationTree(inlineObs);
+        rememberTargetObservation(currentObs, targetCtx);
         lastStepObservedFreshly = true;
       }
 
@@ -1070,6 +1217,7 @@ export function createBatchEngine({
           }
 
           currentObs = sanitizeObservationTree(freshObs);
+          rememberTargetObservation(currentObs, targetCtx);
           lastStepObservedFreshly = true;
         }
 
@@ -1155,6 +1303,7 @@ export function createBatchEngine({
             });
           }
           currentObs = sanitizeObservationTree(finalRaw);
+          rememberTargetObservation(currentObs, targetCtx);
         }
       } catch {
         // Keep last valid observation if optional trailing diff poll encounters a non-fatal glitch.
@@ -1175,6 +1324,7 @@ export function createBatchEngine({
 
   return {
     runBatch,
-    idempotencyCache
+    idempotencyCache,
+    targetObservations
   };
 }

@@ -16,8 +16,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("Anti-Claude Prism Suite 一键安装器")]
 [assembly: AssemblyDescription("Anti-Claude Prism Suite Standalone All-in-One Installer (Kernel + Extensions + prism-files + prism-cua + chrome-bridge)")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.9.3.0")]
-[assembly: AssemblyFileVersion("0.9.3.0")]
+[assembly: AssemblyVersion("0.9.4.0")]
+[assembly: AssemblyFileVersion("0.9.4.0")]
 
 namespace AntiClaudePrismSuiteInstaller
 {
@@ -70,6 +70,7 @@ namespace AntiClaudePrismSuiteInstaller
         public bool SilentInstall;
         public bool SilentUninstall;
         public bool WithKernel;
+        public bool Purge;
         public bool NoWsl;
         public string TestUserDir;
         public string TestPluginsDir;
@@ -109,6 +110,52 @@ namespace AntiClaudePrismSuiteInstaller
             "custom.js",
             "i18n.override.json"
         };
+
+        private static readonly string[] PurgeUserDataFileNames = new string[]
+        {
+            "prism-profile.json",
+            "ui-prefs.json",
+            "thought-translation-cache.json",
+            "usage-ledger-cache.json",
+            "handoff-memory.sqlite",
+            "handoff-memory.sqlite-wal",
+            "handoff-memory.sqlite-shm",
+            "handoff-memories.jsonl",
+            "accounts-registry.json",
+            "files-state.json",
+            "self-update-state.json",
+            "cua-tools-state.json"
+        };
+
+        private const string PrismManagedMarkerFileName = ".prism-managed";
+
+        public static bool IsDefaultExtensionsDir(string candidateDir)
+        {
+            if (string.IsNullOrEmpty(candidateDir) || candidateDir.Trim().Length == 0)
+            {
+                return false;
+            }
+            try
+            {
+                string normCandidate = TrimTrailingSepPreserveRoot(candidateDir.Trim());
+                string normDefault = TrimTrailingSepPreserveRoot(GetDefaultExtensionsDir());
+                return string.Equals(normCandidate, normDefault, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsPrismManagedRuntimeDir(string runtimeDir)
+        {
+            if (string.IsNullOrEmpty(runtimeDir) || !Directory.Exists(runtimeDir) || IsExistingReparsePoint(runtimeDir))
+            {
+                return false;
+            }
+            return File.Exists(Path.Combine(runtimeDir, PrismManagedMarkerFileName))
+                || File.Exists(Path.Combine(Path.Combine(runtimeDir, "core"), "daemon.mjs"));
+        }
 
         public static string GetDefaultExtensionsDir()
         {
@@ -497,6 +544,32 @@ namespace AntiClaudePrismSuiteInstaller
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool CloseHandle(IntPtr hObject);
 
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct CREDENTIALW
+        {
+            public uint Flags;
+            public uint Type;
+            public IntPtr TargetName;
+            public IntPtr Comment;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+            public uint CredentialBlobSize;
+            public IntPtr CredentialBlob;
+            public uint Persist;
+            public uint AttributeCount;
+            public IntPtr Attributes;
+            public IntPtr TargetAlias;
+            public IntPtr UserName;
+        }
+
+        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool CredEnumerateW(string Filter, uint Flags, out uint Count, out IntPtr Credentials);
+
+        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool CredDeleteW(string Target, uint Type, uint Flags);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern void CredFree(IntPtr Buffer);
+
         /// <summary>
         /// Spawn a child process with bInheritHandles = FALSE and CREATE_NO_WINDOW so a detached
         /// grandchild (e.g. daemon.mjs) can NEVER inherit open stdout/stderr pipes from callers of Setup.exe.
@@ -782,14 +855,24 @@ namespace AntiClaudePrismSuiteInstaller
             {
                 try
                 {
-                    string dir = pathDirs[i].Trim().Trim('"');
-                    if (dir.Length > 0)
+                    string dir = pathDirs[i].Trim().Trim('"').Trim();
+                    if (dir.Length == 0 || dir == "." || dir == ".." || !Path.IsPathRooted(dir))
                     {
-                        string cand = Path.Combine(dir, "node.exe");
-                        if (IsTrustedExecutableLocation(cand, elevated))
-                        {
-                            candidates.Add(cand);
-                        }
+                        continue;
+                    }
+                    bool isFullWinRoot = (dir.Length >= 3
+                        && ((dir[0] >= 'A' && dir[0] <= 'Z') || (dir[0] >= 'a' && dir[0] <= 'z'))
+                        && dir[1] == ':'
+                        && (dir[2] == '\\' || dir[2] == '/'))
+                        || dir.StartsWith(@"\\", StringComparison.Ordinal);
+                    if (!isFullWinRoot)
+                    {
+                        continue;
+                    }
+                    string cand = Path.Combine(dir, "node.exe");
+                    if (IsTrustedExecutableLocation(cand, elevated))
+                    {
+                        candidates.Add(cand);
                     }
                 }
                 catch { }
@@ -799,8 +882,12 @@ namespace AntiClaudePrismSuiteInstaller
             string nvmSymlink = Environment.GetEnvironmentVariable("NVM_SYMLINK");
             if (!string.IsNullOrEmpty(nvmSymlink))
             {
-                string nvmCand = Path.Combine(nvmSymlink.Trim().Trim('"'), "node.exe");
-                if (IsTrustedExecutableLocation(nvmCand, elevated)) candidates.Add(nvmCand);
+                string cleanNvm = nvmSymlink.Trim().Trim('"').Trim();
+                if (cleanNvm.Length >= 3 && Path.IsPathRooted(cleanNvm) && cleanNvm != "." && cleanNvm != "..")
+                {
+                    string nvmCand = Path.Combine(cleanNvm, "node.exe");
+                    if (IsTrustedExecutableLocation(nvmCand, elevated)) candidates.Add(nvmCand);
+                }
             }
             if (!string.IsNullOrEmpty(appData))
             {
@@ -1074,6 +1161,109 @@ namespace AntiClaudePrismSuiteInstaller
             return updated;
         }
 
+        public static int RemoveDebugPortFromUserShortcuts(Action<string> log)
+        {
+            int updated = 0;
+            try
+            {
+                string[] rawRoots = new string[]
+                {
+                    GetUserDesktopFolderPath(),
+                    Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                    Environment.GetFolderPath(Environment.SpecialFolder.Programs)
+                };
+                HashSet<string> seenRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                for (int r = 0; r < rawRoots.Length; r++)
+                {
+                    string root = rawRoots[r];
+                    if (string.IsNullOrEmpty(root) || !seenRoots.Add(root) || !Directory.Exists(root)) continue;
+                    List<string> links = EnumerateShortcutFilesSafe(root);
+                    for (int k = 0; k < links.Count; k++)
+                    {
+                        if (IsExistingReparsePoint(links[k])) continue;
+                        object comObj = null;
+                        try
+                        {
+                            comObj = new ShellLinkCoClass();
+                            IPersistFile persist = (IPersistFile)comObj;
+                            persist.Load(links[k], 0);
+                            IShellLinkW link = (IShellLinkW)comObj;
+
+                            StringBuilder sbTarget = new StringBuilder(1024);
+                            link.GetPath(sbTarget, sbTarget.Capacity, IntPtr.Zero, 0);
+                            string targetPath = sbTarget.ToString();
+                            if (!targetPath.EndsWith("Antigravity.exe", StringComparison.OrdinalIgnoreCase)) continue;
+
+                            StringBuilder sbArgs = new StringBuilder(4096);
+                            link.GetArguments(sbArgs, sbArgs.Capacity);
+                            if (sbArgs.Length >= sbArgs.Capacity - 64) continue;
+                            string args = sbArgs.ToString();
+                            if (!Regex.IsMatch(args, @"(?:^|\s)--remote-debugging-port=0(?=\s|$)", RegexOptions.IgnoreCase)) continue;
+
+                            string nextArgs = Regex.Replace(args, @"(?:^|\s+)--remote-debugging-port=0(?=\s|$)", " ", RegexOptions.IgnoreCase);
+                            nextArgs = Regex.Replace(nextArgs, @"\s+", " ").Trim();
+                            link.SetArguments(nextArgs);
+                            persist.Save(links[k], true);
+                            updated++;
+                            log(string.Format("  [快捷方式] 已移除自动附加的 --remote-debugging-port=0: {0}", links[k]));
+                        }
+                        catch
+                        {
+                        }
+                        finally
+                        {
+                            if (comObj != null && Marshal.IsComObject(comObj))
+                            {
+                                try { Marshal.FinalReleaseComObject(comObj); } catch { }
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+            return updated;
+        }
+
+        private static void RemovePrismNativeMessagingRegistryKeys(Action<string> log)
+        {
+            string[] subKeys = new string[]
+            {
+                @"Software\Google\Chrome\NativeMessagingHosts\com.prism.cua.bridge",
+                @"Software\Microsoft\Edge\NativeMessagingHosts\com.prism.cua.bridge"
+            };
+            for (int i = 0; i < subKeys.Length; i++)
+            {
+                try
+                {
+                    Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(subKeys[i], false);
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private static void TryRemoveEmptyPrismSuiteDir(string suiteDir)
+        {
+            if (string.IsNullOrEmpty(suiteDir)) return;
+            try
+            {
+                if (string.Equals(Path.GetFileName(suiteDir), "prism-suite", StringComparison.OrdinalIgnoreCase)
+                    && Directory.Exists(suiteDir)
+                    && !IsExistingReparsePoint(suiteDir)
+                    && Directory.GetFiles(suiteDir).Length == 0
+                    && Directory.GetDirectories(suiteDir).Length == 0)
+                {
+                    Directory.Delete(suiteDir, false);
+                }
+            }
+            catch
+            {
+            }
+        }
+
         private static bool IsExistingReparsePoint(string path)
         {
             try
@@ -1188,6 +1378,11 @@ namespace AntiClaudePrismSuiteInstaller
             AssertSafeManagedDirectory(baseDir, stateRoot);
             AssertSafeManagedDirectory(incomingDir, stateRoot);
 
+            if (Directory.Exists(runtimeDir) && !IsPrismManagedRuntimeDir(runtimeDir))
+            {
+                throw new InvalidOperationException("安全拦截：目标 runtime 目录已存在但并非 Prism Suite 受管目录（缺少 .prism-managed 与 core\\daemon.mjs），拒绝覆盖：" + runtimeDir);
+            }
+
             Directory.CreateDirectory(runtimeDir);
             Directory.CreateDirectory(fullUserDir);
             Directory.CreateDirectory(baseDir);
@@ -1217,6 +1412,13 @@ namespace AntiClaudePrismSuiteInstaller
             if (count == 0)
             {
                 return 0;
+            }
+
+            string markerPath = Path.GetFullPath(Path.Combine(runtimeDir, PrismManagedMarkerFileName));
+            if (!IsExistingReparsePoint(markerPath))
+            {
+                File.WriteAllText(markerPath, "{\n  \"managedBy\": \"anti-claude-prism-suite\",\n  \"schema\": 1\n}\n", new UTF8Encoding(false));
+                expectedFiles.Add(markerPath);
             }
 
             PruneObsoletePluginEntries(runtimeDir, Path.GetFullPath(runtimeDir), expectedFiles, true);
@@ -1338,6 +1540,12 @@ namespace AntiClaudePrismSuiteInstaller
             string runtimeDir = Path.Combine(stateDir, "runtime");
             string installScript = Path.Combine(runtimeDir, "install.mjs");
 
+            if (Directory.Exists(runtimeDir) && !IsPrismManagedRuntimeDir(runtimeDir))
+            {
+                log("[安全跳过] 目标 runtime 目录并非 Prism Suite 受管目录（缺少 .prism-managed 与 core\\daemon.mjs），已跳过清理：" + runtimeDir);
+                return;
+            }
+
             if (deactivateHostDaemon)
             {
                 NodeRuntimeResolution rt = ResolveNodeOrElectronRuntime();
@@ -1359,6 +1567,9 @@ namespace AntiClaudePrismSuiteInstaller
                     if (File.Exists(vbs)) File.Delete(vbs);
                 }
                 catch { }
+
+                RemovePrismNativeMessagingRegistryKeys(log);
+                RemoveDebugPortFromUserShortcuts(log);
             }
             else
             {
@@ -1369,14 +1580,16 @@ namespace AntiClaudePrismSuiteInstaller
                     string livePath = Path.Combine(userDir, fName);
                     string basePath = Path.Combine(baseDir, fName);
                     if (File.Exists(livePath) && File.Exists(basePath)
+                        && !IsExistingReparsePoint(livePath)
+                        && !IsExistingReparsePoint(basePath)
                         && string.Equals(ComputeFileSha256(livePath), ComputeFileSha256(basePath), StringComparison.OrdinalIgnoreCase))
                     {
                         try { File.Delete(livePath); } catch { }
                     }
                 }
-                try { if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true); } catch { }
+                try { if (Directory.Exists(baseDir) && !IsExistingReparsePoint(baseDir)) Directory.Delete(baseDir, true); } catch { }
                 string incDir = Path.Combine(stateDir, "incoming");
-                try { if (Directory.Exists(incDir)) Directory.Delete(incDir, true); } catch { }
+                try { if (Directory.Exists(incDir) && !IsExistingReparsePoint(incDir)) Directory.Delete(incDir, true); } catch { }
             }
 
             if (Directory.Exists(runtimeDir) && !IsExistingReparsePoint(runtimeDir))
@@ -1391,6 +1604,110 @@ namespace AntiClaudePrismSuiteInstaller
                     log("[提示] 清理 runtime 目录部分文件被占用：" + ex.Message);
                 }
             }
+
+            string suiteDir = Path.GetDirectoryName(ResolveChromeBridgeTargetFromExtDir(targetExtDir));
+            string[] kernelSuiteMeta = new string[] { "cua-broker.json", "com.prism.cua.bridge.json" };
+            string[] checkDirs = new string[] { suiteDir, stateDir };
+            for (int d = 0; d < checkDirs.Length; d++)
+            {
+                if (string.IsNullOrEmpty(checkDirs[d]) || !Directory.Exists(checkDirs[d]) || IsExistingReparsePoint(checkDirs[d])) continue;
+                for (int m = 0; m < kernelSuiteMeta.Length; m++)
+                {
+                    string metaPath = Path.Combine(checkDirs[d], kernelSuiteMeta[m]);
+                    try
+                    {
+                        if (File.Exists(metaPath) && !IsExistingReparsePoint(metaPath)) File.Delete(metaPath);
+                    }
+                    catch { }
+                }
+            }
+            TryRemoveEmptyPrismSuiteDir(suiteDir);
+        }
+
+        public static int PurgeUserData(string targetExtDir, bool purgeOsCredentials, Action<string> log)
+        {
+            string stateDir;
+            string userDir;
+            ResolveAntiClaudeDirsFromExtDir(targetExtDir, out stateDir, out userDir);
+            string suiteDir = Path.GetDirectoryName(ResolveChromeBridgeTargetFromExtDir(targetExtDir));
+            string[] candidateDirs = new string[] { stateDir, suiteDir };
+            int removedCount = 0;
+
+            for (int d = 0; d < candidateDirs.Length; d++)
+            {
+                string dir = candidateDirs[d];
+                if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir) || IsExistingReparsePoint(dir)) continue;
+                for (int i = 0; i < PurgeUserDataFileNames.Length; i++)
+                {
+                    string fp = Path.Combine(dir, PurgeUserDataFileNames[i]);
+                    try
+                    {
+                        if (File.Exists(fp) && !IsExistingReparsePoint(fp))
+                        {
+                            File.Delete(fp);
+                            removedCount++;
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            if (purgeOsCredentials)
+            {
+                int credRemoved = 0;
+                uint count = 0;
+                IntPtr pCreds = IntPtr.Zero;
+                List<KeyValuePair<string, uint>> toDelete = new List<KeyValuePair<string, uint>>();
+                try
+                {
+                    if (CredEnumerateW("prism-suite:*", 0, out count, out pCreds) && pCreds != IntPtr.Zero)
+                    {
+                        for (int i = 0; i < (int)count; i++)
+                        {
+                            IntPtr credPtr = Marshal.ReadIntPtr(pCreds, i * IntPtr.Size);
+                            if (credPtr == IntPtr.Zero) continue;
+                            CREDENTIALW cred = (CREDENTIALW)Marshal.PtrToStructure(credPtr, typeof(CREDENTIALW));
+                            string target = cred.TargetName != IntPtr.Zero ? Marshal.PtrToStringUni(cred.TargetName) : null;
+                            if (!string.IsNullOrEmpty(target)
+                                && (target.StartsWith("prism-suite:account:", StringComparison.OrdinalIgnoreCase)
+                                    || target.StartsWith("prism-suite:provider:", StringComparison.OrdinalIgnoreCase)))
+                            {
+                                toDelete.Add(new KeyValuePair<string, uint>(target, cred.Type));
+                            }
+                        }
+                    }
+                }
+                catch { }
+                finally
+                {
+                    if (pCreds != IntPtr.Zero)
+                    {
+                        try { CredFree(pCreds); } catch { }
+                    }
+                }
+                for (int k = 0; k < toDelete.Count; k++)
+                {
+                    try
+                    {
+                        if (CredDeleteW(toDelete[k].Key, toDelete[k].Value, 0))
+                        {
+                            credRemoved++;
+                        }
+                    }
+                    catch { }
+                }
+                if (credRemoved > 0)
+                {
+                    log(string.Format("[完成] 已彻底清理 {0} 条 Prism 系统隔离凭据", credRemoved));
+                }
+            }
+
+            TryRemoveEmptyPrismSuiteDir(suiteDir);
+            if (removedCount > 0)
+            {
+                log(string.Format("[完成] 已彻底清理 {0} 个用户配置、缓存与记忆库文件", removedCount));
+            }
+            return removedCount;
         }
 
         public static string ResolveChromeBridgeTargetFromExtDir(string targetExtDir)
@@ -1516,21 +1833,29 @@ namespace AntiClaudePrismSuiteInstaller
                 {
                     Directory.Delete(bridgeDir, true);
                     log(string.Format("[完成] 已移除 Chrome/Edge 受控扩展桥目录: {0}", bridgeDir));
-                    string suiteParent = Path.GetDirectoryName(bridgeDir);
-                    if (!string.IsNullOrEmpty(suiteParent)
-                        && string.Equals(Path.GetFileName(suiteParent), "prism-suite", StringComparison.OrdinalIgnoreCase)
-                        && Directory.Exists(suiteParent)
-                        && !IsExistingReparsePoint(suiteParent)
-                        && Directory.GetFiles(suiteParent).Length == 0
-                        && Directory.GetDirectories(suiteParent).Length == 0)
-                    {
-                        Directory.Delete(suiteParent, false);
-                    }
                 }
                 catch (Exception ex)
                 {
                     log("[提示] 清理 chrome-bridge 目录时部分文件占用：" + ex.Message);
                 }
+            }
+
+            string suiteParent = Path.GetDirectoryName(bridgeDir);
+            if (!string.IsNullOrEmpty(suiteParent)
+                && string.Equals(Path.GetFileName(suiteParent), "prism-suite", StringComparison.OrdinalIgnoreCase)
+                && Directory.Exists(suiteParent)
+                && !IsExistingReparsePoint(suiteParent))
+            {
+                string modeFile = Path.Combine(suiteParent, "install-mode.json");
+                try
+                {
+                    if (File.Exists(modeFile) && !IsExistingReparsePoint(modeFile))
+                    {
+                        File.Delete(modeFile);
+                    }
+                }
+                catch { }
+                TryRemoveEmptyPrismSuiteDir(suiteParent);
             }
 
             return removed;
@@ -1963,8 +2288,13 @@ namespace AntiClaudePrismSuiteInstaller
             }
             try
             {
+                string wslExe = Path.Combine(Environment.SystemDirectory, "wsl.exe");
+                if (!File.Exists(wslExe))
+                {
+                    return null;
+                }
                 ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName = "wsl.exe";
+                psi.FileName = wslExe;
                 psi.Arguments = string.Format("-d \"{0}\" -- sh -c \"printf %s \\\"$HOME\\\" </dev/null\"", distro);
                 psi.UseShellExecute = false;
                 psi.CreateNoWindow = true;
@@ -2000,8 +2330,13 @@ namespace AntiClaudePrismSuiteInstaller
             List<string> distros = new List<string>();
             try
             {
+                string wslExe = Path.Combine(Environment.SystemDirectory, "wsl.exe");
+                if (!File.Exists(wslExe))
+                {
+                    return distros;
+                }
                 ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName = "wsl.exe";
+                psi.FileName = wslExe;
                 psi.Arguments = "-l -q";
                 psi.UseShellExecute = false;
                 psi.CreateNoWindow = true;
@@ -2237,7 +2572,7 @@ namespace AntiClaudePrismSuiteInstaller
             // Explicit DPI-exact scaling (prevents WinForms AutoScaleMode.Dpi 96-vs-192 mismatch on 150%/200%/250% displays)
             AutoScaleMode = AutoScaleMode.None;
             DoubleBuffered = true;
-            Text = "Anti-Claude Prism Suite 一键安装器 v0.9.3（独立完整版）";
+            Text = "Anti-Claude Prism Suite 一键安装器 v0.9.4（独立完整版）";
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = Color.FromArgb(248, 250, 252);
             ForeColor = Color.FromArgb(15, 23, 42);
@@ -2309,7 +2644,7 @@ namespace AntiClaudePrismSuiteInstaller
             headerTextCol.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             lblTitle = new Label();
-            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.9.3";
+            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.9.4";
             lblTitle.ForeColor = Color.White;
             lblTitle.Font = MakeFont(13f, FontStyle.Bold);
             lblTitle.AutoSize = true;
@@ -2855,7 +3190,8 @@ namespace AntiClaudePrismSuiteInstaller
                     {
                         if (doExt)
                         {
-                            InstallerCore.InstallKernel(extDir, manifestEntries, true, uiLog);
+                            bool isDefaultHostExt = InstallerCore.IsDefaultExtensionsDir(extDir);
+                            InstallerCore.InstallKernel(extDir, manifestEntries, isDefaultHostExt, uiLog);
                             InstallerCore.InstallExtensions(extDir, manifestEntries, uiLog);
                         }
                         if (doWinPlugin)
@@ -2874,10 +3210,11 @@ namespace AntiClaudePrismSuiteInstaller
                     {
                         if (doExt)
                         {
+                            bool isDefaultHostExt = InstallerCore.IsDefaultExtensionsDir(extDir);
                             InstallerCore.UninstallExtensions(extDir, uiLog);
                             if (removeKernelOnUninstall)
                             {
-                                InstallerCore.UninstallKernel(extDir, true, uiLog);
+                                InstallerCore.UninstallKernel(extDir, isDefaultHostExt, uiLog);
                             }
                         }
                         if (doWinPlugin)
@@ -2914,7 +3251,7 @@ namespace AntiClaudePrismSuiteInstaller
                         MessageBox.Show(
                             this,
                             isInstall
-                                ? "Anti-Claude Prism Suite v0.9.3 安装成功！\n\n快速上手三步指引：\n1. 若 Antigravity 正在打开，请先关闭并重新启动一次；\n2. 点击窗口右上角「✦ 棱镜」，一键选择喜欢的主题配色与体验模式；\n3. 点击顶栏「工作台」，即可使用文件浏览、历史检索与多账号一键切换！"
+                                ? "Anti-Claude Prism Suite v0.9.4 安装成功！\n\n快速上手三步指引：\n1. 若 Antigravity 正在打开，请先关闭并重新启动一次；\n2. 点击窗口右上角「✦ 棱镜」，一键选择喜欢的主题配色与体验模式；\n3. 点击顶栏「工作台」，即可使用文件浏览、历史检索与多账号一键切换！"
                                 : "已干净卸载选中的 Anti-Claude Prism Suite 组件。",
                             isInstall ? "安装成功" : "卸载完成",
                             MessageBoxButtons.OK,
@@ -2985,6 +3322,12 @@ namespace AntiClaudePrismSuiteInstaller
 
     internal static class Program
     {
+        private const uint LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800;
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetDefaultDllDirectories(uint DirectoryFlags);
+
         [DllImport("user32.dll")]
         private static extern bool SetProcessDPIAware();
 
@@ -2994,6 +3337,14 @@ namespace AntiClaudePrismSuiteInstaller
         [STAThread]
         private static int Main(string[] args)
         {
+            try
+            {
+                SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
+            }
+            catch
+            {
+            }
+
             try
             {
                 // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
@@ -3057,6 +3408,10 @@ namespace AntiClaudePrismSuiteInstaller
                 else if (string.Equals(a, "--with-kernel", StringComparison.OrdinalIgnoreCase))
                 {
                     opts.WithKernel = true;
+                }
+                else if (string.Equals(a, "--purge", StringComparison.OrdinalIgnoreCase))
+                {
+                    opts.Purge = true;
                 }
                 else if (string.Equals(a, "--no-wsl", StringComparison.OrdinalIgnoreCase))
                 {
@@ -3194,6 +3549,10 @@ namespace AntiClaudePrismSuiteInstaller
                         {
                             InstallerCore.UninstallExtensions(extTarget, consoleLog);
                             InstallerCore.UninstallKernel(extTarget, false, consoleLog);
+                            if (opts.Purge)
+                            {
+                                InstallerCore.PurgeUserData(extTarget, false, consoleLog);
+                            }
                         }
                     }
 
@@ -3214,10 +3573,11 @@ namespace AntiClaudePrismSuiteInstaller
 
                 string defaultExt = InstallerCore.GetDefaultExtensionsDir();
                 string defaultPlugin = InstallerCore.GetDefaultPluginDir();
+                bool isDefaultHost = InstallerCore.IsDefaultExtensionsDir(defaultExt);
 
                 if (opts.SilentInstall)
                 {
-                    InstallerCore.InstallKernel(defaultExt, entries, true, consoleLog);
+                    InstallerCore.InstallKernel(defaultExt, entries, isDefaultHost, consoleLog);
                     InstallerCore.InstallExtensions(defaultExt, entries, consoleLog);
                     InstallerCore.InstallPlugin(defaultPlugin, entries, consoleLog);
                     if (!opts.NoWsl)
@@ -3235,7 +3595,11 @@ namespace AntiClaudePrismSuiteInstaller
                     InstallerCore.UninstallExtensions(defaultExt, consoleLog);
                     if (opts.WithKernel)
                     {
-                        InstallerCore.UninstallKernel(defaultExt, true, consoleLog);
+                        InstallerCore.UninstallKernel(defaultExt, isDefaultHost, consoleLog);
+                    }
+                    if (opts.Purge)
+                    {
+                        InstallerCore.PurgeUserData(defaultExt, isDefaultHost, consoleLog);
                     }
                     InstallerCore.UninstallPlugin(defaultPlugin, consoleLog);
                     if (!opts.NoWsl)

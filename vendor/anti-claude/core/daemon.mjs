@@ -312,8 +312,130 @@ function isUncPath(p) {
   return s.startsWith('\\\\') || s.startsWith('//') || s.startsWith('/mnt/');
 }
 
-let wslGeminiCache = { at: 0, dirs: [], wslMissing: false };
+let wslGeminiCache = { at: 0, dirs: [], convDirs: [], wslMissing: false };
+let wslGeminiRefreshPromise = null;
 const SAFE_WSL_DISTRO_RE = /^[a-zA-Z0-9._-]+$/;
+const WSL_FS_TIMEOUT_MS = 1500;
+
+function withWslFsTimeout(promise, timeoutMs = WSL_FS_TIMEOUT_MS) {
+  let timer = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('wsl_fs_timeout')), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+export function refreshWslGeminiDirsBg({
+  execFileFn = execFile,
+  fsPromises = fs.promises,
+  platform = process.platform,
+  systemRoot = process.env.SystemRoot || 'C:\\Windows',
+  timeoutMs = WSL_FS_TIMEOUT_MS
+} = {}) {
+  if (platform !== 'win32') return Promise.resolve([]);
+  if (wslGeminiRefreshPromise) return wslGeminiRefreshPromise;
+
+  const wslExePath = path.win32.join(systemRoot || 'C:\\Windows', 'System32', 'wsl.exe');
+  const statWithCap = async (p) => {
+    try {
+      return await withWslFsTimeout(fsPromises.stat(p), timeoutMs);
+    } catch {
+      return null;
+    }
+  };
+
+  const runPromise = (async () => {
+    const found = [];
+    const seen = new Set();
+    let wslMissing = false;
+
+    const addCandidateAsync = async (dirPath) => {
+      const key = dirPath.toLowerCase();
+      if (seen.has(key)) return;
+      const st = await statWithCap(dirPath);
+      if (!st || !st.isDirectory()) return;
+      const convDir = path.join(dirPath, 'antigravity', 'conversations');
+      const [convSt, cfgSt] = await Promise.all([
+        statWithCap(convDir),
+        statWithCap(path.join(dirPath, 'config'))
+      ]);
+      const hasConv = Boolean(convSt && convSt.isDirectory());
+      const hasCfg = Boolean(cfgSt && cfgSt.isDirectory());
+      if (!hasConv && !hasCfg) return;
+      seen.add(key);
+      found.push({
+        dir: dirPath,
+        convDir: hasConv ? convDir : '',
+        score: hasConv ? convSt.mtimeMs : hasCfg ? cfgSt.mtimeMs : 0
+      });
+    };
+
+    try {
+      /* Query only running distros asynchronously so stopped distros and UNC mounts never block the main event loop */
+      const buf = await new Promise((resolve, reject) => {
+        execFileFn(
+          wslExePath,
+          ['-l', '-q', '--running'],
+          { encoding: 'buffer', timeout: 2500, windowsHide: true },
+          (err, stdout) => {
+            if (err) return reject(err);
+            resolve(Buffer.isBuffer(stdout) ? stdout : Buffer.from(String(stdout || ''), 'utf8'));
+          }
+        );
+      });
+      const txt = buf.includes(0) ? buf.toString('utf16le') : buf.toString('utf8');
+      const distros = txt
+        .replace(/^\uFEFF/, '')
+        .split(/\r?\n/)
+        .map((s) => s.replace(/\0/g, '').trim())
+        .filter((s) => s && SAFE_WSL_DISTRO_RE.test(s) && !/^docker-desktop/i.test(s));
+
+      for (const distro of distros) {
+        const uncBases = [`\\\\wsl.localhost\\${distro}`, `\\\\wsl$\\${distro}`];
+        let matchedBase = '';
+        for (const base of uncBases) {
+          const st = await statWithCap(base);
+          if (st && st.isDirectory()) {
+            matchedBase = base;
+            break;
+          }
+        }
+        if (!matchedBase) continue;
+        const homeRoot = path.join(matchedBase, 'home');
+        try {
+          const users = await withWslFsTimeout(fsPromises.readdir(homeRoot, { withFileTypes: true }), timeoutMs);
+          for (const u of users) {
+            if (!u.isDirectory() || u.name.startsWith('.')) continue;
+            await addCandidateAsync(path.join(homeRoot, u.name, '.gemini'));
+          }
+        } catch {}
+        await addCandidateAsync(path.join(matchedBase, 'root', '.gemini'));
+      }
+      found.sort((a, b) => b.score - a.score);
+      const dirs = found.map((x) => x.dir);
+      const convDirs = found.map((x) => x.convDir).filter(Boolean);
+      wslGeminiCache = { at: Date.now(), dirs, convDirs, wslMissing: false };
+    } catch (err) {
+      if (err && err.code === 'ENOENT') wslMissing = true;
+      wslGeminiCache = {
+        at: Date.now(),
+        dirs: wslMissing ? [] : wslGeminiCache.dirs,
+        convDirs: wslMissing ? [] : wslGeminiCache.convDirs,
+        wslMissing
+      };
+    }
+    return wslGeminiCache.dirs;
+  })().finally(() => {
+    if (wslGeminiRefreshPromise === runPromise) {
+      wslGeminiRefreshPromise = null;
+    }
+  });
+
+  wslGeminiRefreshPromise = runPromise;
+  return runPromise;
+}
 
 export function discoverWslGeminiDirs({ force = false } = {}) {
   const envRaw = String(process.env.ANTI_CLAUDE_WSL_GEMINI_DIR || '').trim();
@@ -333,77 +455,28 @@ export function discoverWslGeminiDirs({ force = false } = {}) {
   }
   if (process.platform !== 'win32') return [];
   const now = Date.now();
-  const ttl = wslGeminiCache.wslMissing ? 300000 : wslGeminiCache.dirs.length > 0 ? 30000 : 15000;
-  if (!force && wslGeminiCache.at > 0 && now - wslGeminiCache.at < ttl) {
-    return wslGeminiCache.dirs;
+  const ttl = wslGeminiCache.wslMissing ? 300000 : wslGeminiCache.dirs.length > 0 ? 30000 : 120000;
+  if (force || wslGeminiCache.at === 0 || now - wslGeminiCache.at >= ttl) {
+    void refreshWslGeminiDirsBg();
   }
-  const found = [];
-  const seen = new Set();
-  const addCandidate = (dirPath) => {
-    const key = dirPath.toLowerCase();
-    if (seen.has(key)) return;
-    try {
-      const st = fs.statSync(dirPath, { throwIfNoEntry: false });
-      if (!st || !st.isDirectory()) return;
-      const convSt = fs.statSync(path.join(dirPath, 'antigravity', 'conversations'), { throwIfNoEntry: false });
-      const cfgSt = fs.statSync(path.join(dirPath, 'config'), { throwIfNoEntry: false });
-      if (!convSt?.isDirectory() && !cfgSt?.isDirectory()) return;
-      seen.add(key);
-      found.push({ dir: dirPath, score: convSt ? convSt.mtimeMs : cfgSt ? cfgSt.mtimeMs : 0 });
-    } catch {}
-  };
-  let wslMissing = false;
-  try {
-    /* Query only running distros so stopped distros are never cold-booted or stalled on UNC access */
-    const buf = execFileSync('wsl.exe', ['-l', '-q', '--running'], { timeout: 2500, windowsHide: true });
-    const txt = buf.includes(0) ? buf.toString('utf16le') : buf.toString('utf8');
-    const distros = txt
-      .replace(/^\uFEFF/, '')
-      .split(/\r?\n/)
-      .map((s) => s.replace(/\0/g, '').trim())
-      .filter((s) => s && SAFE_WSL_DISTRO_RE.test(s) && !/^docker-desktop/i.test(s));
-    for (const distro of distros) {
-      const uncBases = [`\\\\wsl.localhost\\${distro}`, `\\\\wsl$\\${distro}`];
-      let matchedBase = '';
-      for (const base of uncBases) {
-        try {
-          const st = fs.statSync(base, { throwIfNoEntry: false });
-          if (st && st.isDirectory()) {
-            matchedBase = base;
-            break;
-          }
-        } catch {}
-      }
-      if (!matchedBase) continue;
-      const homeRoot = path.join(matchedBase, 'home');
-      try {
-        const users = fs.readdirSync(homeRoot, { withFileTypes: true });
-        for (const u of users) {
-          if (!u.isDirectory() || u.name.startsWith('.')) continue;
-          addCandidate(path.join(homeRoot, u.name, '.gemini'));
-        }
-      } catch {}
-      addCandidate(path.join(matchedBase, 'root', '.gemini'));
-    }
-  } catch (err) {
-    if (err && err.code === 'ENOENT') wslMissing = true;
-  }
-  found.sort((a, b) => b.score - a.score);
-  const dirs = found.map((x) => x.dir);
-  wslGeminiCache = { at: now, dirs, wslMissing };
-  return dirs;
+  return wslGeminiCache.dirs;
 }
 
 function discoverWslConversationsDirs() {
-  const out = [];
-  for (const gDir of discoverWslGeminiDirs()) {
-    const conv = path.join(gDir, 'antigravity', 'conversations');
-    try {
-      const st = fs.statSync(conv, { throwIfNoEntry: false });
-      if (st && st.isDirectory()) out.push(conv);
-    } catch {}
+  const envRaw = String(process.env.ANTI_CLAUDE_WSL_GEMINI_DIR || '').trim();
+  if (envRaw) {
+    const out = [];
+    for (const gDir of discoverWslGeminiDirs()) {
+      const conv = path.join(gDir, 'antigravity', 'conversations');
+      try {
+        const st = fs.statSync(conv, { throwIfNoEntry: false });
+        if (st && st.isDirectory()) out.push(conv);
+      } catch {}
+    }
+    return out;
   }
-  return out;
+  discoverWslGeminiDirs();
+  return wslGeminiCache.convDirs;
 }
 
 export function resolveConversationDirForCascade(cascadeId, conversationsDirOrList) {
@@ -3834,6 +3907,33 @@ function clearTranslateCacheStore() {
   } catch {}
 }
 
+const PRISM_PROFILE_FILE = path.join(STATE_DIR, 'prism-profile.json');
+
+export function redactSensitiveOutboundText(text) {
+  if (typeof text !== 'string' || !text) return '';
+  let out = text;
+  // 1) PEM / OpenPGP private keys (including truncated tail blocks)
+  out = out.replace(
+    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|$)/g,
+    '[REDACTED]'
+  );
+  // 2) URLs with embedded user:password@ credentials (preserve scheme, redact credentials)
+  out = out.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, '$1[REDACTED]@');
+  // 3) Bearer / Basic Authorization headers
+  out = out.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 [REDACTED]');
+  // 4) Well-known API key, OAuth, PAT, AWS, JWT, HuggingFace, Stripe & Slack token prefixes
+  out = out.replace(
+    /\b(?:sk-[A-Za-z0-9_-]{16,}|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(?:AKIA|ASIA)[0-9A-Z]{16}|ya29\.[A-Za-z0-9._-]{20,}|1\/\/0[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}|hf_[A-Za-z0-9]{20,}|[rs]k_live_[A-Za-z0-9]{16,}|xox[a-z]-[A-Za-z0-9-]{16,}|glpat-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35})\b/g,
+    '[REDACTED]'
+  );
+  // 5) Key-value & JSON secret/password/token assignments
+  out = out.replace(
+    /((?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key)\s*["']?\s*[:=]\s*["']?)(?!\[REDACTED\])[^\s"',;}\])`<>]{4,}/gi,
+    '$1[REDACTED]'
+  );
+  return out;
+}
+
 function maskThoughtProtectedSpans(rawText) {
   const originals = [];
   const put = (segment) => {
@@ -3842,6 +3942,8 @@ function maskThoughtProtectedSpans(rawText) {
     return `⟪P${idx}⟫`;
   };
   let out = String(rawText || '');
+  // 0) Redaction markers (keep exact [REDACTED] token untranslated)
+  out = out.replace(/\[REDACTED\]/g, (m) => put(m));
   // 1) Fenced code blocks (masked before chunk splitting so code blocks never split across chunks)
   out = out.replace(/```[\s\S]*?```/g, (m) => put(m));
   // 2) Inline code spans
@@ -3911,13 +4013,14 @@ function splitTextForTranslation(text, maxChunkLen = 950) {
   return chunks.slice(0, 12);
 }
 
-async function translateChunk(chunk, tl) {
-  const cKey = `c:${tl}:${crypto.createHash('sha1').update(chunk).digest('hex')}`;
+async function translateChunk(chunk, tl, fetchFn = fetch) {
+  const safeChunk = redactSensitiveOutboundText(chunk);
+  const cKey = `c:${tl}:${crypto.createHash('sha1').update(safeChunk).digest('hex')}`;
   if (translateChunkCache.has(cKey)) return translateChunkCache.get(cKey);
   let tier1Err = null;
   try {
-    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(tl)}&dt=t&q=${encodeURIComponent(chunk)}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(6000), redirect: 'error' });
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(tl)}&dt=t&q=${encodeURIComponent(safeChunk)}`;
+    const res = await fetchFn(url, { signal: AbortSignal.timeout(6000), redirect: 'error' });
     if (!res.ok) throw new Error(`http_${res.status}`);
     const data = await res.json();
     const translated = Array.isArray(data?.[0]) ? data[0].map((seg) => (Array.isArray(seg) ? seg[0] || '' : '')).join('') : '';
@@ -3928,8 +4031,8 @@ async function translateChunk(chunk, tl) {
     tier1Err = err;
   }
 
-  const fallbackUrl = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=${encodeURIComponent(tl)}&q=${encodeURIComponent(chunk)}`;
-  const res2 = await fetch(fallbackUrl, { signal: AbortSignal.timeout(6000), redirect: 'error' });
+  const fallbackUrl = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=${encodeURIComponent(tl)}&q=${encodeURIComponent(safeChunk)}`;
+  const res2 = await fetchFn(fallbackUrl, { signal: AbortSignal.timeout(6000), redirect: 'error' });
   if (!res2.ok) throw new Error(`http_${res2.status}`);
   const data2 = await res2.json();
   const translated2 = Array.isArray(data2)
@@ -3946,11 +4049,13 @@ async function translateChunk(chunk, tl) {
   return translated2;
 }
 
-async function translateThoughtText(rawText, targetLang = 'zh-CN') {
-  const text = String(rawText || '').trim();
-  if (!text) return { ok: true, translated: '', skipped: true };
+export async function translateThoughtText(rawText, targetLang = 'zh-CN', opts = {}) {
+  const rawTrimmed = String(rawText || '').trim();
+  if (!rawTrimmed) return { ok: true, translated: '', skipped: true };
   ensureTranslateCacheLoaded();
-  const clipped = text.length > 10000 ? text.slice(0, 10000) : text;
+  const preClipped = rawTrimmed.length > 14000 ? rawTrimmed.slice(0, 14000) : rawTrimmed;
+  const redacted = redactSensitiveOutboundText(preClipped);
+  const clipped = redacted.length > 10000 ? redacted.slice(0, 10000) : redacted;
   const tl = /^[a-zA-Z-]{2,10}$/.test(String(targetLang || '')) ? String(targetLang) : 'zh-CN';
   const cacheKey = `${tl}:${crypto.createHash('sha1').update(clipped).digest('hex')}`;
   const cachedHit = getTranslateCacheEntry(cacheKey);
@@ -3966,21 +4071,24 @@ async function translateThoughtText(rawText, targetLang = 'zh-CN') {
     return { ok: true, translated: clipped, skipped: true };
   }
 
+  const fetchFn = typeof opts?.fetchFn === 'function' ? opts.fetchFn : fetch;
   try {
     const chunks = splitTextForTranslation(masked, 950);
     const out = [];
     for (const ch of chunks) {
-      out.push(await translateChunk(ch, tl));
+      out.push(await translateChunk(ch, tl, fetchFn));
     }
     const translated = unmaskThoughtProtectedSpans(out.join('\n\n'), originals);
     setTranslateCacheEntry(cacheKey, translated);
-    return { ok: true, translated, truncated: text.length > 10000 };
+    return { ok: true, translated, truncated: rawTrimmed.length > 10000 };
   } catch (err) {
     return { ok: false, error: String(err?.name || err?.message || 'translate_failed') };
   }
 }
 
-function isAllowedModelHubEndpointUrl(rawUrl) {
+export { translateThoughtText as translateTextAction };
+
+export function isAllowedModelHubEndpointUrl(rawUrl) {
   try {
     const u = new URL(String(rawUrl || '').trim());
     if (u.username || u.password) return false;
@@ -3988,21 +4096,55 @@ function isAllowedModelHubEndpointUrl(rawUrl) {
     if (
       !host ||
       host === '0.0.0.0' ||
+      host === '::' ||
+      host === '0:0:0:0:0:0:0:0' ||
+      host === '::ffff:0:0' ||
+      host === '::ffff:0.0.0.0' ||
+      host === '100.100.100.200' ||
+      host === '::ffff:6464:64c8' ||
+      host === '::ffff:100.100.100.200' ||
+      host === 'fd00:ec2::254' ||
+      host === 'metadata' ||
       host === 'metadata.google.internal' ||
       host.endsWith('.internal') ||
       host.startsWith('169.254.') ||
       host.startsWith('fe80:') ||
-      host.startsWith('::ffff:169.254.')
+      host.startsWith('::ffff:169.254.') ||
+      host.startsWith('::ffff:a9fe:') ||
+      host.startsWith('0:0:0:0:0:ffff:a9fe:') ||
+      host.startsWith('64:ff9b::a9fe:') ||
+      host.startsWith('64:ff9b::169.254.')
     ) {
       return false;
     }
+
+    let ipv4Octets = null;
+    const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (ipv4) {
+      const octs = ipv4.slice(1).map(Number);
+      if (octs.some((o) => o < 0 || o > 255)) return false;
+      ipv4Octets = octs;
+    } else {
+      const mappedHex = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+      if (mappedHex) {
+        const hi = parseInt(mappedHex[1], 16);
+        const lo = parseInt(mappedHex[2], 16);
+        ipv4Octets = [(hi >> 8) & 0xff, hi & 0xff, (lo >> 8) & 0xff, lo & 0xff];
+      }
+    }
+    if (ipv4Octets) {
+      const [a, b, c, d] = ipv4Octets;
+      if (a === 0 || (a === 169 && b === 254) || (a === 100 && b === 100 && c === 100 && d === 200)) {
+        return false;
+      }
+    }
+
     if (u.protocol === 'https:') return true;
     if (u.protocol !== 'http:') return false;
     if (host === 'localhost' || host === '::1') return true;
-    const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-    if (!ipv4) return false;
-    const [a, b, c, d] = ipv4.slice(1).map(Number);
-    if ([a, b, c, d].some((o) => o < 0 || o > 255)) return false;
+    if (host.endsWith('.ts.net') && host.length > 7) return true;
+    if (!ipv4Octets) return false;
+    const [a, b] = ipv4Octets;
     if (a === 127 || a === 10) return true;
     if (a === 192 && b === 168) return true;
     if (a === 172 && b >= 16 && b <= 31) return true;
@@ -4013,35 +4155,98 @@ function isAllowedModelHubEndpointUrl(rawUrl) {
   }
 }
 
+const BLOCKED_ENV_VAR_EXACT = new Set([
+  'PATH',
+  'HOME',
+  'USER',
+  'USERNAME',
+  'USERPROFILE',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'TEMP',
+  'TMP',
+  'SHELL',
+  'PWD',
+  'OLDPWD',
+  'NODE_OPTIONS',
+  'ELECTRON_RUN_AS_NODE',
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+  'DYLD_INSERT_LIBRARIES',
+  'GITHUB_TOKEN',
+  'GH_TOKEN',
+  'GITLAB_TOKEN',
+  'GL_TOKEN',
+  'NPM_TOKEN',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SESSION_TOKEN',
+  'AZURE_CLIENT_SECRET',
+  'AZURE_TENANT_ID',
+  'GOOGLE_APPLICATION_CREDENTIALS'
+]);
+
+const BLOCKED_ENV_VAR_PREFIX_RE =
+  /^(?:GITHUB_|GH_|GITLAB_|BITBUCKET_|AWS_|AZURE_CLIENT_|AZURE_TENANT_|AZURE_FEDERATED_|AZURE_SUBSCRIPTION_|NPM_|YARN_|PNPM_|PYPI_|CARGO_|DOCKER_|KUBE|VAULT_|TERRAFORM_|CLOUDFLARE_|CF_|SLACK_|DISCORD_|TELEGRAM_|STRIPE_|TWILIO_|SENDGRID_|DATABASE_|DB_|POSTGRES_|MYSQL_|REDIS_|MONGO_|SSH_|GPG_|GNUPG_|ANTIGRAVITY_|VSCODE_|CHROME_|PRISM_CUA_|SESSION_|COOKIE_|CSRF_)/;
+
+const SAFE_LLM_ENV_HINT_RE =
+  /(?:API_KEY|API_TOKEN|LLM|MODEL|HUB|PRISM|CPA|OPENAI|ANTHROPIC|CLAUDE|GEMINI|GOOGLE_AI|VERTEX|DEEPSEEK|DASHSCOPE|QWEN|MOONSHOT|KIMI|ZHIPU|GLM|MISTRAL|GROQ|TOGETHER|FIREWORKS|OPENROUTER|SILICONFLOW|VOLC|ARK|XAI|GROK|COHERE|PERPLEXITY|OLLAMA|LITELLM|ONEAPI|NEWAPI|VLLM|LMSTUDIO)/;
+
+export function isSafeLlmApiKeyEnvName(rawName) {
+  const name = typeof rawName === 'string' ? rawName.trim() : '';
+  if (!/^[A-Z][A-Z0-9_]{2,63}$/.test(name)) return false;
+  if (BLOCKED_ENV_VAR_EXACT.has(name)) return false;
+  if (BLOCKED_ENV_VAR_PREFIX_RE.test(name)) return false;
+  if (!/(?:_KEY|_TOKEN|_SECRET)$/.test(name)) return false;
+  return SAFE_LLM_ENV_HINT_RE.test(name);
+}
+
 function predictNextPromptHeuristic(lastAssistantText) {
   const text = String(lastAssistantText || '').trim();
-  const tail = text.slice(-360);
+  const tail = text.slice(-320);
   const asksQuestion = /[?？]|(?:是否|要不要|需要我|确认|可以吗|好吗|行吗|如何|怎么样|请告知|告诉我|反馈)/.test(tail);
-  if (/(?:打包发布|v0\.\d+|发版|推送)/i.test(text) && asksQuestion) {
+  const asksToRelease = /(?:是否|要不要|需要我|帮您|帮你).{0,16}(?:打包|发布|发版|推送|补发\s*v?\d+\.\d+)/i.test(tail);
+
+  if (asksToRelease || (/(?:打包发布|补发\s*v?\d+\.\d+|发版|推送.*Release)/i.test(tail) && asksQuestion)) {
     return '确认无误，请打包发布新版本';
   }
-  if (/(?:测试|验收|试试)/.test(text) && asksQuestion) {
-    return '效果没问题，请继续收尾提交';
+  if (/(?:已正式发布|已经正式发布|发布上线|本机无需重装|无需任何额外操作)/.test(text) && !asksToRelease) {
+    return '实际体验一下新功能细节，看看还有哪里可以打磨';
   }
-  if (/(?:报错|异常|根因|失败)/.test(text)) {
+  if (/(?:测试|验收|试试|看一眼|感受一下|已消除|实时生效)/.test(tail) && asksQuestion) {
+    return '界面效果已经正常了，请继续收尾提交';
+  }
+  if (/(?:报错|异常|根因|失败)/.test(tail)) {
     return '请按定位的根因修复并运行测试验证';
   }
-  if (/(?:方案|建议)/.test(text) || (/(?:^|\s)1[.、)]/.test(text) && /(?:^|\s)2[.、)]/.test(text))) {
+  if (/(?:方案|选项)/.test(tail) || (/(?:^|\s)1[.、)]/.test(tail) && /(?:^|\s)2[.、)]/.test(tail))) {
     return '按你的推荐方案继续落地执行';
   }
-  if (/(?:巡检|上游|更新)/.test(text)) {
+  if (/(?:待合入|候选更新|是否合入|巡检报告)/.test(tail)) {
     return '合入高优先级兼容项并运行回归测试';
   }
   return '继续检查还有没有遗漏细节需要优化';
 }
 
-async function predictNextPromptAction(payload) {
-  const lastUserText = String(payload?.lastUserText || '').trim().slice(-900);
-  const lastAssistantText = String(payload?.lastAssistantText || '').trim().slice(-1400);
+export async function predictNextPromptAction(payload, opts = {}) {
+  const rawUserTail = String(payload?.lastUserText || '').trim().slice(-4000);
+  const rawAssistantTail = String(payload?.lastAssistantText || '').trim().slice(-6000);
+  const lastUserText = redactSensitiveOutboundText(rawUserTail).slice(-900);
+  const lastAssistantText = redactSensitiveOutboundText(rawAssistantTail).slice(-1400);
 
   if (lastAssistantText || lastUserText) {
-    const rawHub = readJsonOrFallback(MODEL_HUB_CONFIG_FILE, null);
-    if (rawHub && typeof rawHub === 'object') {
+    const profileFile = opts.profileFile || process.env.PRISM_PROFILE_PATH || PRISM_PROFILE_FILE;
+    const hubFile = opts.modelHubFile || process.env.PRISM_MODEL_HUB_FILE || MODEL_HUB_CONFIG_FILE;
+    const env = opts.env || process.env;
+    const fetchFn = typeof opts.fetchFn === 'function' ? opts.fetchFn : fetch;
+
+    const configSources = [
+      { kind: 'profile', raw: readJsonOrFallback(profileFile, null) },
+      { kind: 'legacy', raw: readJsonOrFallback(hubFile, null) }
+    ];
+
+    for (const { kind, raw: rawHub } of configSources) {
+      if (!rawHub || typeof rawHub !== 'object') continue;
       const candidates = Array.isArray(rawHub)
         ? rawHub
         : Array.isArray(rawHub.endpoints)
@@ -4052,14 +4257,24 @@ async function predictNextPromptAction(payload) {
               ? [rawHub]
               : [];
       const topModels = Array.isArray(rawHub.models) ? rawHub.models : [];
+
       for (const ep of candidates) {
         if (!ep || typeof ep !== 'object' || ep.enabled === false) continue;
         if (ep.protocol && !/^openai/i.test(String(ep.protocol))) continue;
         const baseUrl = String(ep.baseUrl || '').trim().replace(/\/+$/, '');
-        const apiKey = String(ep.apiKey || (ep.apiKeyEnv && process.env[ep.apiKeyEnv]) || '').trim();
-        if (!baseUrl || !apiKey) continue;
+        if (!baseUrl) continue;
+
+        const authMode = String(ep.authMode || '').trim().toLowerCase();
+        const envKeyName = typeof ep.apiKeyEnv === 'string' ? ep.apiKeyEnv.trim() : '';
+        const envApiKey = envKeyName && isSafeLlmApiKeyEnvName(envKeyName) ? String(env[envKeyName] || '').trim() : '';
+        const directApiKey = kind === 'legacy' && typeof ep.apiKey === 'string' ? ep.apiKey.trim() : '';
+        const apiKey = envApiKey || directApiKey;
+        const allowKeylessLocal = authMode === 'none';
+        if (!apiKey && !allowKeylessLocal) continue;
+
         const chatUrl = /\/chat\/completions$/i.test(baseUrl) ? baseUrl : `${baseUrl}/chat/completions`;
         if (!isAllowedModelHubEndpointUrl(chatUrl)) continue;
+
         const rawModels = Array.isArray(ep.models)
           ? ep.models
           : ep.id
@@ -4067,17 +4282,22 @@ async function predictNextPromptAction(payload) {
             : topModels;
         const modelIds = rawModels
           .filter((m) => (typeof m === 'string' ? true : m && m.enabled !== false))
-          .map((m) => (typeof m === 'string' ? m.trim() : String(m.model || m.name || m.id || '').trim()))
+          .map((m) =>
+            typeof m === 'string'
+              ? m.trim()
+              : String(m.upstreamModel || m.modelId || m.model || m.name || m.id || '').trim()
+          )
           .filter(Boolean);
         const chosenModel = modelIds.find((id) => /flash|mini|haiku/i.test(id)) || modelIds[0] || '';
         if (!chosenModel) continue;
+
+        const headers = { 'Content-Type': 'application/json' };
+        if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
         try {
-          const res = await fetch(chatUrl, {
+          const res = await fetchFn(chatUrl, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${apiKey}`
-            },
+            headers,
             body: JSON.stringify({
               model: chosenModel,
               max_tokens: 42,
@@ -4086,7 +4306,7 @@ async function predictNextPromptAction(payload) {
                 {
                   role: 'system',
                   content:
-                    '基于最后一轮问答，站在用户角度预测用户下一步最可能输入的一句简短中文指令（10~26字，直接输出指令本身，不要引号、句号或解释）。'
+                    '基于最后一轮问答（重点依据助手回复末尾的最新结论或提问，忽略前文已完结的历史背景），站在用户角度预测用户下一步最可能输入的一句简短中文指令（10~24字，直接输出指令本身，不要引号、句号或解释）。'
                 },
                 {
                   role: 'user',
@@ -4144,6 +4364,8 @@ function extractStepCreatedSec(metaBuf) {
   return 0;
 }
 
+const MIN_USAGE_LEDGER_HORIZON_DAYS = 190;
+
 function loadUsageLedgerStore(cacheFile) {
   if (usageLedgerMem && usageLedgerMem.cachePath === cacheFile) return usageLedgerMem;
   const entries = new Map();
@@ -4151,7 +4373,12 @@ function loadUsageLedgerStore(cacheFile) {
   if (raw && raw.schema === 1 && raw.files && typeof raw.files === 'object') {
     for (const [fp, val] of Object.entries(raw.files)) {
       if (val && typeof val.sig === 'string' && val.byDay && typeof val.byDay === 'object') {
-        entries.set(fp, { sig: val.sig, mtimeMs: Number(val.mtimeMs) || 0, byDay: val.byDay });
+        entries.set(fp, {
+          sig: val.sig,
+          mtimeMs: Number(val.mtimeMs) || 0,
+          cutoffDateKey: typeof val.cutoffDateKey === 'string' ? val.cutoffDateKey : '',
+          byDay: val.byDay
+        });
       }
     }
   }
@@ -4160,15 +4387,26 @@ function loadUsageLedgerStore(cacheFile) {
 }
 
 function saveUsageLedgerStore(store) {
-  const tmp = `${store.cachePath}.tmp.${process.pid}`;
+  const target = resolveAtomicWriteTarget(store.cachePath);
+  const tmp = `${target}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   try {
-    fs.mkdirSync(path.dirname(store.cachePath), { recursive: true });
+    const dir = path.dirname(target);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const files = {};
     for (const [fp, val] of store.entries.entries()) {
       files[fp] = val;
     }
-    fs.writeFileSync(tmp, JSON.stringify({ schema: 1, updatedAt: Date.now(), files }), 'utf8');
-    fs.renameSync(tmp, store.cachePath);
+    fs.writeFileSync(tmp, JSON.stringify({ schema: 1, updatedAt: Date.now(), files }), {
+      encoding: 'utf8',
+      mode: 0o600
+    });
+    try {
+      fs.chmodSync(tmp, 0o600);
+    } catch {}
+    fs.renameSync(tmp, target);
+    try {
+      fs.chmodSync(target, 0o600);
+    } catch {}
   } catch {
     try {
       fs.rmSync(tmp, { force: true });
@@ -4237,6 +4475,9 @@ export function collectUsageSummary(opts = {}) {
   const todayKey = windowDates[windowDates.length - 1];
   const cutoffDateKey = formatLocalDateKey(todayDateObj.getTime() - (days + 2) * 86400000);
   const cutoffMtimeMs = todayDateObj.getTime() - (days + 2) * 86400000;
+  const ledgerHorizonDays = Math.max(MIN_USAGE_LEDGER_HORIZON_DAYS, days + 2);
+  const ledgerCutoffDateKey = formatLocalDateKey(todayDateObj.getTime() - ledgerHorizonDays * 86400000);
+  const pruneCutoffMtimeMs = todayDateObj.getTime() - ledgerHorizonDays * 86400000;
 
   const store = loadUsageLedgerStore(cacheFile);
   const seenDirs = new Set();
@@ -4276,7 +4517,15 @@ export function collectUsageSummary(opts = {}) {
 
   for (const item of discovered) {
     const existing = store.entries.get(item.dbPath);
-    if (existing && existing.sig === item.info.sig) continue;
+    if (
+      existing &&
+      existing.sig === item.info.sig &&
+      typeof existing.cutoffDateKey === 'string' &&
+      existing.cutoffDateKey.length === 10 &&
+      existing.cutoffDateKey <= cutoffDateKey
+    ) {
+      continue;
+    }
     const retryAfter = usageReadFailUntil.get(item.dbPath) || 0;
     if (retryAfter > nowMs) continue;
     if (uncachedScanned >= maxBatch) {
@@ -4285,8 +4534,13 @@ export function collectUsageSummary(opts = {}) {
     }
     uncachedScanned += 1;
     try {
-      const byDay = readDbDailyUsage(item.dbPath, item.info.mtimeMs, cutoffDateKey);
-      store.entries.set(item.dbPath, { sig: item.info.sig, mtimeMs: item.info.mtimeMs, byDay });
+      const byDay = readDbDailyUsage(item.dbPath, item.info.mtimeMs, ledgerCutoffDateKey);
+      store.entries.set(item.dbPath, {
+        sig: item.info.sig,
+        mtimeMs: item.info.mtimeMs,
+        cutoffDateKey: ledgerCutoffDateKey,
+        byDay
+      });
       usageReadFailUntil.delete(item.dbPath);
       dirty = true;
     } catch {
@@ -4296,7 +4550,7 @@ export function collectUsageSummary(opts = {}) {
 
   // Prune deleted or very stale cache entries
   for (const [fp, val] of Array.from(store.entries.entries())) {
-    if (!livePaths.has(fp) && val.mtimeMs < cutoffMtimeMs) {
+    if (!livePaths.has(fp) && val.mtimeMs < pruneCutoffMtimeMs) {
       store.entries.delete(fp);
       dirty = true;
     }
@@ -4311,6 +4565,7 @@ export function collectUsageSummary(opts = {}) {
     const entry = store.entries.get(item.dbPath);
     if (!entry || !entry.byDay) continue;
     for (const [dayKey, vals] of Object.entries(entry.byDay)) {
+      if (dayKey < cutoffDateKey) continue;
       const bucket = dayAgg.get(dayKey);
       if (!bucket || !vals) continue;
       const inp = Number(vals.input) || 0;
@@ -4425,16 +4680,18 @@ function collectAntigravityShortcutFiles(roots, maxDepth = 5) {
   return found;
 }
 
-function stripFastRestoreFlagsPreservingQuotes(rawArgs) {
+export function stripFastRestoreFlagsPreservingQuotes(rawArgs) {
   const src = String(rawArgs || '').trim();
   if (!src) return '';
-  const tokens = src.match(/"[^"]*"|'[^']*'|\S+/g) || [];
-  const kept = tokens.filter(
-    (tok) =>
-      !/^--disable-renderer-backgrounding$/i.test(tok) &&
-      !/^--disable-backgrounding-occluded-windows$/i.test(tok)
-  );
-  return kept.join(' ');
+  if (!/(?:^|\s)--disable-(?:renderer-backgrounding|backgrounding-occluded-windows)(?=\s|$)/i.test(src)) {
+    return src;
+  }
+  return src
+    .replace(
+      /((?:\S*(?:"[^"]*"|'[^']*')\S*)+)|(^|\s+)(?:--disable-renderer-backgrounding|--disable-backgrounding-occluded-windows)(?=\s|$)/gi,
+      (full, quotedToken) => (quotedToken ? quotedToken : '')
+    )
+    .trim();
 }
 
 export function getFastWindowRestoreStatus({ env = process.env, roots = null } = {}) {
@@ -5605,6 +5862,191 @@ function getCachedBootPayload() {
   return cachedBootPayloadBase;
 }
 
+const CUA_PLUGIN_POLL_MS = 4000;
+
+function cleanupStaleCuaBrokerFiles({
+  homeDir = os.homedir(),
+  brokerFilePath = '',
+  wslGeminiDirs = wslGeminiCache.dirs
+} = {}) {
+  const targets = [
+    brokerFilePath || path.join(homeDir, '.gemini', 'antigravity', 'prism-suite', 'cua-broker.json')
+  ];
+  if (Array.isArray(wslGeminiDirs)) {
+    for (const gDir of wslGeminiDirs) {
+      if (typeof gDir === 'string' && gDir.trim()) {
+        targets.push(path.join(gDir, 'antigravity', 'prism-suite', 'cua-broker.json'));
+      }
+    }
+  }
+  for (const fp of targets) {
+    try {
+      const st = fs.lstatSync(fp, { throwIfNoEntry: false });
+      if (st && !st.isDirectory()) {
+        fs.rmSync(fp, { force: true });
+      }
+    } catch {}
+  }
+}
+
+export async function isPrismCuaPluginEnabled({
+  homeDir = os.homedir(),
+  pluginJsonPath = '',
+  env = process.env,
+  fsPromises = fs.promises
+} = {}) {
+  if (String(env?.PRISM_FORCE_CUA_BROKER || '') === '1') return true;
+  const target = pluginJsonPath || path.join(homeDir, '.gemini', 'config', 'plugins', 'prism-cua', 'plugin.json');
+  try {
+    const raw = await fsPromises.readFile(target, 'utf8');
+    const parsed = JSON.parse(raw);
+    return Boolean(parsed && typeof parsed === 'object' && parsed.disabled !== true);
+  } catch {
+    return false;
+  }
+}
+
+export function createCuaBrokerLifecycleController({
+  homeDir = os.homedir(),
+  pluginJsonPath = '',
+  brokerFilePath = '',
+  env = process.env,
+  fsPromises = fs.promises,
+  pollIntervalMs = CUA_PLUGIN_POLL_MS,
+  startBrokerFn = (opts) => startCuaBroker(opts),
+  stopBrokerFn = async (brokerInstance) => {
+    await stopCuaBroker();
+    if (brokerInstance && typeof brokerInstance.stop === 'function') {
+      await brokerInstance.stop();
+    } else if (brokerInstance && typeof brokerInstance.close === 'function') {
+      await brokerInstance.close();
+    }
+  },
+  discoverWslDirsFn = discoverWslGeminiDirs,
+  onWarn = (msg) => console.warn(msg)
+} = {}) {
+  const resolvedPluginJson =
+    pluginJsonPath || path.join(homeDir, '.gemini', 'config', 'plugins', 'prism-cua', 'plugin.json');
+  let activeCuaBroker = null;
+  let brokerRunning = false;
+  let lastMtimeSig = '';
+  let lastDesiredEnabled = null;
+  let reconcilePromise = null;
+  let pollTimer = null;
+  let disposed = false;
+
+  const reconcileOnce = async () => {
+    if (disposed || shuttingDown) return { enabled: false, running: brokerRunning };
+    let desiredEnabled = false;
+    if (String(env?.PRISM_FORCE_CUA_BROKER || '') === '1') {
+      desiredEnabled = true;
+      lastMtimeSig = 'forced:1';
+    } else {
+      let st = null;
+      try {
+        st = await fsPromises.stat(resolvedPluginJson);
+      } catch {
+        st = null;
+      }
+      if (!st || !st.isFile()) {
+        lastMtimeSig = 'missing';
+        desiredEnabled = false;
+      } else {
+        const sig = `${st.size}:${st.mtimeMs}`;
+        if (sig === lastMtimeSig && lastDesiredEnabled !== null) {
+          desiredEnabled = lastDesiredEnabled;
+        } else {
+          try {
+            const raw = await fsPromises.readFile(resolvedPluginJson, 'utf8');
+            const parsed = JSON.parse(raw);
+            desiredEnabled = Boolean(parsed && typeof parsed === 'object' && parsed.disabled !== true);
+            lastMtimeSig = sig;
+          } catch {
+            desiredEnabled = lastDesiredEnabled === true;
+          }
+        }
+      }
+    }
+
+    if (desiredEnabled) {
+      if (!brokerRunning && !disposed && !shuttingDown) {
+        try {
+          activeCuaBroker = await startBrokerFn({ discoverWslGeminiDirs: discoverWslDirsFn });
+          brokerRunning = true;
+        } catch (err) {
+          onWarn(`[Anti-Claude Daemon] CUA Broker warning: ${err?.message || err}`);
+        }
+      }
+      lastDesiredEnabled = true;
+    } else {
+      if (brokerRunning || activeCuaBroker) {
+        const prev = activeCuaBroker;
+        activeCuaBroker = null;
+        brokerRunning = false;
+        try {
+          await stopBrokerFn(prev);
+        } catch {}
+        cleanupStaleCuaBrokerFiles({ homeDir, brokerFilePath });
+      } else if (lastDesiredEnabled === null) {
+        cleanupStaleCuaBrokerFiles({ homeDir, brokerFilePath });
+      }
+      lastDesiredEnabled = false;
+    }
+    return { enabled: desiredEnabled, running: brokerRunning, broker: activeCuaBroker };
+  };
+
+  const syncNow = () => {
+    if (!reconcilePromise) {
+      reconcilePromise = reconcileOnce().finally(() => {
+        reconcilePromise = null;
+      });
+    }
+    return reconcilePromise;
+  };
+
+  const startPolling = () => {
+    if (disposed || pollTimer) return;
+    pollTimer = setInterval(() => {
+      void syncNow();
+    }, pollIntervalMs);
+    if (pollTimer && typeof pollTimer.unref === 'function') {
+      pollTimer.unref();
+    }
+  };
+
+  const stopController = async () => {
+    disposed = true;
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+    if (reconcilePromise) {
+      await reconcilePromise.catch(() => {});
+    }
+    if (brokerRunning || activeCuaBroker) {
+      const prev = activeCuaBroker;
+      activeCuaBroker = null;
+      brokerRunning = false;
+      try {
+        await stopBrokerFn(prev);
+      } catch {}
+      cleanupStaleCuaBrokerFiles({ homeDir, brokerFilePath });
+    }
+  };
+
+  return {
+    syncNow,
+    startPolling,
+    stop: stopController,
+    get activeBroker() {
+      return activeCuaBroker;
+    },
+    get isRunning() {
+      return brokerRunning;
+    }
+  };
+}
+
 export { attachedTargets, skippedNonHostTargets, sync, rebuildBundleIfNeeded, getCachedBootPayload };
 
 const isMainModule = (() => {
@@ -5631,9 +6073,9 @@ if (isMainModule) {
     process.exit(0);
   } else {
     rebuildBundleIfNeeded();
-    await startCuaBroker({ discoverWslGeminiDirs }).catch((err) => {
-      console.warn(`[Anti-Claude Daemon] CUA Broker warning: ${err?.message || err}`);
-    });
+    const cuaLifecycle = createCuaBrokerLifecycleController({ homeDir: HOME });
+    await cuaLifecycle.syncNow();
+    cuaLifecycle.startPolling();
     console.log(`[Anti-Claude Daemon] Started (${cachedVersion}) | userDir=${USER_DIR} | sqlite=${Boolean(DatabaseSync)}`);
     await sync();
     setInterval(sync, 2500);

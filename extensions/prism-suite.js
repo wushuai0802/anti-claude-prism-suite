@@ -1,5 +1,5 @@
 /* ============================================================================
- * Anti-Claude Prism Suite v0.7.0 (Clean-Room Original, MIT)
+ * Anti-Claude Prism Suite v0.9.4 (Clean-Room Original, MIT)
  * Performance-first architecture:
  *   - Zero document.body MutationObserver (0.0ms typing latency in composer)
  *   - Stream ink observer attaches ONLY to [data-testid="autoscroll-viewport"]
@@ -12,7 +12,7 @@
     try { window.__agPrismSuiteDispose(); } catch {}
   }
 
-  const SUITE_VERSION = '0.9.3';
+  const SUITE_VERSION = '0.9.4';
   const REPO_RELEASES_API = 'https://api.github.com/repos/wushuai0802/anti-claude-prism-suite/releases/latest';
   const REPO_RELEASES_URL = 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/latest';
   const STORAGE_KEY = 'ag_prism_suite_prefs_v1';
@@ -305,8 +305,12 @@
   }
 
   let disposed = false;
-  const cleanups = [];
-  const onCleanup = (fn) => cleanups.push(fn);
+  const cleanups = new Set();
+  const onCleanup = (fn) => {
+    if (typeof fn !== 'function') return () => false;
+    cleanups.add(fn);
+    return () => cleanups.delete(fn);
+  };
 
   const motionQuery = (() => {
     try {
@@ -1155,7 +1159,7 @@
   }
 
   function onGlobalKeyDown(e) {
-    if (disposed) return;
+    if (disposed || !e || e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Escape') {
       if (closeTopFloatingPanel(true)) {
         e.preventDefault();
@@ -1166,13 +1170,21 @@
     }
     if (!prefs.outline) return;
     if (e.altKey && !e.ctrlKey && !e.metaKey) {
-      if (e.key === 'ArrowUp' && (!isEditableTarget(e.target) || e.shiftKey)) {
+      const tEl = e.target && typeof e.target.closest === 'function'
+        ? e.target
+        : (document.activeElement && typeof document.activeElement.closest === 'function' ? document.activeElement : null);
+      if (tEl && tEl.closest('.monaco-editor, .xterm, [role="code"]')) return;
+      const editable = isEditableTarget(e.target) || Boolean(tEl && isEditableTarget(tEl));
+      if (editable && !(tEl && tEl.closest('[data-testid="conversation-view"]'))) return;
+      const inAgentInput = Boolean(tEl && tEl.closest('[id="antigravity.agentSidePanelInputBox"]'));
+      const canStepArrow = e.shiftKey ? inAgentInput : !editable;
+      if (e.key === 'ArrowUp' && canStepArrow) {
         e.preventDefault();
         stepTurn(-1);
-      } else if (e.key === 'ArrowDown' && (!isEditableTarget(e.target) || e.shiftKey)) {
+      } else if (e.key === 'ArrowDown' && canStepArrow) {
         e.preventDefault();
         stepTurn(1);
-      } else if (e.key.toLowerCase() === 'o' && !isEditableTarget(e.target)) {
+      } else if (!e.shiftKey && (e.key || '').toLowerCase() === 'o' && !editable) {
         e.preventDefault();
         toggleOutlineDrawer();
       }
@@ -1691,6 +1703,13 @@
   });
 
   function isAgentGenerating() {
+    const vp = getActiveViewportEl();
+    const convView = (vp && vp.closest && vp.closest('[data-testid="conversation-view"]'))
+      || (getActiveInputBox()?.closest?.('[data-testid="conversation-view"]'))
+      || null;
+    if (convView) {
+      return Boolean(convView.querySelector('[data-testid="input-cancel-button"]'));
+    }
     return Boolean(document.querySelector('[data-testid="input-cancel-button"]'));
   }
 
@@ -3824,9 +3843,17 @@
       if (triggerBtn && box) thoughtBoxByTrigger.set(triggerBtn, { box, bodyEl });
       return;
     }
+    if (memo && memo.skipped && memo.rawSig === rawSig) return;
+    if (memo && memo.failedSig === rawSig && (memo.fails >= 3 || Date.now() < (memo.retryAfter || 0))) {
+      return;
+    }
     const srcText = extractCleanThoughtText(bodyEl);
     if (!looksMostlyEnglish(srcText)) return;
     const clipped = srcText.slice(0, 9800);
+    if (memo && memo.skipped && (memo.rawSig === rawSig || memo.src === clipped)) {
+      memo.rawSig = rawSig;
+      return;
+    }
     if (memo && memo.src === clipped && memo.zh) {
       memo.rawSig = rawSig;
       const box = applyThoughtDisplay(bodyEl, memo.zh, mode);
@@ -3838,12 +3865,32 @@
     const startRawSig = rawSig;
     thoughtInFlight.add(bodyEl);
     let needFollowUp = false;
+    const recordFailure = () => {
+      if (disposed || !bodyEl.isConnected) return;
+      const prev = thoughtTextMemo.get(bodyEl);
+      const prevFails = prev && prev.failedSig === startRawSig ? (Number(prev.fails) || 0) : 0;
+      thoughtTextMemo.set(bodyEl, {
+        ...(prev && prev.zh ? { src: prev.src, zh: prev.zh, ver: prev.ver } : {}),
+        failedSig: startRawSig,
+        fails: prevFails + 1,
+        retryAfter: Date.now() + Math.min(180000, 5000 * Math.pow(4, prevFails))
+      });
+    };
     Promise.resolve(window.__agProjectCall('translateText', { text: clipped, targetLang: 'zh-CN' }, 12000))
       .then((res) => {
         if (disposed || !bodyEl.isConnected) return;
-        if (res && res.ok && res.translated && !res.skipped) {
-          const curTxt = bodyEl.textContent || '';
-          const curSig = `${curTxt.length}:${curTxt.slice(0, 24)}:${curTxt.slice(-24)}`;
+        const curTxt = bodyEl.textContent || '';
+        const curSig = `${curTxt.length}:${curTxt.slice(0, 24)}:${curTxt.slice(-24)}`;
+        if (res && res.skipped) {
+          thoughtTextMemo.set(bodyEl, {
+            src: clipped,
+            skipped: true,
+            rawSig: curSig === startRawSig ? startRawSig : ''
+          });
+          if (curSig !== startRawSig) needFollowUp = true;
+          return;
+        }
+        if (res && res.ok && res.translated) {
           thoughtTextMemo.set(bodyEl, {
             src: clipped,
             zh: res.translated,
@@ -3853,9 +3900,13 @@
           if (curSig !== startRawSig) needFollowUp = true;
           const box = applyThoughtDisplay(bodyEl, res.translated, prefs.thoughtMode);
           if (triggerBtn && box) thoughtBoxByTrigger.set(triggerBtn, { box, bodyEl });
+          return;
         }
+        recordFailure();
       })
-      .catch(() => {})
+      .catch(() => {
+        recordFailure();
+      })
       .finally(() => {
         thoughtInFlight.delete(bodyEl);
         if (needFollowUp && !disposed && bodyEl.isConnected && prefs.thoughtMode !== 'off') {
@@ -4185,13 +4236,54 @@
   }
 
   const bridgeFrameTargets = new Map();
+  const LAST_ACCOUNT_SWITCH_STORAGE_KEY = 'ag_prism_last_account_switch_at';
+  const LAST_ACCOUNT_SWITCH_COOKIE_KEY = 'ag_prism_last_sw';
+
+  function recordAccountSwitchMarker(tsMs = Date.now()) {
+    const ts = String(Math.round(Number(tsMs) || Date.now()));
+    try { localStorage.setItem(LAST_ACCOUNT_SWITCH_STORAGE_KEY, ts); } catch {}
+    if (canUseHostCookie()) {
+      try {
+        const secureAttr = /^https:$/i.test(window.location.protocol || '') ? '; Secure' : '';
+        document.cookie = `${LAST_ACCOUNT_SWITCH_COOKIE_KEY}=${ts}; Path=/; Max-Age=300; SameSite=Lax${secureAttr}`;
+      } catch {}
+    }
+  }
 
   function isTrustedBridgeOrigin(origin) {
     const o = String(origin || '').trim();
-    if (!o || o === 'null') return true; // Sandboxed srcdoc MCP App iframe
-    if (o === window.location.origin) return true;
+    if (!o || o === 'null') return false;
     if (/^https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.usercontent\.goog(?::\d+)?$/i.test(o)) return true; // Antigravity MCP App sandbox origin
-    return /^(?:app|vscode-webview|file):\/\//i.test(o) || /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i.test(o);
+    return /^vscode-webview:\/\/[a-z0-9._-]+(?::\d+)?$/i.test(o);
+  }
+
+  function findOwningHostIframe(win) {
+    if (!win || win === window) return null;
+    try { if (win.closed) return null; } catch {}
+    let parentWin = null;
+    try {
+      parentWin = win.parent;
+    } catch {
+      parentWin = null;
+    }
+    try {
+      const frames = document.querySelectorAll('iframe');
+      for (let i = 0; i < frames.length; i++) {
+        const f = frames[i];
+        if (!f || !f.isConnected) continue;
+        const cw = f.contentWindow;
+        if (!cw) continue;
+        if (cw === win) return f;
+        if (parentWin && parentWin !== window && cw === parentWin) return f;
+        try {
+          const innerCount = cw.frames ? cw.frames.length : 0;
+          for (let j = 0; j < Math.min(innerCount, 6); j++) {
+            if (cw.frames[j] === win) return f;
+          }
+        } catch {}
+      }
+    } catch {}
+    return null;
   }
 
   function collectCandidateFrameWindows() {
@@ -4203,20 +4295,26 @@
       seen.add(w);
       wins.push(w);
     };
-    if (bridgeTargetWin) pushWin(bridgeTargetWin);
+    if (bridgeTargetWin && findOwningHostIframe(bridgeTargetWin)) {
+      pushWin(bridgeTargetWin);
+    } else if (bridgeTargetWin) {
+      bridgeTargetWin = null;
+    }
     for (const [fw] of bridgeFrameTargets) {
-      if (!fw) { bridgeFrameTargets.delete(fw); continue; }
-      try {
-        if (fw.closed) { bridgeFrameTargets.delete(fw); continue; }
-      } catch {}
+      if (!fw || !findOwningHostIframe(fw)) {
+        bridgeFrameTargets.delete(fw);
+        continue;
+      }
       pushWin(fw);
     }
     try {
       const frames = document.querySelectorAll('iframe');
       for (let i = 0; i < frames.length; i++) {
-        const cw = frames[i].contentWindow;
+        const f = frames[i];
+        if (!f || !f.isConnected) continue;
+        const cw = f.contentWindow;
         pushWin(cw);
-        // Best-effort 1-level nested frame scan when same-origin
+        // Best-effort 1-level nested frame scan inside host iframe container
         try {
           const innerCount = cw && cw.frames ? cw.frames.length : 0;
           for (let j = 0; j < Math.min(innerCount, 6); j++) {
@@ -4229,14 +4327,20 @@
   }
 
   function isOwnedIframeWindow(win) {
-    if (!win || win === window) return false;
-    if (win === bridgeTargetWin) return true;
-    const candidates = collectCandidateFrameWindows();
-    if (candidates.includes(win)) return true;
-    try {
-      if (win.parent === window || win.top === window) return true;
-    } catch {}
-    return false;
+    return Boolean(findOwningHostIframe(win));
+  }
+
+  function stripQuotaEmailForBridge(q) {
+    if (!q || typeof q !== 'object') return null;
+    return {
+      pct5h: q.pct5h ?? null,
+      pct7d: q.pct7d ?? null,
+      reset5hAt: q.reset5hAt || '',
+      reset7dAt: q.reset7dAt || '',
+      families: q.families || null,
+      tierName: q.tierName || '',
+      observedAt: Number(q.observedAt) || Date.now()
+    };
   }
 
   function postBridgeMessage(win, payload, origin = bridgeTargetOrigin) {
@@ -4422,7 +4526,7 @@
     lastPushedQuotaSig = sig;
     lastPushedQuotaAt = now;
     if (bridgeTargetWin) {
-      if (!postBridgeMessage(bridgeTargetWin, { type: 'quota-sync', quota: live })) {
+      if (!isOwnedIframeWindow(bridgeTargetWin) || !postBridgeMessage(bridgeTargetWin, { type: 'quota-sync', quota: stripQuotaEmailForBridge(live) }, bridgeTargetOrigin)) {
         bridgeTargetWin = null;
       }
     }
@@ -4436,7 +4540,7 @@
     const src = event.source;
     if (!src || src === window) return;
     if (data.source && data.source !== 'prism-files') return;
-    const replyOrigin = event.origin && event.origin !== 'null' ? event.origin : '*';
+    const replyOrigin = event.origin;
 
     if (data.type === 'ready' || data.type === 'bridge-pong') {
       if (!isOwnedIframeWindow(src)) return;
@@ -4456,7 +4560,7 @@
         switchTab: wantTab,
         intentId: wantTab ? (pendingIntentId || `init-${Date.now().toString(36)}`) : '',
         focus: Boolean(wantTab),
-        quota: liveNow,
+        quota: stripQuotaEmailForBridge(liveNow),
         theme: getCurrentThemeBridgePayload()
       }, replyOrigin);
       return;
@@ -4490,12 +4594,21 @@
       return;
     }
 
+    if (data.type === 'account-switched') {
+      if (!isOwnedIframeWindow(src)) return;
+      recordAccountSwitchMarker(Date.now());
+      return;
+    }
+
     if (data.type === 'account-summary' && data.summary && typeof data.summary === 'object') {
       if (!isOwnedIframeWindow(src)) return;
       bridgeTargetWin = src;
       bridgeTargetOrigin = replyOrigin;
       bridgeLastSeenAt = Date.now();
       const s = data.summary;
+      if (s.pendingSwitchEmail) {
+        recordAccountSwitchMarker(Date.now());
+      }
       cachedAccountSummary = {
         enabled: Boolean(s.enabled),
         activeAlias: String(s.activeAlias || '').trim().slice(0, 32),
@@ -4939,7 +5052,7 @@
         <div class="ag-ps-toggle-list">
           <div class="ag-ps-toggle-row">
             <div class="ag-ps-toggle-label"><span>输入框像素小伙伴</span><span class="ag-ps-toggle-sub">空闲时自动安静休眠</span></div>
-            <button type="button" class="ag-ps-switch" data-toggle="mascot" data-on="${prefs.mascot ? '1' : '0'}"></button>
+            <button type="button" role="switch" aria-checked="${prefs.mascot ? 'true' : 'false'}" aria-label="输入框像素小伙伴" class="ag-ps-switch" data-toggle="mascot" data-on="${prefs.mascot ? '1' : '0'}"></button>
           </div>
           ${
             prefs.mascot
@@ -4976,7 +5089,7 @@
                   }
                   <div class="ag-ps-toggle-row">
                     <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">工作态漫游跑跳</span></div>
-                    <button type="button" class="ag-ps-switch" data-toggle="mascotRoam" data-on="${prefs.mascotRoam ? '1' : '0'}"></button>
+                    <button type="button" role="switch" aria-checked="${prefs.mascotRoam ? 'true' : 'false'}" aria-label="工作态漫游跑跳" class="ag-ps-switch" data-toggle="mascotRoam" data-on="${prefs.mascotRoam ? '1' : '0'}"></button>
                   </div>
                   <div class="ag-ps-toggle-row">
                     <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">性格</span></div>
@@ -4998,7 +5111,7 @@
           }
           <div class="ag-ps-toggle-row">
             <div class="ag-ps-toggle-label"><span>柔和流式文字淡入</span><span class="ag-ps-toggle-sub">生成文字自然浮现 · 打字零干扰</span></div>
-            <button type="button" class="ag-ps-switch" data-toggle="inkStream" data-on="${prefs.inkStream ? '1' : '0'}"></button>
+            <button type="button" role="switch" aria-checked="${prefs.inkStream ? 'true' : 'false'}" aria-label="柔和流式文字淡入" class="ag-ps-switch" data-toggle="inkStream" data-on="${prefs.inkStream ? '1' : '0'}"></button>
           </div>
         </div>
       `;
@@ -5008,14 +5121,14 @@
         <div class="ag-ps-toggle-list">
           <div class="ag-ps-toggle-row">
             <div class="ag-ps-toggle-label"><span>会话大纲 &amp; 跳轮抽屉</span><span class="ag-ps-toggle-sub">Alt+↑/↓ 跳轮 · Alt+O 展开大纲</span></div>
-            <button type="button" class="ag-ps-switch" data-toggle="outline" data-on="${prefs.outline ? '1' : '0'}"></button>
+            <button type="button" role="switch" aria-checked="${prefs.outline ? 'true' : 'false'}" aria-label="会话大纲与跳轮抽屉" class="ag-ps-switch" data-toggle="outline" data-on="${prefs.outline ? '1' : '0'}"></button>
           </div>
           <div class="ag-ps-toggle-row">
             <div class="ag-ps-toggle-label"><span>顶栏「工作台」快捷入口</span><span class="ag-ps-toggle-sub">纯前端增强模式可隐藏顶栏按钮</span></div>
-            <button type="button" class="ag-ps-switch" data-toggle="showWorkbenchBtn" data-on="${prefs.showWorkbenchBtn !== false ? '1' : '0'}"></button>
+            <button type="button" role="switch" aria-checked="${prefs.showWorkbenchBtn !== false ? 'true' : 'false'}" aria-label="顶栏工作台快捷入口" class="ag-ps-switch" data-toggle="showWorkbenchBtn" data-on="${prefs.showWorkbenchBtn !== false ? '1' : '0'}"></button>
           </div>
           <div class="ag-ps-toggle-row">
-            <div class="ag-ps-toggle-label"><span>思考过程实时中译</span><span class="ag-ps-toggle-sub">经 Google 翻译 · 沉浸可看原文</span></div>
+            <div class="ag-ps-toggle-label" data-ag-ps-tip="自动掩码代码并脱敏密码/密钥后经 Google 翻译转换 · 关闭即清缓存（沉浸模式仍可一键查看原文）"><span>思考过程实时中译</span><span class="ag-ps-toggle-sub">自动掩码代码并脱敏密码/密钥后经 Google 翻译转换 · 关闭即清缓存</span></div>
             <div class="ag-ps-seg-group">
               <button type="button" class="ag-ps-seg-btn" data-thought-mode="off" data-selected="${prefs.thoughtMode === 'off' ? '1' : '0'}">关</button>
               <button type="button" class="ag-ps-seg-btn" data-thought-mode="bilingual" data-selected="${prefs.thoughtMode === 'bilingual' ? '1' : '0'}">双语</button>
@@ -5030,7 +5143,7 @@
         <div class="ag-ps-toggle-list">
           <div class="ag-ps-toggle-row">
             <div class="ag-ps-toggle-label"><span>名著换算 &amp; 12 周热力图</span><span class="ag-ps-toggle-sub">右侧「概览 → 用量统计」底部 <a href="#" data-jump-usage="1" style="color:var(--primary,#2F75C3);text-decoration:none;margin-left:4px">定位 ↗</a></span></div>
-            <button type="button" class="ag-ps-switch" data-toggle="usageExtra" data-on="${prefs.usageExtra ? '1' : '0'}"></button>
+            <button type="button" role="switch" aria-checked="${prefs.usageExtra ? 'true' : 'false'}" aria-label="名著换算与 12 周热力图" class="ag-ps-switch" data-toggle="usageExtra" data-on="${prefs.usageExtra ? '1' : '0'}"></button>
           </div>
         </div>
       `;
@@ -6314,9 +6427,10 @@
   window.__agPrismSuiteDispose = function () {
     if (disposed) return;
     disposed = true;
-    while (cleanups.length) {
-      const fn = cleanups.pop();
-      try { fn(); } catch {}
+    const fns = Array.from(cleanups).reverse();
+    cleanups.clear();
+    for (let i = 0; i < fns.length; i++) {
+      try { fns[i](); } catch {}
     }
   };
   if (typeof window.ctx?.onCleanup === 'function') {

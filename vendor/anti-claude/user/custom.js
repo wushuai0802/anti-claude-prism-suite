@@ -2145,13 +2145,15 @@
     return next;
   }
 
-  window.addEventListener('ag-prism-tier-badge-change', (ev) => {
+  const onPrismTierBadgeChange = (ev) => {
+    if (disposed) return;
     if (ev && ev.detail && ev.detail.source === 'custom') return;
     tierBadgeJustPopped = true;
     renderOverviewPanel(true);
     if (quotaPopoverOpen) renderQuotaPopoverBody();
     setTimeout(() => { tierBadgeJustPopped = false; }, 240);
-  });
+  };
+  window.addEventListener('ag-prism-tier-badge-change', onPrismTierBadgeChange);
 
   const onPrismTokenUnitChange = () => {
     if (disposed) return;
@@ -14714,6 +14716,7 @@
     clearPinnedComposerDropHighlights();
     window.removeEventListener('resize', onWindowResizePopover);
     window.removeEventListener('ag-prism-close-popovers', onPeerPopoverCoord);
+    window.removeEventListener('ag-prism-tier-badge-change', onPrismTierBadgeChange);
     window.removeEventListener('ag-prism-token-unit-change', onPrismTokenUnitChange);
     sidebarWheelBound = false;
     document.removeEventListener('wheel', onSidebarWheel, true);

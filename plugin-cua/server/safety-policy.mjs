@@ -175,6 +175,9 @@ const PAYMENT_CHECKOUT_HOSTS = new Set([
 
 const PAYMENT_CHECKOUT_PATH_RE = /\/(?:checkoutnow|checkout\/payment|payment\/checkout|payment\/card|credit-card|card-verification|3ds|3d-secure|online-banking|ebank|netbank)(?:\/|$|\?|#)/i;
 
+const PASSIVE_RECAPTCHA_FOOTER_RE =
+  /(?:this\s+site\s+is\s+)?protected\s+by\s+(?:google\s+)?recaptcha(?:\s+and\s+the\s+google\b[^.\n]{0,180})?|受\s*recaptcha\s*保护[^。\n]{0,90}|recaptcha\s*(?:privacy\s*policy|terms\s*of\s*service|隐私权?政策|服务条款)|grecaptcha-badge/gi;
+
 const CAPTCHA_RULES = [
   {
     kind: 'cloudflare_turnstile',
@@ -203,7 +206,7 @@ const CAPTCHA_RULES = [
   },
   {
     kind: 'human_verification',
-    re: /verify\s+(?:that\s+)?you\s+are\s+human|are\s+you\s+a\s+human|i['’]?m\s+not\s+a\s+robot|i\s+am\s+not\s+a\s+robot|人机身份验证|请完成安全验证|拖动滑块/i,
+    re: /verify\s+(?:that\s+)?you\s+are\s+human|confirm\s+you\s+are\s+human|are\s+you\s+a\s+(?:human|robot)|i['’]?m\s+not\s+a\s+robot|i\s+am\s+not\s+a\s+robot|complete\s+the\s+security\s+check|人机身份验证|人机验证|请完成安全验证|拖动滑块/i,
     reason: '检测到人机身份验证或滑块挑战提示'
   }
 ];
@@ -480,6 +483,38 @@ export function evaluateUrlSafety(rawUrl, options = {}) {
   return { allowed: true, code: SAFETY_CODES.OK };
 }
 
+const SENSITIVE_FIELD_TOKEN_RE =
+  /\b(?:password|passwd|passcode|pwd|cvv|cvv2|cvc|cvc2|csc|ccnum|totp|otp|pincode|pin)\b/i;
+const SENSITIVE_FIELD_PHRASE_RE =
+  /\b(?:cc\s+(?:num|number|csc|cvc|cvv|exp)|card\s+(?:num|number|no)|credit\s+card|security\s+code|verification\s+code|one\s+time\s+(?:code|password|pin))\b/i;
+const SENSITIVE_FIELD_CJK_RE =
+  /(?:密码|口令|安全码|动态码|验证码|支付密码|交易密码|银行卡号|信用卡号|卡号)/;
+const NON_EDITABLE_ROLES = new Set([
+  'button',
+  'splitbutton',
+  'a',
+  'link',
+  'hyperlink',
+  'menuitem',
+  'tab',
+  'tabitem',
+  'checkbox',
+  'radio',
+  'radiobutton',
+  'image',
+  'img',
+  'heading'
+]);
+
+function normalizeSensitiveIdentTokens(raw) {
+  return String(raw ?? '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[\[\]()_.:\-\s/\\]+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
 /**
  * Checks whether an observation element represents a password or payment-credential input.
  */
@@ -488,8 +523,10 @@ export function isCredentialOrPasswordElement(el) {
   if (
     el.isPassword === true ||
     el.IsPassword === true ||
+    el.wasPassword === true ||
     el.password === true ||
     el.redacted === true ||
+    el.valueRedacted !== undefined ||
     el.blockedCode === SAFETY_CODES.PASSWORD_FIELD_BLOCKED
   ) {
     return true;
@@ -500,30 +537,74 @@ export function isCredentialOrPasswordElement(el) {
     return true;
   }
 
+  const wts = String(el.webkitTextSecurity ?? el.textSecurity ?? '').trim().toLowerCase();
+  if (wts && wts !== 'none') {
+    return true;
+  }
+
   const autoRaw = String(el.autocomplete ?? el.autoComplete ?? '').trim().toLowerCase();
   if (autoRaw) {
     for (const token of autoRaw.split(/\s+/)) {
-      if (CREDENTIAL_AUTOCOMPLETE_TOKENS.has(token)) {
+      if (
+        CREDENTIAL_AUTOCOMPLETE_TOKENS.has(token) ||
+        token === 'one-time-code' ||
+        token.startsWith('cc-')
+      ) {
         return true;
       }
     }
   }
 
-  const roleOrTag = String(el.role ?? el.controlType ?? el.tag ?? el.tagName ?? '').toLowerCase();
-  const isEditable =
-    roleOrTag.includes('input') ||
-    roleOrTag.includes('edit') ||
-    roleOrTag.includes('textbox') ||
-    roleOrTag.includes('password');
-
+  const roleOrTag = String(el.role ?? el.controlType ?? el.tag ?? el.tagName ?? '').trim().toLowerCase();
   if (roleOrTag === 'password' || roleOrTag === 'passwordbox') {
     return true;
   }
 
-  if (isEditable) {
-    const labelMeta = `${el.name ?? ''} ${el.label ?? ''} ${el.ariaLabel ?? ''} ${el.placeholder ?? ''} ${el.id ?? ''}`;
-    if (/(?:\bcvv\b|\bcvc\b|card\s*number|credit\s*card|支付密码|交易密码|银行卡号|安全码)/i.test(labelMeta)) {
-      return true;
+  const isNonEditableActionControl =
+    NON_EDITABLE_ROLES.has(roleOrTag) ||
+    (roleOrTag === 'input' &&
+      (inputType === 'button' ||
+        inputType === 'submit' ||
+        inputType === 'reset' ||
+        inputType === 'checkbox' ||
+        inputType === 'radio'));
+
+  const isEditableCandidate =
+    !isNonEditableActionControl &&
+    (roleOrTag === '' ||
+      el.contentEditable === true ||
+      roleOrTag.includes('input') ||
+      roleOrTag.includes('edit') ||
+      roleOrTag.includes('textbox') ||
+      roleOrTag.includes('textarea') ||
+      roleOrTag.includes('combobox') ||
+      roleOrTag.includes('spinbutton') ||
+      roleOrTag.includes('custom') ||
+      roleOrTag.includes('password'));
+
+  if (isEditableCandidate) {
+    const labelMeta = [
+      el.name,
+      el.label,
+      el.labelText,
+      el.ariaLabel,
+      el.placeholder,
+      el.id,
+      el.automationId,
+      el.title
+    ]
+      .filter((v) => typeof v === 'string' && v.length > 0)
+      .join(' ');
+
+    if (labelMeta) {
+      const normalizedTokens = normalizeSensitiveIdentTokens(labelMeta);
+      if (
+        SENSITIVE_FIELD_TOKEN_RE.test(normalizedTokens) ||
+        SENSITIVE_FIELD_PHRASE_RE.test(normalizedTokens) ||
+        SENSITIVE_FIELD_CJK_RE.test(labelMeta)
+      ) {
+        return true;
+      }
     }
   }
 
@@ -783,10 +864,13 @@ export function evaluateActionSafety(action, context = {}) {
     const combo = normalizeKeyCombo(String(action.key ?? ''));
     if (
       combo === 'ctrl+alt+del' ||
-      combo === 'win+r' ||
-      combo === 'win+x' ||
-      combo === 'win+l' ||
-      combo === 'ctrl+shift+esc'
+      combo === 'ctrl+esc' ||
+      combo === 'ctrl+shift+esc' ||
+      combo === 'alt+tab' ||
+      combo === 'alt+shift+tab' ||
+      combo === 'alt+esc' ||
+      combo === 'win' ||
+      combo.startsWith('win+')
     ) {
       return {
         allowed: false,
@@ -807,60 +891,85 @@ export function evaluateActionSafety(action, context = {}) {
   return { allowed: true, code: SAFETY_CODES.OK };
 }
 
+function stripPassiveCaptchaFooterText(raw) {
+  return String(raw ?? '').replace(PASSIVE_RECAPTCHA_FOOTER_RE, ' ').trim();
+}
+
 /**
- * Scans an observation payload (titles, URLs, iframes, and UI/DOM elements)
- * for CAPTCHAs or anti-bot human verification challenges.
+ * Scans an observation payload (structured captcha flag, titles, URLs, iframes, and UI/DOM elements)
+ * for CAPTCHAs or anti-bot human verification challenges, ignoring passive reCAPTCHA legal footers.
  */
 export function detectCaptchaOrChallenge(observation) {
   if (!observation || typeof observation !== 'object') {
     return { detected: false, kind: null, reason: null };
   }
 
+  if (observation.captcha && typeof observation.captcha === 'object' && observation.captcha.detected === true) {
+    const rawKind = String(observation.captcha.kind || observation.captcha.provider || 'captcha')
+      .trim()
+      .toLowerCase();
+    return {
+      detected: true,
+      kind: rawKind || 'captcha',
+      reason: String(observation.captcha.reason || '检测到页面人机验证挑战组件'),
+      handoffTag: '[HANDOFF REQUIRED: CAPTCHA_DETECTED]'
+    };
+  }
+
   const probes = [];
-  const pushProbe = (val) => {
+  const pushTextProbe = (val) => {
     if (typeof val === 'string' && val.trim()) {
-      probes.push(val.trim());
+      const cleaned = stripPassiveCaptchaFooterText(val);
+      if (cleaned) probes.push(cleaned);
+    }
+  };
+  const pushStructuralProbe = (val) => {
+    if (typeof val === 'string' && val.trim()) {
+      const s = val.trim();
+      if (/grecaptcha-badge/i.test(s)) return;
+      probes.push(s);
     }
   };
 
-  pushProbe(observation.title);
-  pushProbe(observation.windowTitle);
-  pushProbe(observation.tabTitle);
-  pushProbe(observation.window?.title);
-  pushProbe(observation.url);
-  pushProbe(observation.tabUrl);
-  pushProbe(observation.rawText);
-  pushProbe(observation.summary);
+  pushTextProbe(observation.title);
+  pushTextProbe(observation.windowTitle);
+  pushTextProbe(observation.tabTitle);
+  pushTextProbe(observation.window?.title);
+  pushStructuralProbe(observation.url);
+  pushStructuralProbe(observation.tabUrl);
+  pushTextProbe(observation.rawText);
+  pushTextProbe(observation.textExcerpt);
+  pushTextProbe(observation.summary);
 
   const frameLists = [observation.iframes, observation.frames];
   for (const list of frameLists) {
     if (!Array.isArray(list)) continue;
     for (const frame of list) {
       if (typeof frame === 'string') {
-        pushProbe(frame);
+        pushStructuralProbe(frame);
       } else if (frame && typeof frame === 'object') {
-        pushProbe(frame.url);
-        pushProbe(frame.src);
-        pushProbe(frame.title);
-        pushProbe(frame.name);
-        pushProbe(frame.id);
+        pushStructuralProbe(frame.url);
+        pushStructuralProbe(frame.src);
+        pushTextProbe(frame.title);
+        pushStructuralProbe(frame.name);
+        pushStructuralProbe(frame.id);
       }
     }
   }
 
   const elements = collectElementsFlat(observation);
   for (const el of elements) {
-    pushProbe(el.name);
-    pushProbe(el.label);
-    pushProbe(el.ariaLabel);
-    pushProbe(el.title);
-    pushProbe(el.text);
-    pushProbe(el.placeholder);
-    pushProbe(el.id);
-    pushProbe(el.className);
-    pushProbe(el.src);
-    pushProbe(el.url);
-    pushProbe(el.iframeSrc);
+    pushTextProbe(el.name);
+    pushTextProbe(el.label);
+    pushTextProbe(el.ariaLabel);
+    pushTextProbe(el.title);
+    pushTextProbe(el.text);
+    pushTextProbe(el.placeholder);
+    pushStructuralProbe(el.id);
+    pushStructuralProbe(el.className);
+    pushStructuralProbe(el.src);
+    pushStructuralProbe(el.url);
+    pushStructuralProbe(el.iframeSrc);
   }
 
   for (const sample of probes) {

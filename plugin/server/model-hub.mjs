@@ -22,6 +22,7 @@ import https from 'node:https';
 import net from 'node:net';
 import { performance } from 'node:perf_hooks';
 import { TIER_DEFINITIONS, VALID_TIERS } from './prism-profile.mjs';
+import { redactSensitiveText } from './redact-shared.mjs';
 
 export const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 30_000;
 export const DEFAULT_IDLE_CHUNK_TIMEOUT_MS = 60_000;
@@ -37,40 +38,10 @@ const NON_RETRIABLE_AUTH_STATUSES = new Set([400, 401, 403, 404, 422]);
  * Redacts common private keys, tokens, and high-risk credentials from outbound prompts.
  */
 export function redactOutboundText(text) {
-  let out = String(text ?? '');
-  if (!out) return '';
-
-  // PEM private keys
-  out = out.replace(
-    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g,
-    '[REDACTED_PRIVATE_KEY]'
-  );
-  // GitHub classic & fine-grained PATs
-  out = out.replace(
-    /\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b/g,
-    '[REDACTED_GH_TOKEN]'
-  );
-  // OpenAI / Anthropic / Stripe / OpenRouter style sk-... keys
-  out = out.replace(
-    /\bsk-(?:proj-|ant-|live-|test-|or-v1-)?[A-Za-z0-9_-]{16,}\b/g,
-    '[REDACTED_API_KEY]'
-  );
-  // Google API keys
-  out = out.replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, '[REDACTED_GOOGLE_KEY]');
-  // Slack tokens
-  out = out.replace(/\bxox[baprs]-[A-Za-z0-9-]{16,}\b/g, '[REDACTED_SLACK_TOKEN]');
-  // AWS access key IDs
-  out = out.replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, '[REDACTED_AWS_KEY]');
-  // Standard 3-segment JWTs
-  out = out.replace(
-    /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
-    '[REDACTED_JWT]'
-  );
-  // Authorization Bearer tokens
-  out = out.replace(/\b(Bearer[ \t]+)[A-Za-z0-9._~+/=-]{12,}/gi, '$1[REDACTED_TOKEN]');
-
-  return out;
+  return redactSensitiveText(text);
 }
+
+export const redactSecrets = redactOutboundText;
 
 function expandIpv6ToWords(rawIpv6) {
   let addr = rawIpv6.toLowerCase();

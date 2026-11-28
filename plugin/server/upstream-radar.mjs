@@ -1771,6 +1771,15 @@ export async function applyPrismSelfUpdate({
       fs.mkdirSync(tmpDir, { recursive: true });
       const exePath = path.join(tmpDir, 'Anti-Claude-Prism-Suite-Setup.exe');
       let cleanupPending = false;
+      let cleanupAttempted = false;
+      const tryCleanupTmpDir = () => {
+        cleanupAttempted = true;
+        try {
+          fs.rmSync(tmpDir, { recursive: true, force: true });
+        } catch {
+          cleanupPending = true;
+        }
+      };
       try {
         fs.writeFileSync(exePath, exeBuf, { mode: 0o755 });
         // Critical: inside WSL2 pass --no-wsl to avoid recursive WSL -> Windows -> wsl.exe deadlock; update WSL plugin natively below
@@ -1790,6 +1799,7 @@ export async function applyPrismSelfUpdate({
           });
           wslLog = String(wslRes?.stdout || '').trim().slice(0, 400);
         }
+        tryCleanupTmpDir();
         return {
           ok: true,
           updatedTo: info.latestTag,
@@ -1807,10 +1817,8 @@ export async function applyPrismSelfUpdate({
             : `已通过官方安装包完成原地升级至 ${info.latestTag}（SHA-256 校验通过，重启 Antigravity 生效）`
         };
       } finally {
-        try {
-          fs.rmSync(tmpDir, { recursive: true, force: true });
-        } catch {
-          cleanupPending = true;
+        if (!cleanupAttempted) {
+          tryCleanupTmpDir();
         }
       }
     }

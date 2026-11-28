@@ -4059,7 +4059,11 @@
       }
 
       async function callServerTool(name, args = {}) {
-        const res = await sendRequest('tools/call', { name, arguments: args }, 20000);
+        const mergedArgs = {
+          ...(args && typeof args === 'object' ? args : {}),
+          ...(window.__PRISM_APP_TOKEN__ ? { _appToken: window.__PRISM_APP_TOKEN__ } : {})
+        };
+        const res = await sendRequest('tools/call', { name, arguments: mergedArgs }, 20000);
         if (res && res.isError) {
           const errText = res.structuredContent?.error || res.content?.find?.((c) => c.type === 'text')?.text || '工具调用失败';
           throw new Error(errText);
@@ -4177,6 +4181,61 @@
         }, durationMs);
         activeFeedbackTimers.add(timer);
         btnFeedbackMap.set(btn, { timer });
+      }
+
+      const inlineConfirmMap = new WeakMap();
+      const armedConfirmBtns = new Set();
+
+      function disarmInlineConfirmBtn(btn) {
+        const entry = inlineConfirmMap.get(btn);
+        if (!entry) return;
+        clearTimeout(entry.timer);
+        activeFeedbackTimers.delete(entry.timer);
+        inlineConfirmMap.delete(btn);
+        armedConfirmBtns.delete(btn);
+        if (!btn.isConnected) return;
+        btn.removeAttribute('data-confirm-armed');
+        if (entry.origHtml !== undefined) btn.innerHTML = entry.origHtml;
+        btn.style.minWidth = entry.origMinWidth || '';
+        btn.style.borderColor = entry.origBorderColor || '';
+        btn.style.color = entry.origColor || '';
+      }
+
+      function disarmAllInlineConfirms() {
+        let had = false;
+        for (const btn of Array.from(armedConfirmBtns)) {
+          disarmInlineConfirmBtn(btn);
+          had = true;
+        }
+        return had;
+      }
+
+      function requireInlineConfirm(btn, confirmText = '确认执行？', durationMs = 3500) {
+        if (!btn || !btn.isConnected) return true;
+        if (btn.getAttribute('data-confirm-armed') === '1') {
+          disarmInlineConfirmBtn(btn);
+          return true;
+        }
+        for (const other of Array.from(armedConfirmBtns)) {
+          if (other !== btn) disarmInlineConfirmBtn(other);
+        }
+        const rectW = Math.ceil(btn.getBoundingClientRect().width);
+        const origHtml = btn.innerHTML;
+        const origMinWidth = btn.style.minWidth || '';
+        const origBorderColor = btn.style.borderColor || '';
+        const origColor = btn.style.color || '';
+        if (rectW > 0) btn.style.minWidth = `${rectW}px`;
+        btn.setAttribute('data-confirm-armed', '1');
+        btn.textContent = confirmText;
+        btn.style.borderColor = 'var(--p-danger)';
+        btn.style.color = 'var(--p-danger)';
+        const timer = setTimeout(() => {
+          disarmInlineConfirmBtn(btn);
+        }, durationMs);
+        activeFeedbackTimers.add(timer);
+        armedConfirmBtns.add(btn);
+        inlineConfirmMap.set(btn, { timer, origHtml, origMinWidth, origBorderColor, origColor });
+        return false;
       }
 
       async function openConversationUri(uri) {
@@ -4392,43 +4451,51 @@
 
       // Safe XSS-escaped Markdown Renderer
       function sanitizeHref(rawUrl) {
-        const trimmed = String(rawUrl || '').trim();
-        if (!trimmed) return '';
+        const trimmed = String(rawUrl || '').replace(/\u0000/g, '').trim();
+        if (!trimmed || /[\s<>]/.test(trimmed)) return '';
         if (/^(https?:|mailto:|#)/i.test(trimmed)) return trimmed;
         return '';
       }
 
+      function renderInlineCodeAndStyle(raw) {
+        const codeParts = [];
+        const tokenized = String(raw || '').replace(/\u0000/g, '').replace(/(`+)([^`]*?)\1/g, (_, _ticks, code) => {
+          const idx = codeParts.length;
+          codeParts.push(`<code>${escapeHtml(code.trim())}</code>`);
+          return `\u0000MD_SUBCODE_${idx}\u0000`;
+        });
+        return formatStyledText(tokenized).replace(/\u0000MD_SUBCODE_(\d+)\u0000/g, (_, idx) => codeParts[Number(idx)] || '');
+      }
+
       function renderInlineMarkdown(raw) {
-        const codeTokens = [];
-        const withCodeTokens = String(raw || '').replace(/(`+)([^`]*?)\1/g, (_, _ticks, code) => {
-          const idx = codeTokens.length;
-          codeTokens.push(`<code>${escapeHtml(code.trim())}</code>`);
-          return `\u0000MD_CODE_${idx}\u0000`;
-        });
-
-        const linkTokens = [];
-        const withLinkTokens = withCodeTokens.replace(/(!?)\[([^\]]*)\]\(([^)\s]+(?:\s+"[^"]*")?)\)/g, (_, bang, label, rawHref) => {
-          const hrefPart = rawHref.replace(/\s+"[^"]*"$/, '');
-          const idx = linkTokens.length;
-          if (bang === '!') {
-            linkTokens.push(`<span class="md-link-text">[图片: ${escapeHtml(label || hrefPart)}]</span>`);
-          } else {
-            const safeHref = sanitizeHref(hrefPart);
-            const inner = formatStyledText(label || hrefPart);
-            if (safeHref) {
-              linkTokens.push(`<a href="${escapeHtml(safeHref)}" target="_blank" rel="noopener noreferrer">${inner}</a>`);
-            } else {
-              const safeTitle = /^(javascript|vbscript|data):/i.test(hrefPart.trim()) ? '已拦截不安全链接' : hrefPart;
-              linkTokens.push(`<span class="md-link-text" title="${escapeHtml(safeTitle)}">${inner}</span>`);
+        const clean = String(raw || '').replace(/\u0000/g, '');
+        const tokens = [];
+        const withTokens = clean.replace(
+          /(`+)([^`]*?)\1|(!?)\[([^\]]*)\]\(([^)\s]+(?:\s+"[^"]*")?)\)/g,
+          (_match, ticks, code, bang, label, rawHref) => {
+            const idx = tokens.length;
+            if (ticks) {
+              tokens.push(`<code>${escapeHtml(code.trim())}</code>`);
+              return `\u0000MD_TOK_${idx}\u0000`;
             }
+            const hrefPart = String(rawHref || '').replace(/\s+"[^"]*"$/, '').replace(/<\/?[a-z][^>]*>/gi, '');
+            if (bang === '!') {
+              tokens.push(`<span class="md-link-text">[图片: ${escapeHtml(label || hrefPart)}]</span>`);
+            } else {
+              const safeHref = sanitizeHref(hrefPart);
+              const inner = renderInlineCodeAndStyle(label || hrefPart);
+              if (safeHref) {
+                tokens.push(`<a href="${escapeHtml(safeHref)}" target="_blank" rel="noopener noreferrer">${inner}</a>`);
+              } else {
+                const safeTitle = /^(javascript|vbscript|data):/i.test(hrefPart.trim()) ? '已拦截不安全链接' : hrefPart;
+                tokens.push(`<span class="md-link-text" title="${escapeHtml(safeTitle)}">${inner}</span>`);
+              }
+            }
+            return `\u0000MD_TOK_${idx}\u0000`;
           }
-          return `\u0000MD_LINK_${idx}\u0000`;
-        });
+        );
 
-        let formatted = formatStyledText(withLinkTokens);
-        formatted = formatted.replace(/\u0000MD_LINK_(\d+)\u0000/g, (_, idx) => linkTokens[Number(idx)] || '');
-        formatted = formatted.replace(/\u0000MD_CODE_(\d+)\u0000/g, (_, idx) => codeTokens[Number(idx)] || '');
-        return formatted;
+        return formatStyledText(withTokens).replace(/\u0000MD_TOK_(\d+)\u0000/g, (_, idx) => tokens[Number(idx)] || '');
       }
 
       function formatStyledText(raw) {
@@ -4454,7 +4521,7 @@
       }
 
       function renderMarkdownToHtml(markdownText, depth = 0) {
-        const lines = String(markdownText || '').replace(/\r\n?/g, '\n').split('\n');
+        const lines = String(markdownText || '').replace(/\u0000/g, '').replace(/\r\n?/g, '\n').split('\n');
         const out = [];
         let i = 0;
 
@@ -5513,6 +5580,18 @@
             '</span>';
           return;
         }
+        const roReason = pv.visible && !pv.loading && pv.data?.ok && typeof pv.data.readOnlyReason === 'string'
+          ? pv.data.readOnlyReason.trim()
+          : '';
+        if (roReason) {
+          const encLabel = pv.data?.encoding ? `${String(pv.data.encoding).toUpperCase()} · 只读保护` : '只读保护';
+          previewBanner.className = 'preview-banner';
+          previewBanner.hidden = false;
+          previewBanner.innerHTML =
+            `<span>🔒 ${escapeHtml(roReason)}</span>` +
+            `<span class="banner-actions"><span class="pill">${escapeHtml(encLabel)}</span></span>`;
+          return;
+        }
         previewBanner.hidden = true;
       }
 
@@ -5556,8 +5635,12 @@
 
         const isText = data?.previewType === 'text' || data?.previewType === 'markdown';
         const isProtected = data?.previewType === 'protected';
-        previewBadgeRo.textContent = isProtected ? '受保护' : '只读';
-        previewBadgeRo.hidden = !(data?.ok && (isProtected || (isText && !data.editable)));
+        const roReason = typeof data?.readOnlyReason === 'string' ? data.readOnlyReason.trim() : '';
+        previewBadgeRo.textContent = isProtected
+          ? '受保护'
+          : (data?.encoding && !/^utf-?8$/i.test(String(data.encoding)) ? `只读 (${String(data.encoding).toUpperCase()})` : '只读');
+        previewBadgeRo.title = roReason || (isProtected ? '受保护文件禁止编辑' : '当前文件为只读预览模式');
+        previewBadgeRo.hidden = !(data?.ok && (isProtected || Boolean(roReason) || (isText && !data.editable)));
         previewBadgeTrunc.hidden = !(data?.ok && data.truncated);
         previewBadgeDirty.hidden = !(pv.editing && pv.dirty);
 
@@ -6525,6 +6608,7 @@
           setTopProgress(false);
           if (res && res.ok) {
             appState.accounts.lastSwitchResult = res;
+            postBridgeToMain({ type: 'account-switched', ts: Date.now() });
             showToast(res.message || '账号凭据已安全切换');
             await loadAccountsTab({ forceRefresh: false });
           } else {
@@ -6634,7 +6718,7 @@
           accountsWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.9.3，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.9.4，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
                 `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
                 `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
               `</article>`
@@ -7436,7 +7520,7 @@
               ? `<span class="pill pill-warn">新版本 ${escapeHtml(suInfo.latestTag)}</span>`
               : st.radarLoading
                 ? '<span class="pill">检查中</span>'
-                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.9.3</span>');
+                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.9.4</span>');
         const expSnap = st.exposure || null;
         const expMcp = expSnap?.mcpExposure || appState.prefs?.mcpExposure || { fileTools: true, memoryTools: true, modelHubTools: true };
         const activeMcpCnt = (expMcp.fileTools !== false ? 2 : 0) + (expMcp.memoryTools !== false ? 4 : 0) + (expMcp.modelHubTools !== false ? 2 : 0);
@@ -7619,6 +7703,9 @@
           } else if (d?.brokerOnline) {
             cuaBrokerPill.className = 'pill pill-ok';
             cuaBrokerPill.textContent = '🟢 桌面助手在线';
+          } else if (d?.sleeping) {
+            cuaBrokerPill.className = 'pill';
+            cuaBrokerPill.textContent = '💤 按需休眠中 (0驻留)';
           } else {
             cuaBrokerPill.className = 'pill';
             cuaBrokerPill.textContent = '⚪ 助手待命';
@@ -7629,7 +7716,9 @@
           const winCnt = Array.isArray(d.windows) ? d.windows.length : 0;
           cuaSummaryLabel.textContent = d.brokerOnline
             ? `状态：${d.stateLabelZh || '未授权锁定'} · 已授权网页 ${armedCnt} 页 · 可观测窗口 ${winCnt} 个`
-            : '受控桌面与浏览器桥 · 默认关闭零 Token 开销 · 全局 Esc 急刹';
+            : (d.sleeping
+                ? '按需休眠零驻留模式 · 未启用操控时 0 后台进程、0 端口监听、0 Token 开销'
+                : '受控桌面与浏览器桥 · 默认关闭零 Token 开销 · 全局 Esc 急刹');
         }
 
         if (st.loading && !d) {
@@ -7642,7 +7731,7 @@
           cuaWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-cua-action="refresh">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.9.3，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程；请在 Plugins Manager 重载插件或重启一次 Antigravity。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.9.4，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程；请在 Plugins Manager 重载插件或重启一次 Antigravity。</p>` +
               `</article>`
             : `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">读取电脑操控状态失败</span><button type="button" class="mini-btn is-primary" data-cua-action="refresh">重试</button></div>` +
@@ -7655,9 +7744,10 @@
         const customUri = d?.customizationUri || 'customization://prism-cua';
         const bridgeDisplay = d?.chromeBridgeDisplayPath || '%USERPROFILE%\\.gemini\\antigravity\\prism-suite\\chrome-bridge';
         const brokerOnline = Boolean(d?.brokerOnline);
+        const isSleeping = Boolean(d?.sleeping);
         const pluginInstalled = Boolean(d?.pluginInstalled);
         const controlState = d?.controlState || 'locked';
-        const stateLabelZh = d?.stateLabelZh || '未授权锁定';
+        const stateLabelZh = d?.stateLabelZh || (isSleeping ? '按需休眠（零驻留）' : '未授权锁定');
         const remainTxt = formatCuaRemainText(d?.expiresAtMs);
         const armedTabs = Array.isArray(d?.armedTabs) ? d.armedTabs : [];
         const windows = Array.isArray(d?.windows) ? d.windows : [];
@@ -7708,7 +7798,9 @@
               : '<span class="pill" title="已通过下方工具开关隐藏 MCP 工具，日常对话 0 工具 Token 占用">工具已休眠 (0占用)</span>';
         const brokerStatusPill = brokerOnline
           ? '<span class="pill pill-ok">桌面助手在线</span>'
-          : '<span class="pill">助手待命（按需自动唤醒）</span>';
+          : (isSleeping
+              ? '<span class="pill" title="守护进程当前处于按需休眠态，零后台驻留；开启工具或发起操控时自动按需唤醒">💤 守护休眠中（按需唤醒）</span>'
+              : '<span class="pill">助手待命（按需自动唤醒）</span>');
 
         const controlCardHtml =
           `<article class="relay-card">` +
@@ -7730,7 +7822,9 @@
                 `<span class="relay-sub">` +
                   (brokerOnline
                     ? '支持状态流转：未授权锁定 / 只读观察 / 键鼠操控中 / 等待人工接管（任意时刻按物理 Esc 立即急刹）'
-                    : '当前未检测到活跃 Windows CUA Broker；在 Windows 侧启动内置守护进程或调用 prism-cua 工具时将自动就绪。') +
+                    : (isSleeping
+                        ? escapeHtml(d?.message || '当前处于按需休眠态（零后台进程驻留）；启用 AI 操控工具并发起观察/动作请求时将自动拉起守护进程。')
+                        : '当前未检测到活跃 Windows CUA Broker；在 Windows 侧启动内置守护进程或调用 prism-cua 工具时将自动就绪。')) +
                 `</span>` +
               `</div>` +
               `<button type="button" class="cua-danger-btn" data-cua-action="revoke" ${!brokerOnline || st.acting ? 'disabled' : ''} title="立即中断所有正在执行的键鼠/网页动作，吊销租约并解除已授权标签页">🛑 立即收回全部操控权限</button>` +
@@ -7858,7 +7952,7 @@
                 );
               }).join('') +
             `</div>`
-          : `<div class="relay-sub" style="padding:8px 2px;">${brokerOnline ? '暂未检出可观测的桌面顶层窗口，点右上角「刷新」重新枚举。' : '守护进程离线中；启动后将在此实时列出当前桌面可观测窗口（含最小化窗口状态与尺寸）。'}</div>`;
+          : `<div class="relay-sub" style="padding:8px 2px;">${brokerOnline ? '暂未检出可观测的桌面顶层窗口，点右上角「刷新」重新枚举。' : (isSleeping ? '守护进程正处于按需休眠态（零后台开销）；唤醒在线后将在此实时列出可观测桌面窗口。' : '守护进程离线中；启动后将在此实时列出当前桌面可观测窗口（含最小化窗口状态与尺寸）。')}</div>`;
 
         const rightColHtml =
           `<article class="relay-card">` +
@@ -8238,6 +8332,7 @@
               await loadCuaTab({ silent: true });
             } else if (act === 'toggle-cua-tools') {
               const wantEnabled = btn.dataset.next === '1';
+              if (wantEnabled && !requireInlineConfirm(btn, '确认执行？')) return;
               appState.cua.acting = true;
               renderCua();
               const res = await callServerTool('cua_bridge_set_tools_enabled', { enabled: wantEnabled });
@@ -8552,6 +8647,7 @@
               showToast(res.error || '修改失败', true);
             }
           } else if (act === 'delete') {
+            if (!requireInlineConfirm(btn, '确认删除？')) return;
             const res = await callServerTool('accounts_delete', { accountId: btn.dataset.id });
             showToast(res.ok ? '已移除隔离备份槽（不影响当前登录与会话）' : (res.error || '移除失败'), !res.ok);
             await loadAccountsTab();
@@ -8581,6 +8677,7 @@
               showToast(ok ? '已复制「接力」恢复提示' : '复制失败', !ok);
             }
           } else if (act === 'mem-del') {
+            if (!requireInlineConfirm(btn, '确认删除？')) return;
             await callServerTool('handoff_memory_remove', { id: btn.dataset.id });
             showToast('已删除该条交接记忆');
             await loadAccountsTab();
@@ -8663,7 +8760,7 @@
             appState.accounts.selfUpdateChecking = false;
             appState.accounts.selfUpdateInfo = info;
             renderAccounts();
-            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.9.3'}`);
+            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.9.4'}`);
           } else if (act === 'self-update-repair-ask') {
             appState.accounts.selfUpdateConfirmRepair = true;
             renderAccounts();
@@ -8671,6 +8768,7 @@
             appState.accounts.selfUpdateConfirmRepair = false;
             renderAccounts();
           } else if (act === 'self-update-apply' || act === 'self-update-repair') {
+            if (act === 'self-update-apply' && !requireInlineConfirm(btn, '确认执行？')) return;
             const isForce = act === 'self-update-repair';
             appState.accounts.selfUpdateApplying = true;
             appState.accounts.selfUpdateConfirmRepair = false;
@@ -9226,6 +9324,7 @@
               renderModels();
               showToast('已从系统隔离凭据库清除该网关密钥');
             } else if (act === 'del-provider') {
+              if (!requireInlineConfirm(btn, '确认删除？')) return;
               const id = btn.dataset.id;
               const res = await callServerTool('model_hub_remove_provider', { providerId: id });
               if (res?.profile) appState.models.data = res.profile;
@@ -10079,6 +10178,10 @@
       window.addEventListener('keydown', (event) => {
         if (event.isComposing || event.keyCode === 229) return;
         if (event.key === 'Escape') {
+          if (disarmAllInlineConfirms()) {
+            event.preventDefault();
+            return;
+          }
           if (appState.openTargets.menuOpen) {
             event.preventDefault();
             closeOpenWithMenu();
@@ -10200,7 +10303,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.9.3' },
+            appInfo: { name: 'prism-files', version: '0.9.4' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};

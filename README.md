@@ -1,7 +1,7 @@
 # Anti-Claude Prism Suite
 
 <p align="left">
-  <img src="https://img.shields.io/badge/version-v0.9.3-2563eb?style=flat-square" alt="Version v0.9.3" />
+  <img src="https://img.shields.io/badge/version-v0.9.4-2563eb?style=flat-square" alt="Version v0.9.4" />
   <img src="https://img.shields.io/badge/edition-All--in--One%20Standalone-059669?style=flat-square" alt="Standalone Edition" />
   <img src="https://img.shields.io/badge/kernel-Anti--Claude%20v3.1.10%20Bundled-7c3aed?style=flat-square" alt="Bundled Anti-Claude v3.1.10" />
   <img src="https://img.shields.io/badge/dependencies-0%20npm%20packages-d97706?style=flat-square" alt="Zero Runtime Dependencies" />
@@ -14,7 +14,7 @@
 - **真正零前置依赖（免装系统 Node.js 亦可运行）**：Windows 用户双击运行单个安装包，即使电脑未安装 Node.js 也会自动复用本机 `Antigravity.exe` 内置 Electron 运行时（`ELECTRON_RUN_AS_NODE=1`）一次性完成「底层 CDP 守护内核 + 棱镜视觉交互扩展 + Prism 七合一工作台 + 默认关闭的 `prism-cua` + Chrome/Edge 浏览器受控桥 + 内置规则与技能」全栈部署；
 - **默认关闭零上下文损耗 · 可视化虚拟指针防抢鼠 · 全局 `Esc` 急刹**：受控电脑与浏览器操控工具独立封装在同级插件 `prism-cua` 中并默认关闭，日常写代码聊天时 `0` 额外工具 Token 开销；操控期间渲染独立鼠标穿透 **AI 虚拟指针**，对已授权网页与标准桌面 UIA / Win32 控件实现 **`0px` 物理鼠标位移、零焦点抢占**，全链路硬拦截密码/验证码/支付框（含 `Ctrl+V` 剪贴板粘贴防护），并在系统任意窗口按下物理 **`Esc`** 键毫秒级中断急刹；
 - **老用户无感平滑升级 · 全链路杀软零误报卫生**：完整保留本地 `ui-prefs.json` 与已隐藏说明偏好，支持运行中进程免停机 `.old` 原子热替换，采用纯二进制 `[MS-SHLLINK]` `.lnk` 编解码与标准 `[ComImport] IShellLinkW` 彻底告别 `WScript.Shell` 误报特征；
-- **零外部运行时依赖 · 零全局 Body 观察器 · 三档性能与光学质感**：全栈基于原生 ESM、`.NET Framework 4.8` 系统自带编译器与浏览器原生 API 实现；支持 `省电 / 均衡 / 满血` 三档性能模式、对话/代码独立自定义字体、长代码块吸顶折叠防跳飞、思考块 `#L` 源码直跳及 `0fps` 语义边缘余晖与紧凑双池额度胶囊。
+- **零外部运行时依赖 · 扩展层零全局 Body 观察器 · 三档性能与光学质感**：全栈基于原生 ESM、`.NET Framework 4.8` 系统自带编译器与浏览器原生 API 实现（棱镜扩展层 `extensions/*` 严守零全局 `document.body` 观察器）；支持 `省电 / 均衡 / 满血` 三档性能模式、对话/代码独立自定义字体、长代码块吸顶折叠防跳飞、思考块 `#L` 源码直跳及 `0fps` 语义边缘余晖与紧凑双池额度胶囊。
 
 ---
 
@@ -115,7 +115,7 @@
 
 ```mermaid
 flowchart TB
-  subgraph PKG["Anti-Claude Prism Suite v0.9.3（单包独立完整版 · 零外部 npm 依赖）"]
+  subgraph PKG["Anti-Claude Prism Suite v0.9.4（单包独立完整版 · 零外部 npm 依赖）"]
     K["第 1 层 · 内置增强内核与本地 CUA Broker<br/>vendor/anti-claude/ + native/win-cua/ (v3.1.10 + 四级防抢鼠执行器 + 全局 Esc 急刹)"]
     E["第 2 层 · 棱镜前端扩展 & Chrome/Edge MV3 扩展桥<br/>extensions/prism-suite*.{css,js} + extensions/chrome-cua-bridge/"]
     P["第 3 层 · Prism 七合一工作台 & 双插件 MCP/Skills<br/>plugin/ (8 常驻工具) + plugin-cua/ (默认关闭 3 操控工具)"]
@@ -279,8 +279,9 @@ node install.mjs
 | `node install.mjs --plugin-only` | 仅原地增量更新 `prism-files` 与 `prism-cua` 插件及内置 Skills（保留目录 inode） |
 | `node install.mjs --no-kernel` | 仅安装扩展与双插件，跳过部署内置 `Anti-Claude` 内核 |
 | `node install.mjs --no-kernel-daemon` | 部署内核文件与用户层模板，但不注册/重启宿主后台守护进程 |
-| `node uninstall.mjs` | 干净移除棱镜扩展、`chrome-bridge`、`prism-files` 与 `prism-cua` 插件，保留用户数据与其他插件 |
-| `node uninstall.mjs --with-kernel` | 彻底卸载本套件扩展、双插件及内置 `Anti-Claude` 守护进程与开机自启项 |
+| `node uninstall.mjs` | 干净移除棱镜扩展、`chrome-bridge`、`install-mode.json`、`prism-files` 与 `prism-cua` 插件，保留用户数据与其他插件 |
+| `node uninstall.mjs --with-kernel` | 彻底卸载本套件扩展、双插件、内置 `Anti-Claude` 守护进程、开机自启项、Native Messaging 注册表项及快捷方式调试端口参数 |
+| `node uninstall.mjs --with-kernel --purge` | 在彻底卸载基础上，一并清除系统凭据库中的 `prism-suite:*` 备份条目、模型网关配置与本地状态/记忆缓存 |
 | `npm test` | 运行全套自动化回归、性能门禁与安全边界测试 |
 | `npm run build:win-exe` | 在 Windows 环境使用系统自带 `csc.exe` 现场编译 `prism-win-cua.exe` 与单文件安装器 `.exe` |
 
@@ -293,10 +294,19 @@ node install.mjs
 
 ## 安全、隐私与隔离承诺
 
-1. **绝不触碰本地对话库与工作区代码**：账号接力仅在 OS 原生凭据库（Windows Credential Manager / macOS Keychain / Linux Secret Service）的独立隔离命名空间 `prism-suite:account:<id>` 中备份与原子替换受验凭据，**100% 不改写 Antigravity 本地会话数据库、不修改 `~/.gemini/antigravity/brain/` 产物**；切换前强制校验 `id_token_email` 一致性，异常自动原子回滚。
-2. **零明文密钥落盘与跨域名/重定向防泄露**：本套件绝不后台扫描其他软件私密目录；`prism-profile.json` 强制 `0600` 权限且仅保存环境变量名或系统凭据库引用（进程内存仅作 `60s` 瞬时复用缓存），修改已绑凭据库网关域名时强制重验密钥，所有出站模型调用与 `/models` 探测均强制 `redirect: 'error'` 阻断 `302` 跨源泄密并实施响应体字节硬上限；记忆库、检索与出站会诊提示词均内置多层敏感信息脱敏与外部远程记忆污点隔离（`[EXTERNAL_UNTRUSTED_MEMORY]`）。
-3. **敏感路径硬拦截与 IMDS / SSRF 双重护栏**：文件工作台底层拒绝预览或修改 `.env*`、`.ssh`、`.gnupg`、`.aws`、`.codex`、`.claude`、`.cc-switch`、私钥证书及 NTFS 备用数据流（ADS），对 `brain/` 目录强制只读保护，并对工作区文本保存启用 **SHA-256 乐观并发锁**；网关端点校验精准拦截 AWS/GCP/Azure/阿里云 IMDS 元数据地址及其 IPv6 映射变形（完整保留 `localhost`、局域网与 Tailscale `*.ts.net` 直连），可选无 Key 公网搜索强制 DNS 解析锁定公网路由 IP。
-4. **双端 SHA-256 强校验与二进制归档审计的自更新白名单**：一键自更新仅信任官方 GitHub 域名与发布资产路径，对 Windows 安装器 `.exe` 与跨平台源码包 `.tar.gz` 均强制核验配套 `.sha256` 指纹，并在解压前执行纯 Node 二进制 USTAR/PAX 归档头与系统 `tar` 双重符号链接/路径穿越安全审计。
+1. **绝不触碰本地对话库与工作区代码**：账号接力仅在 OS 原生凭据库（Windows Credential Manager / macOS Keychain / Linux Secret Service）的独立隔离命名空间 `prism-suite:account:<id>` 中备份与原子替换受验凭据，**100% 不改写 Antigravity 本地会话数据库、不修改 `~/.gemini/antigravity/brain/` 产物**；切换前强制校验 `id_token_email` 一致性，异常自动原子回滚（若回滚亦受阻则强制保留自动备份槽防丢号）。注：多账号手动接力请遵守 Google Antigravity 最新服务条款。
+2. **零明文密钥落盘与跨域名/重定向防泄露**：本套件绝不后台扫描其他软件私密目录；`prism-profile.json`、`thought-translation-cache.json` 与 `usage-ledger-cache.json` 均采用 `0600` 原子写入，修改已绑网关域名（含 `apiKeyEnv`）时强制重验，所有出站模型调用、远程记忆同步与 `/models` 探测均强制 `redirect: 'error'` 并实施响应体字节硬上限；记忆库、检索、思考翻译与出站会诊统一共用集中式凭据脱敏引擎，并对外部远程导入记忆实施 `[EXTERNAL_UNTRUSTED_MEMORY]` 污点标记。
+3. **敏感路径硬拦截、非 UTF-8 编码防损保护与 IMDS / SSRF 护栏**：文件工作台与内联文件卡片底层统一启用外部 UNC/SMB 守卫（防 NTLM 哈希泄露），拒绝预览或修改 `.env*`、`.ssh`、`.gnupg`、`.aws`、`.codex`、`.claude`、`.cc-switch`、`.kube`、`.docker`、`.azure`、`gcloud`、`gh`、`oauth_creds.json`、私钥证书及 NTFS 备用数据流（ADS），禁止覆写 Shell 启动配置与 `mcp_config.json`；对 `GBK` 等非 UTF-8 本地编码文件自动识别并以**只读模式解码预览**（彻底防止保存造成中文乱码损坏）；内部工作台管理指令实施服务端随机能力令牌（`_appToken`）硬校验与界面二次确认保护。
+4. **双端 SHA-256 强校验与对称干净卸载**：一键自更新仅信任官方 GitHub 发布路径并强制核验 `.sha256` 指纹与归档头安全审计；内置内核安装时开启的宿主界面展开设置（`verboseConversationSteps` 等）与快捷方式 `--remote-debugging-port=0` 参数、CUA Native Messaging 注册表项均支持通过 `--with-kernel`（及可选 `--purge`）对称还原清理。
+
+### 出站网络目的地透明清单
+
+| 出站目标 | 触发功能 | 默认开关 | 发送内容范围 | 出站前脱敏保护 |
+| --- | --- | --- | --- | --- |
+| `translate.googleapis.com` / `clients5.google.com` | 思考过程双语中译、工作台上游雷达 Commit 摘要中译 | 思考中译默认开启（可随时关闭并自动清缓存）；雷达仅手动点开时触发 | 展开可见的英文思考段落（代码块、路径与标识符已替换为 `⟪P…⟫` 占位符）或公开仓库 Commit 标题 | **已启用**（自动脱敏密码、Token、API Key、OAuth 凭据与私钥） |
+| `api.github.com` / `github.com` | 工作台版本更新检查、7 源上游生态雷达 | 仅在工作台主动打开或点击检查时触发 | 公开 Release / Commit 查询请求（若本机已登录 `gh` CLI 则复用认证配额防 403） | 只读元数据请求，不含本地对话内容 |
+| 用户自配的模型中枢网关 | `prism_ask_model` 跨模型会诊、`Tab` 下一步提问建议（配置网关后） | 会诊需手动配置；`Tab` 建议默认关闭 | 模型提交的会诊上下文，或最近一轮问答摘要（未配网关时 `Tab` 建议纯本地启发式运行） | **已启用**（统一敏感凭据脱敏 + IMDS/重定向拦截） |
+| 公网搜索引擎 / 远程记忆 MCP | 模型中枢可选代搜、可选外部记忆桥同步 | 均默认关闭 | 搜索查询词或已脱敏的槽位交接摘要 | **已启用**（凭据脱敏 + DNS 公网 IP 锁定 + 污点标记） |
 
 ---
 

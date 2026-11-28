@@ -21,6 +21,8 @@ let hydrated = false;
 let hydratePromise = null;
 let nativePort = null;
 let lastNativeError = '';
+let brokerCuaState = 'UNKNOWN';
+let currentBrokerLeaseEpoch = 0;
 
 function parseSafeOrigin(rawUrl) {
   const s = String(rawUrl || '').trim();
@@ -184,7 +186,7 @@ function sendSyncArmedTabs() {
   postNativeSafe({
     type: 'sync_armed_tabs',
     extensionId: chrome.runtime.id,
-    version: '0.9.3',
+    version: '0.9.4',
     ts: Date.now(),
     tabs: list,
     armedTabs: list
@@ -235,7 +237,7 @@ function disconnectNativeIfIdle() {
       nativePort.postMessage({
         type: 'sync_armed_tabs',
         extensionId: chrome.runtime.id,
-        version: '0.9.3',
+        version: '0.9.4',
         ts: Date.now(),
         tabs: [],
         armedTabs: []
@@ -267,10 +269,29 @@ async function syncLifecycleWithArmedCount() {
   }
 }
 
+function notifyTabContentAgentArmed(tabId, isArmed) {
+  if (!Number.isInteger(tabId) || tabId <= 0) return;
+  try {
+    chrome.scripting
+      .executeScript({
+        target: { tabId },
+        func: (active) => {
+          if (window.__prismCuaContentAgent && typeof window.__prismCuaContentAgent.setArmedState === 'function') {
+            window.__prismCuaContentAgent.setArmedState(active);
+          }
+        },
+        args: [Boolean(isArmed)]
+      })
+      .catch(() => {});
+  } catch {}
+}
+
 async function disarmSingleTab(tabId, { reason = 'manual' } = {}) {
-  const existed = armedTabs.delete(Number(tabId));
-  await setBadgeForTab(Number(tabId), false);
+  const numId = Number(tabId);
+  const existed = armedTabs.delete(numId);
+  await setBadgeForTab(numId, false);
   if (existed) {
+    notifyTabContentAgentArmed(numId, false);
     await persistArmedTabs();
     if (armedTabs.size > 0) {
       sendSyncArmedTabs();
@@ -284,6 +305,9 @@ async function disarmSingleTab(tabId, { reason = 'manual' } = {}) {
 async function disarmAllTabs({ reason = 'manual_all' } = {}) {
   const ids = Array.from(armedTabs.keys());
   armedTabs.clear();
+  for (const id of ids) {
+    notifyTabContentAgentArmed(id, false);
+  }
   await Promise.all(ids.map((id) => setBadgeForTab(id, false)));
   await persistArmedTabs();
   disconnectNativeIfIdle();
@@ -315,6 +339,9 @@ async function armTabByUserGesture(tab) {
   await setBadgeForTab(tab.id, true);
   await persistArmedTabs();
   await syncLifecycleWithArmedCount();
+  ensureContentAgentLoaded(tab.id)
+    .then(() => notifyTabContentAgentArmed(tab.id, true))
+    .catch(() => {});
   return {
     ok: true,
     armed: true,
@@ -328,7 +355,7 @@ async function armTabByUserGesture(tab) {
 async function ensureContentAgentLoaded(tabId) {
   const probe = await chrome.scripting.executeScript({
     target: { tabId },
-    func: () => Boolean(window.__prismCuaContentAgent && window.__prismCuaContentAgent.version === '0.9.3')
+    func: () => Boolean(window.__prismCuaContentAgent && window.__prismCuaContentAgent.version === '0.9.4')
   });
   const alreadyLoaded = Boolean(probe && probe[0] && probe[0].result === true);
   if (!alreadyLoaded) {
@@ -425,11 +452,32 @@ async function handleNativeMessage(msg) {
   const cmd = String(msg.cmd || msg.action || msg.type || '').trim();
   const reqId = msg.requestId ?? msg.id;
 
-  if (cmd === 'cua_state' || cmd === 'status_reply') {
+  if (cmd === 'status_reply') {
+    const st = String(msg.state || '').trim().toUpperCase();
+    if (st) brokerCuaState = st;
+    if (Number.isFinite(Number(msg.leaseEpoch)) && Number(msg.leaseEpoch) > currentBrokerLeaseEpoch) {
+      currentBrokerLeaseEpoch = Number(msg.leaseEpoch);
+    }
+    return;
+  }
+
+  if (cmd === 'cua_state') {
+    const incomingState = String(msg.state || msg.payload?.state || '').trim().toUpperCase();
+    const incomingEpoch = Number(msg.leaseEpoch ?? msg.payload?.leaseEpoch);
+    if (Number.isFinite(incomingEpoch) && incomingEpoch > currentBrokerLeaseEpoch) {
+      currentBrokerLeaseEpoch = incomingEpoch;
+    } else if ((incomingState === 'DISARMED' || incomingState === 'PAUSED_HANDOFF') && !Number.isFinite(incomingEpoch)) {
+      currentBrokerLeaseEpoch += 1;
+    }
+    if (incomingState) {
+      brokerCuaState = incomingState;
+    }
     return;
   }
 
   if (cmd === 'revoke' || cmd === 'disarm_all') {
+    brokerCuaState = 'DISARMED';
+    currentBrokerLeaseEpoch += 1;
     const res = await disarmAllTabs({ reason: 'broker_revoke' });
     if (reqId !== undefined) {
       postNativeSafe({ type: 'cmd_result', id: reqId, requestId: reqId, ok: true, result: res });
@@ -443,7 +491,7 @@ async function handleNativeMessage(msg) {
       ok: true,
       pong: true,
       extensionId: chrome.runtime.id,
-      version: '0.9.3',
+      version: '0.9.4',
       armedCount: armedTabs.size,
       tabs: list,
       armedTabs: list
@@ -456,6 +504,43 @@ async function handleNativeMessage(msg) {
     return;
   }
 
+  if (cmd === 'browser_observe' || cmd === 'browser_act') {
+    const payload = (msg.payload && typeof msg.payload === 'object') ? msg.payload : {};
+    const cmdEpoch = Number(msg.leaseEpoch ?? payload.leaseEpoch);
+    if (brokerCuaState === 'DISARMED' || brokerCuaState === 'PAUSED_HANDOFF') {
+      const rejCode = brokerCuaState === 'PAUSED_HANDOFF' ? 'HANDOFF_PAUSED' : 'REVOKED';
+      postNativeSafe({
+        type: 'cmd_result',
+        id: reqId,
+        requestId: reqId,
+        ok: false,
+        result: {
+          ok: false,
+          code: rejCode,
+          error: `浏览器桥已拒绝在 ${brokerCuaState} 状态下执行滞留指令`
+        }
+      });
+      return;
+    }
+    if (Number.isFinite(cmdEpoch) && cmdEpoch < currentBrokerLeaseEpoch) {
+      postNativeSafe({
+        type: 'cmd_result',
+        id: reqId,
+        requestId: reqId,
+        ok: false,
+        result: {
+          ok: false,
+          code: 'STALE_LEASE_EPOCH',
+          error: `浏览器桥已拒绝过期的授权纪元指令 (epoch ${cmdEpoch} < ${currentBrokerLeaseEpoch})`
+        }
+      });
+      return;
+    }
+    if (Number.isFinite(cmdEpoch) && cmdEpoch > currentBrokerLeaseEpoch) {
+      currentBrokerLeaseEpoch = cmdEpoch;
+    }
+  }
+
   if (cmd === 'browser_observe') {
     const payload = (msg.payload && typeof msg.payload === 'object') ? msg.payload : {};
     const check = await verifyArmedTabLive(msg.tabId ?? payload.tabId);
@@ -464,7 +549,7 @@ async function handleNativeMessage(msg) {
       return;
     }
 
-    const { tabId, liveTab } = check;
+    const { tabId, liveTab, armedEntry } = check;
     await ensureContentAgentLoaded(tabId);
     const mode = String(msg.mode || payload.mode || 'compact');
     const maxElements = Number(msg.maxElements || payload.maxElements) || 200;
@@ -472,10 +557,18 @@ async function handleNativeMessage(msg) {
     const execRes = await chrome.scripting.executeScript({
       target: { tabId },
       func: (opts) => window.__prismCuaContentAgent.observe(opts),
-      args: [{ mode, maxElements }]
+      args: [{
+        mode,
+        maxElements,
+        expectedOrigin: armedEntry.armedOrigin,
+        armedOrigin: armedEntry.armedOrigin
+      }]
     });
     const obs = (execRes && execRes[0] && execRes[0].result) || { ok: false, error: '无法读取页面无障碍快照' };
     obs.tabId = tabId;
+    if (obs.code === 'ORIGIN_MISMATCH') {
+      await disarmSingleTab(tabId, { reason: 'origin_mismatch_observe' });
+    }
 
     const wantsScreenshot =
       mode === 'screenshot' ||
@@ -507,9 +600,14 @@ async function handleNativeMessage(msg) {
       return;
     }
 
-    const { tabId } = check;
+    const { tabId, armedEntry } = check;
     await ensureContentAgentLoaded(tabId);
-    const step = msg.step || payload.step || payload || {};
+    const rawStep = msg.step || payload.step || payload || {};
+    const step = {
+      ...rawStep,
+      expectedOrigin: armedEntry.armedOrigin,
+      armedOrigin: armedEntry.armedOrigin
+    };
 
     const execRes = await chrome.scripting.executeScript({
       target: { tabId },
@@ -518,21 +616,32 @@ async function handleNativeMessage(msg) {
     });
     const actOut = (execRes && execRes[0] && execRes[0].result) || { ok: false, error: '页面动作执行未返回结果' };
     actOut.tabId = tabId;
+    if (actOut.code === 'ORIGIN_MISMATCH') {
+      await disarmSingleTab(tabId, { reason: 'origin_mismatch_act' });
+      postNativeSafe({ type: 'cmd_result', id: reqId, requestId: reqId, ok: false, result: actOut });
+      return;
+    }
 
     // Re-check origin immediately after action in case click/submit navigated cross-origin
     try {
       const postTab = await chrome.tabs.get(tabId);
       const postOrigin = parseSafeOrigin(postTab.url);
-      const armedEntry = armedTabs.get(tabId);
-      if (armedEntry && (!postOrigin || checkUrlBlockReason(postTab.url) || postOrigin !== armedEntry.armedOrigin)) {
+      const liveArmedEntry = armedTabs.get(tabId);
+      if (liveArmedEntry && (!postOrigin || checkUrlBlockReason(postTab.url) || postOrigin !== liveArmedEntry.armedOrigin)) {
         await disarmSingleTab(tabId, { reason: 'origin_changed_after_act' });
         actOut.disarmedOnOriginChange = true;
-      } else if (step.includeSnapshot !== false && actOut.ok) {
+      } else if (step.includeSnapshot !== false && actOut.ok && liveArmedEntry) {
         try {
           await ensureContentAgentLoaded(tabId);
           const snapRes = await chrome.scripting.executeScript({
             target: { tabId },
-            func: () => window.__prismCuaContentAgent.observe({ mode: 'compact', maxElements: 120 })
+            func: (expectedOrig) => window.__prismCuaContentAgent.observe({
+              mode: 'compact',
+              maxElements: 120,
+              expectedOrigin: expectedOrig,
+              armedOrigin: expectedOrig
+            }),
+            args: [liveArmedEntry.armedOrigin]
           });
           if (snapRes && snapRes[0] && snapRes[0].result?.ok) {
             actOut.snapshot = snapRes[0].result;
@@ -604,7 +713,7 @@ async function probeNativeHostTransient() {
     });
 
     try {
-      tempPort.postMessage({ type: 'get_status', id: 'probe-1', extensionId: chrome.runtime.id, version: '0.9.3', ts: Date.now() });
+      tempPort.postMessage({ type: 'get_status', id: 'probe-1', extensionId: chrome.runtime.id, version: '0.9.4', ts: Date.now() });
     } catch {}
 
     // If Native Messaging host stayed alive for 220ms without immediate lastError disconnect, it is registered & reachable
@@ -675,7 +784,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
       postNativeSafe({
         type: 'heartbeat',
         extensionId: chrome.runtime.id,
-        version: '0.9.3',
+        version: '0.9.4',
         ts: Date.now(),
         armedCount: armedTabs.size,
         tabs: list,
@@ -685,11 +794,53 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     .catch(() => {});
 });
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg !== 'object') return false;
 
   (async () => {
     await ensureHydrated();
+
+    if (typeof msg.type === 'string' && msg.type.startsWith('popup_')) {
+      if (sender && sender.tab) {
+        sendResponse({
+          ok: false,
+          code: 'FORBIDDEN_TAB_SENDER',
+          error: '拒绝来自网页或内容脚本上下文的弹窗特权消息'
+        });
+        return;
+      }
+      if (sender && sender.id && sender.id !== chrome.runtime.id) {
+        sendResponse({
+          ok: false,
+          code: 'FORBIDDEN_SENDER',
+          error: '拒绝非本扩展上下文消息'
+        });
+        return;
+      }
+    }
+
+    if (msg.type === 'content_esc_brake') {
+      const senderTabId = sender?.tab?.id;
+      if (!Number.isInteger(senderTabId) || !armedTabs.has(senderTabId)) {
+        sendResponse({ ok: false, code: 'TAB_NOT_ARMED', error: '来源标签页未处于受控授权态' });
+        return;
+      }
+      brokerCuaState = 'DISARMED';
+      currentBrokerLeaseEpoch += 1;
+      ensureNativeConnected();
+      postNativeSafe({
+        type: 'emergency_stop',
+        action: 'emergency_stop',
+        code: 'USER_ESC_ABORTED',
+        reason: 'USER_ESC_ABORTED',
+        tabId: senderTabId,
+        extensionId: chrome.runtime.id,
+        version: '0.9.4',
+        ts: Date.now()
+      });
+      sendResponse({ ok: true, emergencyStopped: true });
+      return;
+    }
 
     if (msg.type === 'popup_get_state') {
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -707,7 +858,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       sendResponse({
         ok: true,
         extensionId: chrome.runtime.id,
-        version: '0.9.3',
+        version: '0.9.4',
         activeTab: activeTab
           ? {
               tabId,

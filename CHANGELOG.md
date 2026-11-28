@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.4 - 2026-11-28
+
+- **输入框 `Tab` 下一步提问建议零重影、单次防重填入与模型中枢正式打通（[prism-suite-fx.css](extensions/prism-suite-fx.css) / [prism-suite-fx.js](extensions/prism-suite-fx.js) / [daemon.mjs](vendor/anti-claude/core/daemon.mjs)）**：
+  - **根除原生占位提示语叠字重影**：以双倍输入框 ID 选择器精准锁定 `data-lexical-placeholder="true"`（覆盖防发虚规则的 `opacity: 1 !important`），在建议显示期间强制 `opacity: 0` 与 `visibility: hidden` 双重隐藏；
+  - **修复按一次 `Tab` 重复填入两遍 + 支持鼠标点击 `Tab` 胶囊**：新增 `350ms` 单次触发防重锁并适配 Lexical 异步微任务渲染时序，彻底消除同步兜底引发的双写翻倍；新增 `✦` 建议微标、鼠标直点 `Tab` 标签一键填入及中文输入法首键零闪烁退让；
+  - **打通工作台 `prism-profile.json` 智能预测与末尾结论优先启发式**：修复守护进程此前未读取 `prism-profile.json` 网关配置的问题（附安全环境变量白名单、出站凭据脱敏与 IPv6 映射 IMDS `[::ffff:a9fe:*]` 拦截），同时优化本地启发式聚焦助手回复末尾最新结论。
+- **文件工作台非 UTF-8（GBK/GB18030）防写坏保护、能力令牌鉴权、集中脱敏与保险箱防丢备份（[index.mjs](plugin/server/index.mjs) / [redact-shared.mjs](plugin/server/redact-shared.mjs) / [account-manager.mjs](plugin/server/account-manager.mjs) / [handoff-memory.mjs](plugin/server/handoff-memory.mjs)）**：
+  - **GBK / 本地编码只读预览防乱码损坏 + UTF-8 BOM 保留**：对非 UTF-8 文本文件自动按 `GB18030` 解码清晰预览并锁定只读提示（服务端同步硬拒覆写），对带 UTF-8 BOM 文件完整保留 BOM 头；
+  - **服务端 256-bit `_appToken` 能力令牌 + 工作台危险动作二次确认 + 跨帧桥收紧**：所有 `visibility: ["app"]` 内部管理工具在 stdio 通道强制校验仅注入 UI 资源的随机令牌，删除凭据备份/网关/记忆、一键自更新与开启 CUA 统一增加双次点击防误触确认，工作台 `postMessage` 桥严格校验宿主真实挂载 `<iframe>` 并移除邮箱广播；
+  - **`show_files_inline` 防外部 SMB/NTLM 泄露 + 集中脱敏矩阵 + 远程记忆污点隔离**：补齐内联文件卡片外部 UNC 拦截与 `open_prism_files` 敏感目录保护；新建 `redact-shared.mjs` 统一覆盖四端凭据脱敏（含思考翻译出站前自动脱敏）并扩充 `.kube`/`.docker`/`.azure`/`gcloud`/`oauth_creds.json`/8.3 短文件名及 Shell/MCP 配置写保护；切号遇极端回滚失败时强制保留自动捕获备份槽防丢号；外部远程记忆标记 `[EXTERNAL_UNTRUSTED_MEMORY]` 并加 JSONL 跨进程文件锁。
+- **电脑操控（CUA）默认零驻留、全程常驻 `Esc` 急刹、物理键盘前台锁与对称干净卸载（[cua-broker.mjs](vendor/anti-claude/core/cua-broker.mjs) / [PrismWinCua.cs](native/win-cua/PrismWinCua.cs) / [prism-suite.js](extensions/prism-suite.js) / [install.mjs](install.mjs) / [uninstall.mjs](uninstall.mjs) / [PrismSuiteInstaller.cs](installer/win/PrismSuiteInstaller.cs)）**：
+  - **CUA 按需唤醒零常驻 + 全程无盲区 `Esc` 急刹 + 严禁模型越权改鼠标档位**：`prism-cua` 默认关闭期间后台不启动 Broker、零端口监听、零令牌落盘，且 WSL 网卡严格限定 `WSL` 虚拟接口；开启操控后由常驻悬浮层与受控网页同步监听物理 `Esc` 键并配合单调递增 `leaseEpoch` 清空排队指令；严禁模型参数突破用户设定的 `strict_virtual` 零触鼠上限；
+  - **L4 物理打字逐段前台窗口校验 + 忙时礼让回退 + 截图遮挡防泄密**：物理输入前与每 8 字符/回车制表前强制核验 `GetForegroundWindow()` 根句柄防止切屏误敲入终端，用户忙时超时返回 `USER_BUSY_YIELD`，截图回退前执行 9 点遮挡检测防拍入受保护窗口，观测快照按窗口/标签页隔离并附随机边界防伪 ID；
+  - **84 天热力图完整账本、异步 WSL 探测、快捷键避让与对称卸载**：修复 14/84 天共享缓存截断问题，思考翻译增加跳过记忆与指数退避，WSL 探测改为纯后台异步，`Alt+Shift+↑/↓` 自动避让 Monaco/终端编辑器；安装写入 `.prism-managed` 防误删用户同名目录、固定 `System32\wsl.exe` 防劫持，卸载完整清理 `install-mode.json`、Native Messaging 注册表项与快捷方式调试参数（支持 `--purge` 清空备份凭据），并新增 `ci.yml` 双系统自动门禁与 `scripts/sync-version.mjs` 全仓版本一致性校验。
+
 ## 0.9.3 - 2026-11-28
 
 - **内置 `Anti-Claude v3.1.10` 内核升级适配 `Antigravity v2.36.0` + 思考过程防误翻双语翻译增强（[daemon.mjs](vendor/anti-claude/core/daemon.mjs) / [custom.js](vendor/anti-claude/user/custom.js) / [i18n.json](vendor/anti-claude/core/i18n.json) / [prism-suite.js](extensions/prism-suite.js) / [prism-suite.css](extensions/prism-suite.css)）**：

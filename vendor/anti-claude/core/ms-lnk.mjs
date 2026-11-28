@@ -110,7 +110,7 @@ function encodeCountedString(value, isUnicode) {
 /**
  * Parse a Windows .lnk binary buffer per [MS-SHLLINK] Sections 2.1 - 2.5.
  */
-export function parseWindowsLnkBuffer(rawBuf) {
+export function parseWindowsLnkBuffer(rawBuf, { filePath = '' } = {}) {
   const emptyFail = (error) => ({
     ok: false,
     error,
@@ -262,8 +262,13 @@ export function parseWindowsLnkBuffer(rawBuf) {
     }
   }
 
-  if (!targetPath && relativePath && workingDir) {
-    targetPath = path.win32.resolve(workingDir, relativePath);
+  if (!targetPath && relativePath) {
+    const cleanFilePath = typeof filePath === 'string' ? filePath.trim() : '';
+    if (cleanFilePath) {
+      targetPath = path.win32.resolve(path.win32.dirname(cleanFilePath), relativePath);
+    } else if (workingDir) {
+      targetPath = path.win32.resolve(workingDir, relativePath);
+    }
   }
 
   return {
@@ -341,7 +346,7 @@ export function updateWindowsLnkArguments(rawBuf, nextArguments = '') {
 export function readWindowsShortcutInfo(filePath, { env = process.env } = {}) {
   try {
     const raw = fs.readFileSync(filePath);
-    const parsed = parseWindowsLnkBuffer(raw);
+    const parsed = parseWindowsLnkBuffer(raw, { filePath });
     if (!parsed.ok) {
       return { ...parsed, filePath };
     }

@@ -16,10 +16,10 @@ using System.Windows.Automation;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Prism Win32 CUA Helper & Native Messaging Bridge")]
-[assembly: AssemblyDescription("Anti-Claude Prism Suite v0.9.3 Controlled Desktop & Browser CUA Helper")]
+[assembly: AssemblyDescription("Anti-Claude Prism Suite v0.9.4 Controlled Desktop & Browser CUA Helper")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.9.3.0")]
-[assembly: AssemblyFileVersion("0.9.3.0")]
+[assembly: AssemblyVersion("0.9.4.0")]
+[assembly: AssemblyFileVersion("0.9.4.0")]
 
 namespace AntiClaudePrismWinCua
 {
@@ -1127,12 +1127,19 @@ namespace AntiClaudePrismWinCua
 
     internal sealed class EscEmergencyGuard : NativeWindow, IDisposable
     {
+        private readonly ThreadStart _onHotKeyCallback;
         private bool _hotkeyRegistered;
         private bool _escTriggered;
         private bool _disposed;
 
         public EscEmergencyGuard()
+            : this(null)
         {
+        }
+
+        public EscEmergencyGuard(ThreadStart onHotKeyCallback)
+        {
+            _onHotKeyCallback = onHotKeyCallback;
             CreateParams cp = new CreateParams();
             cp.Caption = "PrismCuaEscGuard";
             cp.Parent = NativeMethods.HWND_MESSAGE;
@@ -1175,6 +1182,7 @@ namespace AntiClaudePrismWinCua
 
         public void ClearSyntheticMessages()
         {
+            _escTriggered = false;
             NativeMethods.MSG msg;
             while (NativeMethods.PeekMessageW(out msg, Handle, 0, 0, NativeMethods.PM_REMOVE))
             {
@@ -1199,6 +1207,16 @@ namespace AntiClaudePrismWinCua
             if (m.Msg == NativeMethods.WM_HOTKEY && m.WParam.ToInt32() == NativeMethods.HOTKEY_ID_ESC)
             {
                 _escTriggered = true;
+                if (_onHotKeyCallback != null)
+                {
+                    try
+                    {
+                        _onHotKeyCallback();
+                    }
+                    catch
+                    {
+                    }
+                }
                 return;
             }
             base.WndProc(ref m);
@@ -1308,7 +1326,24 @@ namespace AntiClaudePrismWinCua
                 {
                     return ErrorResult("WINDOW_MINIMIZED", "目标窗口处于最小化状态，无法捕获画面");
                 }
-                screenshotBase64 = CaptureWindowBase64(hwnd, info.Rect, maxSide, gridOverlay, format == "png", quality, out outW, out outH, out scale);
+                string capErrCode;
+                string capErrMsg;
+                screenshotBase64 = CaptureWindowBase64(
+                    hwnd,
+                    info.Rect,
+                    maxSide,
+                    gridOverlay,
+                    format == "png",
+                    quality,
+                    out outW,
+                    out outH,
+                    out scale,
+                    out capErrCode,
+                    out capErrMsg);
+                if (!string.IsNullOrEmpty(capErrCode))
+                {
+                    return ErrorResult(capErrCode, capErrMsg);
+                }
             }
 
             Dictionary<string, object> winDict = info.ToDictionary();
@@ -1544,6 +1579,63 @@ namespace AntiClaudePrismWinCua
             return s.Substring(0, maxChars) + "...";
         }
 
+        private static IntPtr GetRootOrSelf(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return IntPtr.Zero;
+            IntPtr root = NativeMethods.GetAncestor(hwnd, NativeMethods.GA_ROOT);
+            return root != IntPtr.Zero ? root : hwnd;
+        }
+
+        private static bool IsTargetWindowStillForeground(IntPtr hwnd, IntPtr targetRoot)
+        {
+            if (hwnd == IntPtr.Zero) return false;
+            IntPtr expectedRoot = targetRoot != IntPtr.Zero ? targetRoot : GetRootOrSelf(hwnd);
+            IntPtr actualFg = NativeMethods.GetForegroundWindow();
+            if (actualFg == IntPtr.Zero) return false;
+            if (actualFg == hwnd || actualFg == expectedRoot) return true;
+            IntPtr actualRoot = NativeMethods.GetAncestor(actualFg, NativeMethods.GA_ROOT);
+            if (actualRoot != IntPtr.Zero && actualRoot == expectedRoot) return true;
+            IntPtr actualRootOwner = NativeMethods.GetAncestor(actualFg, NativeMethods.GA_ROOTOWNER);
+            return actualRootOwner != IntPtr.Zero && actualRootOwner == expectedRoot;
+        }
+
+        private static bool IsRectOccludedByBlockedWindow(IntPtr targetHwnd, NativeMethods.RECT rect, out string blockedReason)
+        {
+            blockedReason = null;
+            int w = Math.Max(1, rect.Right - rect.Left);
+            int h = Math.Max(1, rect.Bottom - rect.Top);
+            IntPtr targetRoot = GetRootOrSelf(targetHwnd);
+            int[] xFracs = new int[] { 2, 1, 3, 1, 3, 2, 2, 1, 3 };
+            int[] yFracs = new int[] { 2, 1, 1, 3, 3, 1, 3, 2, 2 };
+            for (int i = 0; i < xFracs.Length; i++)
+            {
+                NativeMethods.POINT pt = new NativeMethods.POINT();
+                pt.X = rect.Left + (w * xFracs[i]) / 4;
+                pt.Y = rect.Top + (h * yFracs[i]) / 4;
+                IntPtr hit = NativeMethods.WindowFromPoint(pt);
+                if (hit == IntPtr.Zero) continue;
+                IntPtr hitRoot = NativeMethods.GetAncestor(hit, NativeMethods.GA_ROOT);
+                if (hitRoot == IntPtr.Zero) hitRoot = hit;
+                if (hitRoot == targetHwnd || hitRoot == targetRoot) continue;
+
+                WindowInfo hitInfo = WindowSecurity.InspectWindow(hitRoot);
+                if (hitInfo == null) continue;
+                if (string.Equals(hitInfo.Title, "PrismCuaOverlayPill", StringComparison.Ordinal)
+                    || string.Equals(hitInfo.Title, "PrismCuaVirtualCursor", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                string bCode;
+                string bReason;
+                if (WindowSecurity.CheckWindowBlocked(hitInfo, out bCode, out bReason))
+                {
+                    blockedReason = bReason;
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private static string CaptureWindowBase64(
             IntPtr hwnd,
             NativeMethods.RECT rect,
@@ -1553,8 +1645,12 @@ namespace AntiClaudePrismWinCua
             int jpegQuality,
             out int outWidth,
             out int outHeight,
-            out double outScale)
+            out double outScale,
+            out string errCode,
+            out string errMsg)
         {
+            errCode = null;
+            errMsg = null;
             int srcW = Math.Max(1, rect.Right - rect.Left);
             int srcH = Math.Max(1, rect.Bottom - rect.Top);
 
@@ -1576,6 +1672,16 @@ namespace AntiClaudePrismWinCua
 
                 if (!printOk || IsBitmapBlankBlack(rawBmp))
                 {
+                    string occludedReason;
+                    if (IsRectOccludedByBlockedWindow(hwnd, rect, out occludedReason))
+                    {
+                        errCode = "SCREENSHOT_OCCLUDED";
+                        errMsg = "目标窗口屏幕抓图区域被受保护窗口遮挡（" + (occludedReason ?? "敏感窗口") + "），已跳过 CopyFromScreen 防止敏感画面泄露";
+                        outWidth = srcW;
+                        outHeight = srcH;
+                        outScale = 1.0;
+                        return null;
+                    }
                     using (Graphics gScreen = Graphics.FromImage(rawBmp))
                     {
                         gScreen.CopyFromScreen(rect.Left, rect.Top, 0, 0, new Size(srcW, srcH), CopyPixelOperation.SourceCopy);
@@ -1897,7 +2003,9 @@ namespace AntiClaudePrismWinCua
                 return false;
             }
 
-            return true;
+            errCode = "USER_BUSY_YIELD";
+            errMsg = "检测到用户正在持续操作键鼠，未满足空闲礼让窗口，已放弃占用系统光标与焦点";
+            return false;
         }
 
         private static bool ActivateWindowForPhysicalInput(
@@ -1935,6 +2043,24 @@ namespace AntiClaudePrismWinCua
             }
             NativeMethods.SetForegroundWindow(hwnd);
             Thread.Sleep(20);
+
+            IntPtr actualFg = NativeMethods.GetForegroundWindow();
+            IntPtr actualRoot = actualFg != IntPtr.Zero ? NativeMethods.GetAncestor(actualFg, NativeMethods.GA_ROOT) : IntPtr.Zero;
+            IntPtr targetRoot = NativeMethods.GetAncestor(hwnd, NativeMethods.GA_ROOT);
+            if (targetRoot == IntPtr.Zero) targetRoot = hwnd;
+            if (actualFg == IntPtr.Zero || (actualFg != hwnd && actualRoot != targetRoot))
+            {
+                Thread.Sleep(35);
+                actualFg = NativeMethods.GetForegroundWindow();
+                actualRoot = actualFg != IntPtr.Zero ? NativeMethods.GetAncestor(actualFg, NativeMethods.GA_ROOT) : IntPtr.Zero;
+            }
+            if (actualFg == IntPtr.Zero || (actualFg != hwnd && actualRoot != targetRoot))
+            {
+                errCode = "FOREGROUND_ACQUIRE_FAILED";
+                errMsg = "未能将目标窗口切换至前台焦点，已拒绝物理键鼠注入以防误输入到当前活动窗口";
+                return false;
+            }
+
             info = WindowSecurity.InspectWindow(hwnd) ?? info;
             return true;
         }
@@ -2955,17 +3081,22 @@ namespace AntiClaudePrismWinCua
                 return ErrorResult("PASSWORD_FIELD_HANDOFF", "检测到当前键盘焦点为密码或未受验受保护输入控件，已拒绝自动输入");
             }
 
+            IntPtr targetRoot = GetRootOrSelf(hwnd);
             string normalized = text.Replace("\r\n", "\n");
             int typedUnits = 0;
             for (int i = 0; i < normalized.Length; i++)
             {
-                if ((i & 7) == 0 && escGuard.IsEscTriggered())
+                char c = normalized[i];
+                if (escGuard.IsEscTriggered())
                 {
                     return EscAbortedResult();
                 }
+                if (!IsTargetWindowStillForeground(hwnd, targetRoot))
+                {
+                    return ErrorResult("FOREGROUND_LOST_ABORTED", "检测到前台焦点已离开目标窗口，已立即中止后续文本输入");
+                }
 
-                char c = normalized[i];
-                if (c == '\n')
+                if (c == '\n' || c == '\r')
                 {
                     InputController.SendInputs(new NativeMethods.INPUT[]
                     {
@@ -3103,6 +3234,12 @@ namespace AntiClaudePrismWinCua
             {
                 return ErrorResult("SENSITIVE_CHORD_BLOCKED", "已拦截系统安全注意力组合键");
             }
+            if ((hasCtrl && mainVk == NativeMethods.VK_ESCAPE)
+                || (hasAlt && mainVk == NativeMethods.VK_TAB)
+                || (hasAlt && mainVk == NativeMethods.VK_ESCAPE))
+            {
+                return ErrorResult("SENSITIVE_CHORD_BLOCKED", "已拦截高危窗口焦点切换或系统菜单组合键: " + chord);
+            }
             if (hasAlt && mainVk == NativeMethods.VK_F4 && WindowSecurity.IsSystemOrSensitiveForClose(info))
             {
                 return ErrorResult("SENSITIVE_CHORD_BLOCKED", "已拦截对系统壳层窗口发送 Alt+F4");
@@ -3183,6 +3320,12 @@ namespace AntiClaudePrismWinCua
                 {
                     return ErrorResult("PASSWORD_FIELD_HANDOFF", "检测到目标或当前焦点为密码或未受验受保护输入控件，已拒绝发送按键");
                 }
+            }
+
+            IntPtr fgTargetRoot = GetRootOrSelf(hwnd);
+            if (!IsTargetWindowStillForeground(hwnd, fgTargetRoot))
+            {
+                return ErrorResult("FOREGROUND_LOST_ABORTED", "检测到前台焦点已离开目标窗口，已拒绝发送按键");
             }
 
             bool sendingEscape = (mainVk == NativeMethods.VK_ESCAPE && modifiers.Count == 0);
@@ -4232,15 +4375,19 @@ namespace AntiClaudePrismWinCua
             Controls.Add(lblWsVal);
 
             Label lblReasonTitle = new Label();
-            lblReasonTitle.Text = "申请原因：";
+            lblReasonTitle.Text = "AI 申请说明（未经核实）：";
             lblReasonTitle.ForeColor = Color.FromArgb(71, 85, 105);
             lblReasonTitle.Font = new Font("Microsoft YaHei UI", 8.8f, FontStyle.Bold);
             lblReasonTitle.AutoSize = true;
             lblReasonTitle.Location = new Point(S(20), S(110));
             Controls.Add(lblReasonTitle);
 
+            string reasonDisplay = reason.StartsWith("AI 申请说明（未经核实）：", StringComparison.Ordinal)
+                ? reason
+                : ("AI 申请说明（未经核实）：" + reason);
+
             TextBox txtReason = new TextBox();
-            txtReason.Text = reason;
+            txtReason.Text = reasonDisplay;
             txtReason.ReadOnly = true;
             txtReason.Multiline = true;
             txtReason.ScrollBars = ScrollBars.Vertical;
@@ -4365,6 +4512,8 @@ namespace AntiClaudePrismWinCua
         {
             List<ConsentScopeOption> options = new List<ConsentScopeOption>();
             int selectedIdx = -1;
+            string reqProc = JsonUtil.GetString(req, "processName", string.Empty).Trim();
+            string reqTitleSub = JsonUtil.GetString(req, "titleContains", string.Empty).Trim();
 
             List<WindowInfo> liveWins = WindowSecurity.EnumerateSafeTopWindows();
             for (int i = 0; i < liveWins.Count; i++)
@@ -4381,6 +4530,17 @@ namespace AntiClaudePrismWinCua
                 if (!string.IsNullOrEmpty(reqHwnd) && WindowSecurity.ParseHwnd(reqHwnd) == w.Hwnd)
                 {
                     selectedIdx = options.Count - 1;
+                }
+                else if (selectedIdx < 0 && (!string.IsNullOrEmpty(reqProc) || !string.IsNullOrEmpty(reqTitleSub)))
+                {
+                    bool procMatch = string.IsNullOrEmpty(reqProc)
+                        || ((w.ProcessName ?? string.Empty).IndexOf(reqProc, StringComparison.OrdinalIgnoreCase) >= 0);
+                    bool titleMatch = string.IsNullOrEmpty(reqTitleSub)
+                        || ((w.Title ?? string.Empty).IndexOf(reqTitleSub, StringComparison.OrdinalIgnoreCase) >= 0);
+                    if (procMatch && titleMatch)
+                    {
+                        selectedIdx = options.Count - 1;
+                    }
                 }
             }
 
@@ -4402,7 +4562,7 @@ namespace AntiClaudePrismWinCua
             options.Add(desktopOpt);
             if (selectedIdx < 0)
             {
-                selectedIdx = target == "window" && options.Count > 2 ? 0 : options.Count - 1;
+                selectedIdx = liveWins.Count > 0 ? 0 : 0;
             }
 
             for (int i = 0; i < options.Count; i++)
@@ -4540,6 +4700,7 @@ namespace AntiClaudePrismWinCua
             }
             catch { }
             AutoScaleMode = AutoScaleMode.None;
+            Text = "PrismCuaOverlayPill";
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             TopMost = true;
@@ -5104,7 +5265,7 @@ namespace AntiClaudePrismWinCua
             {
                 Dictionary<string, object> ver = new Dictionary<string, object>();
                 ver["ok"] = true;
-                ver["version"] = "0.9.3";
+                ver["version"] = "0.9.4";
                 ver["platform"] = "win32";
                 WriteJsonLine(ver);
                 return 0;
@@ -5346,117 +5507,198 @@ namespace AntiClaudePrismWinCua
             using (OverlayPillForm pill = new OverlayPillForm())
             using (VirtualCursorForm vcursor = new VirtualCursorForm())
             {
-                Thread stdinThread = new Thread((ThreadStart)delegate
+                vcursor.Text = "PrismCuaVirtualCursor";
+                EscEmergencyGuard overlayEscGuard = null;
+                System.Windows.Forms.Timer escPollTimer = null;
+                bool escEmitted = false;
+                bool escSuspended = false;
+
+                ThreadStart emitEscOnce = delegate
                 {
+                    if (escEmitted || escSuspended) return;
+                    escEmitted = true;
+                    if (escPollTimer != null) escPollTimer.Stop();
+                    if (overlayEscGuard != null) overlayEscGuard.TemporarilySuspendHotKey();
                     try
                     {
-                        Stream s = Console.OpenStandardInput();
-                        if (s != null && s != Stream.Null)
+                        InputController.ReleaseAllModifiers();
+                    }
+                    catch
+                    {
+                    }
+                    lock (TextStdoutLock)
+                    {
+                        Console.Out.WriteLine("{\"event\":\"user_esc_aborted\"}");
+                        Console.Out.Flush();
+                    }
+                };
+
+                overlayEscGuard = new EscEmergencyGuard(emitEscOnce);
+                escPollTimer = new System.Windows.Forms.Timer();
+                escPollTimer.Interval = 45;
+                escPollTimer.Tick += delegate
+                {
+                    if (!escEmitted && !escSuspended && overlayEscGuard != null && overlayEscGuard.IsEscTriggered())
+                    {
+                        emitEscOnce();
+                    }
+                };
+
+                try
+                {
+                    Thread stdinThread = new Thread((ThreadStart)delegate
+                    {
+                        try
                         {
-                            using (StreamReader reader = new StreamReader(s, Utf8NoBom, true, 1024, true))
+                            Stream s = Console.OpenStandardInput();
+                            if (s != null && s != Stream.Null)
                             {
-                                string line;
-                                while ((line = reader.ReadLine()) != null)
+                                using (StreamReader reader = new StreamReader(s, Utf8NoBom, true, 1024, true))
                                 {
-                                    string trimmed = line.Trim();
-                                    if (trimmed.Length == 0) continue;
-
-                                    string nextState = trimmed;
-                                    int vx = -99999;
-                                    int vy = -99999;
-                                    string vop = "click";
-                                    if (trimmed.StartsWith("{", StringComparison.Ordinal))
+                                    string line;
+                                    while ((line = reader.ReadLine()) != null)
                                     {
-                                        Dictionary<string, object> d = JsonUtil.DeserializeDict(trimmed);
-                                        nextState = JsonUtil.GetString(d, "state", string.Empty);
-                                        if (string.IsNullOrEmpty(nextState))
-                                        {
-                                            nextState = JsonUtil.GetString(d, "cmd", "ARMED");
-                                        }
-                                        vx = JsonUtil.GetInt(d, "x", -99999);
-                                        vy = JsonUtil.GetInt(d, "y", -99999);
-                                        vop = JsonUtil.GetString(d, "op", "click");
-                                    }
+                                        string trimmed = line.Trim();
+                                        if (trimmed.Length == 0) continue;
 
-                                    string captured = nextState;
-                                    int capX = vx;
-                                    int capY = vy;
-                                    string capOp = vop;
-                                    if (!pill.IsDisposed)
-                                    {
-                                        try
+                                        string nextState = trimmed;
+                                        int vx = -99999;
+                                        int vy = -99999;
+                                        string vop = "click";
+                                        if (trimmed.StartsWith("{", StringComparison.Ordinal))
                                         {
-                                            pill.BeginInvoke((MethodInvoker)delegate
+                                            Dictionary<string, object> d = JsonUtil.DeserializeDict(trimmed);
+                                            nextState = JsonUtil.GetString(d, "state", string.Empty);
+                                            if (string.IsNullOrEmpty(nextState))
                                             {
-                                                if (pill.IsDisposed) return;
-                                                string upper = (captured ?? string.Empty).Trim().ToUpperInvariant();
-                                                if (upper == "VIRTUAL_CURSOR" || upper == "VIRTUAL_MOVE")
-                                                {
-                                                    if (!vcursor.IsDisposed && capX > -90000 && capY > -90000)
-                                                    {
-                                                        vcursor.TriggerPulse(capX, capY, capOp);
-                                                    }
-                                                    return;
-                                                }
-                                                if (upper == "HIDE_CURSOR")
-                                                {
-                                                    if (!vcursor.IsDisposed) vcursor.HideImmediate();
-                                                    return;
-                                                }
-                                                if (upper == "EXIT" || upper == "DISARMED" || upper == "PAUSED_HANDOFF")
-                                                {
-                                                    if (!vcursor.IsDisposed) vcursor.HideImmediate();
-                                                }
-                                                pill.ApplyStateUpdate(captured);
-                                            });
+                                                nextState = JsonUtil.GetString(d, "cmd", "ARMED");
+                                            }
+                                            vx = JsonUtil.GetInt(d, "x", -99999);
+                                            vy = JsonUtil.GetInt(d, "y", -99999);
+                                            vop = JsonUtil.GetString(d, "op", "click");
                                         }
-                                        catch
+
+                                        string captured = nextState;
+                                        int capX = vx;
+                                        int capY = vy;
+                                        string capOp = vop;
+                                        if (!pill.IsDisposed)
+                                        {
+                                            try
+                                            {
+                                                pill.BeginInvoke((MethodInvoker)delegate
+                                                {
+                                                    if (pill.IsDisposed) return;
+                                                    string upper = (captured ?? string.Empty).Trim().ToUpperInvariant();
+                                                    if (upper == "VIRTUAL_CURSOR" || upper == "VIRTUAL_MOVE")
+                                                    {
+                                                        if (!vcursor.IsDisposed && capX > -90000 && capY > -90000)
+                                                        {
+                                                            vcursor.TriggerPulse(capX, capY, capOp);
+                                                        }
+                                                        return;
+                                                    }
+                                                    if (upper == "HIDE_CURSOR")
+                                                    {
+                                                        if (!vcursor.IsDisposed) vcursor.HideImmediate();
+                                                        return;
+                                                    }
+                                                    if (upper == "SUSPEND_ESC")
+                                                    {
+                                                        escSuspended = true;
+                                                        if (overlayEscGuard != null)
+                                                        {
+                                                            overlayEscGuard.TemporarilySuspendHotKey();
+                                                            overlayEscGuard.ClearSyntheticMessages();
+                                                        }
+                                                        pill.ApplyStateUpdate("EXECUTING");
+                                                        return;
+                                                    }
+                                                    if (upper == "EXIT" || upper == "DISARMED" || upper == "PAUSED_HANDOFF")
+                                                    {
+                                                        escSuspended = true;
+                                                        if (overlayEscGuard != null)
+                                                        {
+                                                            overlayEscGuard.TemporarilySuspendHotKey();
+                                                            overlayEscGuard.ClearSyntheticMessages();
+                                                        }
+                                                        if (!vcursor.IsDisposed) vcursor.HideImmediate();
+                                                    }
+                                                    else if (upper == "ARMED" || upper == "ARMED_READONLY" || upper == "ARMED_INTERACTIVE" || upper == "EXECUTING")
+                                                    {
+                                                        if (overlayEscGuard != null)
+                                                        {
+                                                            overlayEscGuard.ClearSyntheticMessages();
+                                                            overlayEscGuard.RegisterEscHotKey();
+                                                        }
+                                                        escSuspended = false;
+                                                    }
+                                                    pill.ApplyStateUpdate(captured);
+                                                });
+                                            }
+                                            catch
+                                            {
+                                                break;
+                                            }
+                                        }
+                                        if (string.Equals(captured, "EXIT", StringComparison.OrdinalIgnoreCase))
                                         {
                                             break;
                                         }
                                     }
-                                    if (string.Equals(captured, "EXIT", StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        break;
-                                    }
                                 }
                             }
                         }
-                    }
-                    catch
-                    {
-                    }
-                    try
-                    {
-                        if (!pill.IsDisposed && pill.IsHandleCreated)
+                        catch
                         {
-                            pill.BeginInvoke((MethodInvoker)delegate
-                            {
-                                if (!vcursor.IsDisposed) vcursor.HideImmediate();
-                                if (!pill.IsDisposed) pill.Close();
-                            });
                         }
-                    }
-                    catch
+                        try
+                        {
+                            if (!pill.IsDisposed && pill.IsHandleCreated)
+                            {
+                                pill.BeginInvoke((MethodInvoker)delegate
+                                {
+                                    if (!vcursor.IsDisposed) vcursor.HideImmediate();
+                                    if (!pill.IsDisposed) pill.Close();
+                                });
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    });
+                    stdinThread.IsBackground = true;
+                    pill.FormClosed += delegate
                     {
-                    }
-                });
-                stdinThread.IsBackground = true;
-                pill.FormClosed += delegate
-                {
-                    if (!vcursor.IsDisposed)
+                        escPollTimer.Stop();
+                        overlayEscGuard.TemporarilySuspendHotKey();
+                        if (!vcursor.IsDisposed)
+                        {
+                            vcursor.HideImmediate();
+                            vcursor.Close();
+                        }
+                    };
+                    pill.Shown += delegate
                     {
-                        vcursor.HideImmediate();
-                        vcursor.Close();
-                    }
-                };
-                pill.Shown += delegate
+                        IntPtr ensureHandle = vcursor.Handle;
+                        if (ensureHandle != IntPtr.Zero) { }
+                        escPollTimer.Start();
+                        stdinThread.Start();
+                    };
+                    Application.Run(pill);
+                }
+                finally
                 {
-                    IntPtr ensureHandle = vcursor.Handle;
-                    if (ensureHandle != IntPtr.Zero) { }
-                    stdinThread.Start();
-                };
-                Application.Run(pill);
+                    if (escPollTimer != null)
+                    {
+                        escPollTimer.Stop();
+                        escPollTimer.Dispose();
+                    }
+                    if (overlayEscGuard != null)
+                    {
+                        overlayEscGuard.Dispose();
+                    }
+                }
             }
             return 0;
         }

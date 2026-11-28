@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Prism Files MCP App Server (Clean-Room Original, MIT, Zero External Dependencies)
- * Part of Anti-Claude Prism Suite v0.9.3
+ * Part of Anti-Claude Prism Suite v0.9.4
  *
  * Implements MCP stdio JSON-RPC 2.0 + SEP-1865 MCP Apps UI resources:
  *   - Model-visible tools (strictly 8):
@@ -36,6 +36,14 @@ import { createHandoffMemoryStore } from './handoff-memory.mjs';
 import { createPrismProfileManager } from './prism-profile.mjs';
 import { createModelHub } from './model-hub.mjs';
 import { checkUpstreams, renderMarkdownReport, syncUpstreamBaseline, checkPrismSelfUpdate, applyPrismSelfUpdate } from './upstream-radar.mjs';
+import {
+  redactSensitiveText,
+  isSensitiveFilePath,
+  safeRealpathSync,
+  realpathNearestSafe
+} from './redact-shared.mjs';
+
+export { redactSensitiveText, isSensitiveFilePath };
 
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
@@ -46,7 +54,7 @@ export const APP_URI = 'ui://prism-files/app.html';
 export const INLINE_URI = 'ui://prism-files/inline.html';
 export const APP_MIME_TYPE = 'text/html;profile=mcp-app';
 export const CUA_EXTENSION_ID = 'lbmibnghmlnidfiihkegicaejaacmkca';
-const SERVER_INFO = { name: 'prism-files', version: '0.9.3' };
+const SERVER_INFO = { name: 'prism-files', version: '0.9.4' };
 const MAX_TEXT_PREVIEW_BYTES = 256 * 1024;
 const MAX_IMAGE_PREVIEW_BYTES = 4 * 1024 * 1024;
 const MAX_SAVE_BYTES = 512 * 1024;
@@ -91,48 +99,8 @@ const IMAGE_MIME_BY_EXT = {
   '.ico': 'image/x-icon'
 };
 
-const SENSITIVE_SEGMENTS = new Set(['.ssh', '.gnupg', '.aws', '.codex', '.claude', '.cc-switch']);
-const SENSITIVE_BASENAME_RE = /^(?:\.env(?:\..+)?|\.npmrc|\.pypirc|\.netrc|\.git-credentials|id_rsa(?:\.pub)?|id_ed25519(?:\.pub)?|auth\.json|credentials\.json|cc-switch\.db|prism-profile\.json|cua-broker\.json|handoff-memory\.sqlite(?:-wal|-shm|-journal)?|handoff-catalog\.json|jetski-standalone-oauth-token|credential-user-scope|.*\.(?:pem|key|p12|pfx|kdbx))$/i;
-const PRISM_PROTECTED_FILES = new Set([
-  'accounts.json',
-  'switch.lock',
-  'handoff-memories.jsonl',
-  'handoff-memory.sqlite',
-  'handoff-memory.sqlite-wal',
-  'handoff-memory.sqlite-shm',
-  'handoff-memory.sqlite-journal',
-  'handoff-catalog.json',
-  'handoff-snapshot.json',
-  'upstream-cache.json',
-  'prism-profile.json',
-  'cua-broker.json'
-]);
-
-export function isSensitivePath(targetPath) {
-  const raw = String(targetPath || '');
-  const trimmedStart = raw.trimStart();
-  if (!trimmedStart.trim()) return false;
-  // Block Windows NTFS Alternate Data Streams (any colon outside leading drive prefix ^[A-Za-z]:)
-  const withoutDrivePrefix = trimmedStart.replace(/^[A-Za-z]:/, '');
-  if (withoutDrivePrefix.includes(':')) return true;
-
-  const isWinDrivePath = /^[A-Za-z]:/.test(trimmedStart);
-  const norm = (isUncPathString(trimmedStart) || isWinDrivePath) ? trimmedStart : path.resolve(trimmedStart);
-  const normWithoutDrive = norm.replace(/^[A-Za-z]:/, '');
-  if (normWithoutDrive.includes(':')) return true;
-
-  const parts = norm.split(/[\\/]+/).filter(Boolean);
-  for (const seg of parts) {
-    const cleanSeg = seg.replace(/:.*$/, '').replace(/[. ]+$/, '');
-    if (SENSITIVE_SEGMENTS.has(cleanSeg.toLowerCase())) return true;
-  }
-  const rawBase = parts.length > 0 ? parts[parts.length - 1] : path.basename(norm);
-  const cleanBase = rawBase.replace(/:.*$/, '').replace(/[. ]+$/, '');
-  const parentSeg = parts.length >= 2 ? parts[parts.length - 2].replace(/:.*$/, '').replace(/[. ]+$/, '').toLowerCase() : '';
-  if (parentSeg === 'prism-suite' && PRISM_PROTECTED_FILES.has(cleanBase.toLowerCase())) {
-    return true;
-  }
-  return SENSITIVE_BASENAME_RE.test(cleanBase);
+export function isSensitivePath(targetPath, options = {}) {
+  return isSensitiveFilePath(targetPath, options);
 }
 
 export function sha256Hex(bufOrStr) {
@@ -188,29 +156,7 @@ export async function toLinuxPathFromWslUnc(winUncPath) {
 }
 
 export function realpathNearest(targetPath) {
-  const abs = path.resolve(String(targetPath || ''));
-  try {
-    return fs.realpathSync(abs);
-  } catch {}
-  const missingSegments = [];
-  let cur = abs;
-  while (true) {
-    const parent = path.dirname(cur);
-    if (parent === cur) {
-      try {
-        const realRoot = fs.realpathSync(cur);
-        return missingSegments.length ? path.join(realRoot, ...missingSegments.reverse()) : realRoot;
-      } catch {
-        return abs;
-      }
-    }
-    missingSegments.push(path.basename(cur));
-    cur = parent;
-    try {
-      const realAncestor = fs.realpathSync(cur);
-      return path.join(realAncestor, ...missingSegments.reverse());
-    } catch {}
-  }
+  return realpathNearestSafe(targetPath);
 }
 
 export function resolveHomeAndBrain() {
@@ -1068,30 +1014,6 @@ function spawnDetachedSafe(bin, args, options = {}) {
 
 /* ---------------- Cross-Session Transcript Search & Redaction ---------------- */
 
-export function redactSensitiveText(text) {
-  let out = String(text ?? '');
-  if (!out) return '';
-  // PEM private keys (complete or truncated)
-  out = out.replace(
-    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g,
-    '[REDACTED_PRIVATE_KEY]'
-  );
-  // sk-... API keys (OpenAI / Anthropic / Stripe etc.)
-  out = out.replace(/\bsk-(?:proj-|ant-|live-|test-)?[A-Za-z0-9_-]{12,}\b/g, '[REDACTED_API_KEY]');
-  // GitHub tokens
-  out = out.replace(/\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GH_TOKEN]');
-  // Google API keys
-  out = out.replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, '[REDACTED_GOOGLE_KEY]');
-  // Bearer tokens
-  out = out.replace(/\b(Bearer[ \t]+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1[REDACTED_TOKEN]');
-  // password / token / secret / api_key key=value assignments
-  out = out.replace(
-    /\b([A-Za-z0-9_.-]*(?:password|passwd|token|secret|api[_-]?key)[ \t]*[:=][ \t]*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;'"`]+)/gi,
-    '$1[REDACTED]'
-  );
-  return out;
-}
-
 function safeLstatJoinInRoot(rootDir, ...segments) {
   const absRoot = path.resolve(rootDir);
   let cur = absRoot;
@@ -1501,6 +1423,7 @@ export function searchTranscripts({ query, filter = 'all', limit = 40, brainDir 
 /* ---------------- Main MCP Server Factory ---------------- */
 
 export function createPrismFilesServer({
+  homeDir: injectedHomeDir = '',
   dataDir = '',
   defaultRoot = process.cwd(),
   accountStateDir = '',
@@ -1517,13 +1440,21 @@ export function createPrismFilesServer({
   cuaBrokerPath = '',
   cuaFetch = null
 } = {}) {
+  const appCapabilityToken = crypto.randomBytes(32).toString('hex');
   const stateFile = dataDir ? path.join(path.resolve(dataDir), 'state.json') : '';
-  const { home, brainDir } = resolveHomeAndBrain();
+  const defaultHomeBrain = resolveHomeAndBrain();
+  const home = injectedHomeDir ? path.resolve(injectedHomeDir) : defaultHomeBrain.home;
+  const brainDir = process.env.PRISM_FILES_BRAIN_DIR
+    ? defaultHomeBrain.brainDir
+    : (injectedHomeDir ? realpathNearest(path.join(home, '.gemini', 'antigravity', 'brain')) : defaultHomeBrain.brainDir);
   const isWsl = detectWsl();
   const resolvedAccountStateDir = accountStateDir
     ? path.resolve(accountStateDir)
     : path.join(home, '.gemini', 'antigravity', 'prism-suite');
-  const isExternalSandboxState = Boolean(accountStateDir && !isPathInside(resolvedAccountStateDir, home));
+  const isExternalSandboxState = Boolean(
+    (accountStateDir && !isPathInside(resolvedAccountStateDir, defaultHomeBrain.home)) ||
+    (injectedHomeDir && path.resolve(injectedHomeDir) !== path.resolve(defaultHomeBrain.home))
+  );
   const resolvedProfilePath = profilePath
     ? path.resolve(profilePath)
     : (isExternalSandboxState ? path.join(resolvedAccountStateDir, 'prism-profile.json') : '');
@@ -1805,8 +1736,33 @@ export function createPrismFilesServer({
     return { ok: true, isUnc: true, normalizedPath };
   }
 
-  function buildFileItem(absPath, baseDir = '') {
-    const resolved = path.resolve(absPath);
+  function buildBlockedFileItem(rawPath, errorMsg) {
+    const displayPath = String(rawPath || '').trim();
+    const trimmedSlashes = displayPath.replace(/[\\/]+$/, '');
+    const name = path.win32.basename(trimmedSlashes) || path.basename(trimmedSlashes) || displayPath;
+    return {
+      path: displayPath,
+      name,
+      relPath: displayPath,
+      isDir: false,
+      exists: false,
+      blocked: true,
+      size: 0,
+      sizeText: '已拦截',
+      mtimeMs: 0,
+      kind: 'file',
+      error: errorMsg || '路径已被安全策略拦截'
+    };
+  }
+
+  function buildFileItem(absPath, baseDir = '', { uncPrevalidated = false } = {}) {
+    const syncUnc = checkUncSyncGuard(absPath, { uncPrevalidated });
+    if (!syncUnc.ok) {
+      return buildBlockedFileItem(absPath, syncUnc.error);
+    }
+    const resolved = syncUnc.isUnc && process.platform === 'win32'
+      ? syncUnc.normalizedPath
+      : path.resolve(absPath);
     let st = null;
     try {
       st = fs.statSync(resolved);
@@ -1840,6 +1796,34 @@ export function createPrismFilesServer({
     };
   }
 
+  async function buildSafeFileItemAsync(rawPath, baseDir = '') {
+    const rawTrimmed = String(rawPath || '').trim();
+    const uncCheck = await guardUncAccessIfNeeded(rawTrimmed);
+    if (!uncCheck.ok) {
+      return buildBlockedFileItem(rawTrimmed, uncCheck.error);
+    }
+    if (uncCheck.isUnc) {
+      const wslResolved = await resolveWslUncPathForFs(uncCheck);
+      if (!wslResolved.ok) {
+        return buildBlockedFileItem(uncCheck.normalizedPath, wslResolved.error);
+      }
+      return buildFileItem(wslResolved.path, baseDir, { uncPrevalidated: !wslResolved.convertedToLocal });
+    }
+    const expandedPath = expandUserPath(rawTrimmed);
+    if (isUncPathString(expandedPath)) {
+      const expandedUnc = await guardUncAccessIfNeeded(expandedPath);
+      if (!expandedUnc.ok) {
+        return buildBlockedFileItem(expandedPath, expandedUnc.error);
+      }
+      const wslResolved = await resolveWslUncPathForFs(expandedUnc);
+      if (!wslResolved.ok) {
+        return buildBlockedFileItem(expandedUnc.normalizedPath, wslResolved.error);
+      }
+      return buildFileItem(wslResolved.path, baseDir, { uncPrevalidated: !wslResolved.convertedToLocal });
+    }
+    return buildFileItem(expandedPath, baseDir);
+  }
+
   function listDirectoryInternal(rawDir, showHidden = false, query = '', { uncPrevalidated = false } = {}) {
     const syncUnc = checkUncSyncGuard(rawDir, { uncPrevalidated });
     if (!syncUnc.ok) {
@@ -1850,14 +1834,35 @@ export function createPrismFilesServer({
         entries: []
       };
     }
+    const curLastPath = loadState().lastPath;
+    const safeFallback = curLastPath && !isSensitivePath(curLastPath) ? curLastPath : (defaultRoot || home);
     const dir = syncUnc.isUnc && process.platform === 'win32'
       ? syncUnc.normalizedPath
-      : expandUserPath(rawDir, loadState().lastPath || defaultRoot || home);
+      : expandUserPath(rawDir, safeFallback);
+    if (isSensitivePath(dir)) {
+      return {
+        ok: false,
+        protected: true,
+        error: '受保护的敏感凭据目录禁止列举',
+        dir,
+        entries: []
+      };
+    }
     if (!fs.existsSync(dir)) {
       return { ok: false, error: `目录不存在：${dir}`, dir, entries: [] };
     }
     const st = fs.statSync(dir);
     const targetDir = st.isDirectory() ? dir : path.dirname(dir);
+    const realTargetDir = (() => { try { return safeRealpathSync(targetDir); } catch { return targetDir; } })();
+    if (isSensitivePath(targetDir) || isSensitivePath(realTargetDir)) {
+      return {
+        ok: false,
+        protected: true,
+        error: '受保护的敏感凭据目录禁止列举',
+        dir: targetDir,
+        entries: []
+      };
+    }
     let rawEntries = [];
     try {
       rawEntries = fs.readdirSync(targetDir, { withFileTypes: true });
@@ -1913,6 +1918,36 @@ export function createPrismFilesServer({
     return listDirectoryInternal(rawDir, showHidden, query, { uncPrevalidated: false });
   }
 
+  function trimTrailingIncompleteUtf8Sequence(buf) {
+    if (!buf || buf.length === 0) return buf;
+    const len = buf.length;
+    const b1 = buf[len - 1];
+    if (b1 >= 0xc2 && b1 <= 0xf4) {
+      return buf.subarray(0, len - 1);
+    }
+    if (len >= 2 && (b1 & 0xc0) === 0x80) {
+      const b2 = buf[len - 2];
+      if (b2 >= 0xe0 && b2 <= 0xf4) {
+        return buf.subarray(0, len - 2);
+      }
+      if (len >= 3 && (b2 & 0xc0) === 0x80) {
+        const b3 = buf[len - 3];
+        if (b3 >= 0xf0 && b3 <= 0xf4) {
+          return buf.subarray(0, len - 3);
+        }
+      }
+    }
+    return buf;
+  }
+
+  function decodeNonUtf8FallbackPreview(slice) {
+    try {
+      return new TextDecoder('gb18030', { fatal: false }).decode(slice);
+    } catch {
+      return new TextDecoder('latin1').decode(slice);
+    }
+  }
+
   function readFilePreviewInternal(rawPath, { uncPrevalidated = false } = {}) {
     const syncUnc = checkUncSyncGuard(rawPath, { uncPrevalidated });
     if (!syncUnc.ok) {
@@ -1933,7 +1968,7 @@ export function createPrismFilesServer({
     const ext = path.extname(abs).toLowerCase();
     const name = path.basename(abs);
     const kind = getFileKind(name, false);
-    const real = (() => { try { return fs.realpathSync(abs); } catch { return abs; } })();
+    const real = (() => { try { return safeRealpathSync(abs); } catch { return abs; } })();
     if (isSensitivePath(abs) || isSensitivePath(real)) {
       return {
         ok: true,
@@ -1948,9 +1983,13 @@ export function createPrismFilesServer({
         editable: false
       };
     }
+    const isReadOnlyMode = (st.mode & 0o222) === 0;
+    const isWriteProtectedTarget = isSensitivePath(abs, { forWrite: true }) || isSensitivePath(real, { forWrite: true });
     const editableBlocked =
       isPathInside(real, brainDir) ||
-      st.size > MAX_SAVE_BYTES;
+      st.size > MAX_SAVE_BYTES ||
+      isReadOnlyMode ||
+      isWriteProtectedTarget;
 
     if (IMAGE_MIME_BY_EXT[ext]) {
       if (st.size > MAX_IMAGE_PREVIEW_BYTES) {
@@ -1994,16 +2033,11 @@ export function createPrismFilesServer({
       fs.closeSync(fd);
     }
     const slice = buf.subarray(0, actualRead);
-    // Check NUL byte for binary files
-    let isBinary = false;
-    const probeLen = Math.min(slice.length, 4096);
-    for (let i = 0; i < probeLen; i++) {
-      if (slice[i] === 0) {
-        isBinary = true;
-        break;
-      }
-    }
-    if (isBinary) {
+    const hasUtf16Bom =
+      slice.length >= 2 &&
+      ((slice[0] === 0xff && slice[1] === 0xfe) || (slice[0] === 0xfe && slice[1] === 0xff));
+    const hasNulByte = slice.includes(0);
+    if (hasUtf16Bom || hasNulByte) {
       return {
         ok: true,
         path: abs,
@@ -2017,7 +2051,40 @@ export function createPrismFilesServer({
         editable: false
       };
     }
+
     const truncated = st.size > MAX_TEXT_PREVIEW_BYTES;
+    const hasUtf8Bom =
+      slice.length >= 3 &&
+      slice[0] === 0xef &&
+      slice[1] === 0xbb &&
+      slice[2] === 0xbf;
+    const bodySlice = hasUtf8Bom ? slice.subarray(3) : slice;
+    const validationSlice = truncated ? trimTrailingIncompleteUtf8Sequence(bodySlice) : bodySlice;
+
+    let decodedUtf8;
+    try {
+      decodedUtf8 = new TextDecoder('utf-8', { fatal: true }).decode(validationSlice);
+    } catch {
+      return {
+        ok: true,
+        path: abs,
+        uri: pathToFileURL(abs).href,
+        name,
+        kind,
+        previewType: kind === 'markdown' ? 'markdown' : 'text',
+        text: decodeNonUtf8FallbackPreview(slice),
+        encoding: 'non-utf8',
+        hasUtf8Bom: false,
+        readOnlyReason: '检测到非 UTF-8 编码（如 GBK），为防止保存损坏中文已自动设为只读预览',
+        baseHash: '',
+        truncated,
+        size: st.size,
+        sizeText: formatBytes(st.size),
+        mtimeMs: Math.round(st.mtimeMs),
+        editable: false
+      };
+    }
+
     return {
       ok: true,
       path: abs,
@@ -2025,7 +2092,10 @@ export function createPrismFilesServer({
       name,
       kind,
       previewType: kind === 'markdown' ? 'markdown' : 'text',
-      text: slice.toString('utf8'),
+      text: decodedUtf8,
+      encoding: hasUtf8Bom ? 'utf-8-bom' : 'utf-8',
+      hasUtf8Bom,
+      ...(isReadOnlyMode ? { readOnlyReason: '文件权限为只读' } : {}),
       baseHash: truncated ? '' : sha256Hex(slice),
       truncated,
       size: st.size,
@@ -2048,22 +2118,59 @@ export function createPrismFilesServer({
       ? syncUnc.normalizedPath
       : expandUserPath(rawPath);
     if (!fs.existsSync(abs)) return { ok: false, error: '文件不存在，拒绝创建未知路径' };
-    const real = fs.realpathSync(abs);
+    const real = safeRealpathSync(abs);
     if (isPathInside(real, brainDir)) {
       return { ok: false, error: '为保护会话产物，brain/ 目录仅允许只读预览' };
     }
-    if (isSensitivePath(abs) || isSensitivePath(real)) {
+    if (isSensitivePath(abs, { forWrite: true }) || isSensitivePath(real, { forWrite: true })) {
       return { ok: false, error: '受保护凭据或配置目录禁止通过工作台写入' };
     }
     const st = fs.statSync(real);
     if (st.isDirectory()) return { ok: false, error: '目标为目录，无法写入' };
-    const text = String(content ?? '');
-    const byteLen = Buffer.byteLength(text, 'utf8');
+    if ((st.mode & 0o222) === 0) {
+      return { ok: false, code: 'READONLY_FILE_MODE', error: '文件权限为只读，已拒绝写入' };
+    }
+
+    const existingBytes = fs.readFileSync(real);
+    const hasUtf16Bom =
+      existingBytes.length >= 2 &&
+      ((existingBytes[0] === 0xff && existingBytes[1] === 0xfe) ||
+        (existingBytes[0] === 0xfe && existingBytes[1] === 0xff));
+    if (hasUtf16Bom) {
+      return {
+        ok: false,
+        code: 'NON_UTF8_READONLY',
+        error: '该文件为非 UTF-8 编码（如 GBK），为防止损坏原文已禁止覆盖保存'
+      };
+    }
+    try {
+      new TextDecoder('utf-8', { fatal: true }).decode(existingBytes);
+    } catch {
+      return {
+        ok: false,
+        code: 'NON_UTF8_READONLY',
+        error: '该文件为非 UTF-8 编码（如 GBK），为防止损坏原文已禁止覆盖保存'
+      };
+    }
+    if (existingBytes.includes(0)) {
+      return { ok: false, code: 'BINARY_READONLY', error: '二进制文件禁止按文本覆盖保存' };
+    }
+
+    const origHadUtf8Bom =
+      existingBytes.length >= 3 &&
+      existingBytes[0] === 0xef &&
+      existingBytes[1] === 0xbb &&
+      existingBytes[2] === 0xbf;
+    const rawContentText = String(content ?? '');
+    const finalText = origHadUtf8Bom && !rawContentText.startsWith('\uFEFF')
+      ? `\uFEFF${rawContentText}`
+      : rawContentText;
+    const byteLen = Buffer.byteLength(finalText, 'utf8');
     if (byteLen > MAX_SAVE_BYTES) {
       return { ok: false, error: `文件内容超过安全编辑上限 (${formatBytes(MAX_SAVE_BYTES)})` };
     }
     if (baseHash) {
-      const curHash = sha256Hex(fs.readFileSync(real));
+      const curHash = sha256Hex(existingBytes);
       if (curHash !== String(baseHash)) {
         return {
           ok: false,
@@ -2088,7 +2195,7 @@ export function createPrismFilesServer({
     const fileMode = (st.mode & 0o777) || 0o600;
     const tmp = path.join(path.dirname(real), `.prism-save-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 6)}.tmp`);
     try {
-      const outBuf = Buffer.from(text, 'utf8');
+      const outBuf = Buffer.from(finalText, 'utf8');
       fs.writeFileSync(tmp, outBuf, { flag: 'wx', mode: fileMode });
       try { fs.chmodSync(tmp, fileMode); } catch {}
       fs.renameSync(tmp, real);
@@ -2321,7 +2428,7 @@ export function createPrismFilesServer({
         return { ok: false, error: `目标路径不存在：${abs}`, path: abs };
       }
 
-      const real = (() => { try { return fs.realpathSync(abs); } catch { return abs; } })();
+      const real = (() => { try { return safeRealpathSync(abs); } catch { return abs; } })();
       if (isSensitivePath(abs) || isSensitivePath(real)) {
         return { ok: false, error: '受保护凭据文件禁止通过外部程序直接打开', path: abs };
       }
@@ -2405,53 +2512,39 @@ export function createPrismFilesServer({
     }
   }
 
-  function discoverWslHostIpv4List() {
-    if (!isWsl) return [];
-    const ips = [];
-    const addIp = (raw) => {
-      const s = String(raw || '').trim();
-      if (net.isIPv4(s) && s !== '127.0.0.1' && s !== '0.0.0.0' && isPrivateOrLocalIp(s) && !ips.includes(s)) {
-        ips.push(s);
-      }
-    };
-    try {
-      const routeText = fs.readFileSync('/proc/net/route', 'utf8');
-      for (const line of routeText.split(/\r?\n/).slice(1)) {
-        const cols = line.trim().split(/\s+/);
-        if (cols.length >= 3 && cols[1] === '00000000' && /^[0-9A-Fa-f]{8}$/.test(cols[2])) {
-          const gw = parseInt(cols[2], 16) >>> 0;
-          const ip = `${gw & 0xff}.${(gw >>> 8) & 0xff}.${(gw >>> 16) & 0xff}.${(gw >>> 24) & 0xff}`;
-          addIp(ip);
-        }
-      }
-    } catch {}
-    try {
-      const resolvText = fs.readFileSync('/etc/resolv.conf', 'utf8');
-      for (const line of resolvText.split(/\r?\n/)) {
-        const m = line.match(/^\s*nameserver\s+([^\s#]+)/);
-        if (m) addIp(m[1]);
-      }
-    } catch {}
-    return ips;
-  }
-
   function resolveCuaBridgeContext() {
     const wslWinUsers = (isWsl && !isExternalSandboxState) ? getWslWindowsUserDirs() : [];
 
-    // 1. Check whether prism-cua plugin is installed
-    const pluginCuaCandidates = [
-      path.join(path.dirname(PLUGIN_ROOT), 'prism-cua', 'plugin.json')
-    ];
+    // 1. Check whether prism-cua plugin is installed and whether its manifest has disabled: true
+    const pluginCuaCandidates = [];
+    if (injectedHomeDir) {
+      pluginCuaCandidates.push(path.join(home, '.gemini', 'config', 'plugins', 'prism-cua', 'plugin.json'));
+    }
+    pluginCuaCandidates.push(path.join(path.dirname(PLUGIN_ROOT), 'prism-cua', 'plugin.json'));
     if (!isExternalSandboxState) {
       pluginCuaCandidates.push(path.join(home, '.gemini', 'config', 'plugins', 'prism-cua', 'plugin.json'));
       for (const u of wslWinUsers) {
         pluginCuaCandidates.push(path.join(u, '.gemini', 'config', 'plugins', 'prism-cua', 'plugin.json'));
       }
     }
+    pluginCuaCandidates.push(path.join(path.dirname(PLUGIN_ROOT), 'plugin-cua', 'plugin.json'));
+
     const foundPluginJson = pluginCuaCandidates.find((p) => {
-      try { return fs.existsSync(p) && fs.statSync(p).isFile(); } catch { return false; }
+      try {
+        const st = fs.lstatSync(p, { throwIfNoEntry: false });
+        return Boolean(st && st.isFile() && !st.isSymbolicLink());
+      } catch {
+        return false;
+      }
     });
     const pluginInstalled = Boolean(foundPluginJson);
+    let pluginJsonDisabled = false;
+    if (foundPluginJson) {
+      try {
+        const parsedManifest = JSON.parse(fs.readFileSync(foundPluginJson, 'utf8'));
+        pluginJsonDisabled = parsedManifest?.disabled === true;
+      } catch {}
+    }
 
     // 2. Resolve chrome-bridge directory (prefer Windows %USERPROFILE%\.gemini\antigravity\prism-suite\chrome-bridge on WSL)
     const localBridgeDir = path.join(resolvedAccountStateDir, 'chrome-bridge');
@@ -2501,6 +2594,7 @@ export function createPrismFilesServer({
 
     return {
       pluginInstalled,
+      pluginJsonDisabled,
       chromeBridgeDir,
       chromeBridgeWinDisplay,
       brokerFile
@@ -2647,17 +2741,8 @@ export function createPrismFilesServer({
 
     for (const raw of rawList) registerCandidate(raw);
 
-    // Ensure WSL host IP fallback is appended after 127.0.0.1 when running inside WSL2
-    if (isWsl && discoveredPorts.size > 0) {
-      const hostIps = discoverWslHostIpv4List();
-      for (const p of discoveredPorts) {
-        if (!Number.isInteger(p) || p <= 0) continue;
-        for (const ip of hostIps) {
-          registerCandidate(`http://${ip}:${p}/v1/cua`);
-        }
-      }
-    }
-
+    // Security (B-11): ONLY send Bearer token to endpoints explicitly listed in cua-broker.json
+    // (never probe unverified /etc/resolv.conf DNS or /proc/net/route gateway IPs).
     return [...loopbackUrls, ...lanUrls];
   }
 
@@ -2820,7 +2905,13 @@ export function createPrismFilesServer({
   function readUiHtml(uri) {
     const envPath = uri === INLINE_URI ? process.env.PRISM_FILES_INLINE_HTML : process.env.PRISM_FILES_APP_HTML;
     const fp = envPath ? path.resolve(envPath) : path.join(PLUGIN_ROOT, 'ui', uri === INLINE_URI ? 'inline.html' : 'app.html');
-    return fs.readFileSync(fp, 'utf8');
+    const rawHtml = fs.readFileSync(fp, 'utf8');
+    const tokenScript = `<script>window.__PRISM_APP_TOKEN__=${JSON.stringify(appCapabilityToken)};</script>`;
+    const headCloseIdx = rawHtml.search(/<\/head>/i);
+    if (headCloseIdx !== -1) {
+      return `${rawHtml.slice(0, headCloseIdx)}${tokenScript}${rawHtml.slice(headCloseIdx)}`;
+    }
+    return `${tokenScript}\n${rawHtml}`;
   }
 
   const TOOLS = [
@@ -3000,7 +3091,8 @@ export function createPrismFilesServer({
           project: { type: 'string', description: 'Optional project filter' },
           slot: { type: 'string', description: 'Optional slot filter' },
           tag: { type: 'string', description: 'Optional exact tag filter (e.g. handoff:proj:slot)' },
-          limit: { type: 'number', description: 'Max entries to return (1-100, default 10)' }
+          limit: { type: 'number', description: 'Max entries to return (1-100, default 10)' },
+          includeTainted: { type: 'boolean', description: 'Optional flag to include quarantined external memories' }
         }
       }
     },
@@ -3015,7 +3107,8 @@ export function createPrismFilesServer({
           project: { type: 'string', description: 'Optional project filter' },
           slot: { type: 'string', description: 'Optional slot filter' },
           tag: { type: 'string', description: 'Optional exact tag filter' },
-          limit: { type: 'number', description: 'Max entries to return (default 10)' }
+          limit: { type: 'number', description: 'Max entries to return (default 10)' },
+          includeTainted: { type: 'boolean', description: 'Optional flag to include quarantined external memories' }
         },
         required: ['query']
       }
@@ -3323,6 +3416,7 @@ export function createPrismFilesServer({
           apiKeyEnv: { type: 'string' },
           apiKey: { type: ['string', 'null'] },
           clearVaultKey: { type: 'boolean' },
+          confirmOriginRebind: { type: 'boolean' },
           allowKeyless: { type: 'boolean' },
           enabled: { type: 'boolean' }
         },
@@ -3497,6 +3591,33 @@ export function createPrismFilesServer({
   const FILE_TOOL_NAMES = new Set(['show_files_inline', 'open_prism_files']);
   const MEMORY_TOOL_NAMES = new Set(['prism_memory_store', 'prism_memory_list', 'prism_memory_search', 'prism_quota_sync']);
   const MODEL_HUB_TOOL_NAMES = new Set(['prism_list_models', 'prism_ask_model']);
+  const MODEL_VISIBLE_TOOL_NAMES = new Set([
+    ...FILE_TOOL_NAMES,
+    ...MEMORY_TOOL_NAMES,
+    ...MODEL_HUB_TOOL_NAMES
+  ]);
+  const APP_ONLY_TOOL_NAMES = new Set(
+    TOOLS
+      .filter((t) => {
+        const vis = t?._meta?.ui?.visibility;
+        return Array.isArray(vis) && vis.includes('app') && !MODEL_VISIBLE_TOOL_NAMES.has(t.name);
+      })
+      .map((t) => t.name)
+  );
+
+  function isAppOnlyTool(toolName) {
+    return APP_ONLY_TOOL_NAMES.has(toolName);
+  }
+
+  function verifyAppCapabilityToken(candidate) {
+    if (typeof candidate !== 'string' || candidate.length !== 64 || !/^[0-9a-f]{64}$/i.test(candidate)) {
+      return false;
+    }
+    const a = Buffer.from(candidate.toLowerCase(), 'utf8');
+    const b = Buffer.from(appCapabilityToken, 'utf8');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  }
 
   function getExposedToolsList() {
     const exp = loadState().mcpExposure || { fileTools: true, memoryTools: true, modelHubTools: true };
@@ -3537,10 +3658,23 @@ export function createPrismFilesServer({
     };
   }
 
-  async function handleToolCall(name, args = {}) {
+  async function handleToolCall(name, rawArgs = {}, callMeta = {}) {
+    const safeRawArgs = rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs) ? rawArgs : {};
+    const { _appToken, ...args } = safeRawArgs;
+
+    if (callMeta && callMeta.fromStdio === true && isAppOnlyTool(name)) {
+      if (!verifyAppCapabilityToken(_appToken)) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: '此内部管理工具仅限 Prism 工作台界面调用（拒绝模型越权调用）' }],
+          structuredContent: { ok: false, code: 'APP_ONLY_FORBIDDEN', tool: name }
+        };
+      }
+    }
+
     const exp = loadState().mcpExposure || { fileTools: true, memoryTools: true, modelHubTools: true };
     if (
-      (name === 'show_files_inline' && exp.fileTools === false) ||
+      (FILE_TOOL_NAMES.has(name) && exp.fileTools === false) ||
       (MEMORY_TOOL_NAMES.has(name) && exp.memoryTools === false) ||
       (MODEL_HUB_TOOL_NAMES.has(name) && exp.modelHubTools === false)
     ) {
@@ -3553,15 +3687,21 @@ export function createPrismFilesServer({
 
     if (name === 'show_files_inline') {
       const files = Array.isArray(args.files) ? args.files.filter((f) => typeof f === 'string' && f.trim()).slice(0, 40) : [];
-      const baseDir = args.baseDir ? expandUserPath(args.baseDir) : '';
-      const items = files.map((f) => buildFileItem(expandUserPath(f), baseDir));
+      let baseDir = '';
+      if (args.baseDir) {
+        const baseUnc = await guardUncAccessIfNeeded(args.baseDir);
+        if (baseUnc.ok && !baseUnc.isUnc) {
+          baseDir = expandUserPath(args.baseDir);
+        }
+      }
+      const items = await Promise.all(files.map((f) => buildSafeFileItemAsync(f, baseDir)));
       const title = String(args.title || (items.length === 1 ? '文件定位卡片' : `文件卡片 (${items.length})`)).trim();
       return {
         content: [
           {
             type: 'text',
             text: `已展示 ${items.length} 个文件的交互卡片（双击或点「定位」可在 ${platformLabel} 中高亮打开）：\n` +
-              items.map((it) => `- ${it.path}`).join('\n')
+              items.map((it) => `- ${it.path}${it.blocked ? ` (已拦截: ${it.error})` : ''}`).join('\n')
           }
         ],
         structuredContent: { title, items, platformLabel }
@@ -3571,9 +3711,13 @@ export function createPrismFilesServer({
     if (name === 'open_prism_files') {
       const state = loadState();
       const safeDefaultDir = path.resolve(defaultRoot || home);
-      const fallbackDir = state.lastPath && !isUncPathString(state.lastPath) && fs.existsSync(state.lastPath)
-        ? state.lastPath
-        : safeDefaultDir;
+      const fallbackDir =
+        state.lastPath &&
+        !isUncPathString(state.lastPath) &&
+        !isSensitivePath(state.lastPath) &&
+        fs.existsSync(state.lastPath)
+          ? state.lastPath
+          : safeDefaultDir;
       const warnings = [];
       let initDir = fallbackDir;
       let initDirPrevalidated = false;
@@ -3599,7 +3743,7 @@ export function createPrismFilesServer({
         const lastUnc = await guardUncAccessIfNeeded(state.lastPath);
         if (lastUnc.ok) {
           const wslResolved = await resolveWslUncPathForFs(lastUnc);
-          if (wslResolved.ok) {
+          if (wslResolved.ok && !isSensitivePath(wslResolved.path)) {
             initDir = wslResolved.path;
             initDirPrevalidated = !wslResolved.convertedToLocal;
           }
@@ -3615,16 +3759,52 @@ export function createPrismFilesServer({
           const wslSel = await resolveWslUncPathForFs(selUnc);
           if (!wslSel.ok) {
             warnings.push(wslSel.error);
+          } else if (isSensitivePath(wslSel.path)) {
+            warnings.push('受保护的敏感凭据文件禁止直接预览');
           } else {
             selectFile = wslSel.path;
           }
         } else {
-          selectFile = expandUserPath(args.selectFile);
+          const candSel = expandUserPath(args.selectFile);
+          if (isSensitivePath(candSel)) {
+            warnings.push('受保护的敏感凭据文件禁止直接预览');
+          } else {
+            selectFile = candSel;
+          }
         }
       }
 
-      const listing = listDirectoryInternal(initDir, state.showHidden, '', { uncPrevalidated: initDirPrevalidated });
+      const rawListing = listDirectoryInternal(initDir, state.showHidden, '', { uncPrevalidated: initDirPrevalidated });
       const tab = VALID_TABS.has(args.tab) ? args.tab : (RESTORABLE_TABS.has(state.lastTab) ? state.lastTab : 'browse');
+      if (rawListing.protected) {
+        warnings.push(rawListing.error || '受保护的敏感凭据目录禁止列举');
+        const safeProtectedListing = {
+          ok: false,
+          protected: true,
+          error: rawListing.error || '受保护的敏感凭据目录禁止列举',
+          dir: '',
+          entries: []
+        };
+        const warning = warnings.join('；');
+        return {
+          content: [{ type: 'text', text: `已打开 Prism 工作台（安全拦截：${warning}）` }],
+          structuredContent: {
+            ok: false,
+            protected: true,
+            error: safeProtectedListing.error,
+            tab,
+            state,
+            listing: safeProtectedListing,
+            selectFile: '',
+            warning,
+            brainDir,
+            homeDir: home,
+            platformLabel
+          }
+        };
+      }
+
+      const listing = rawListing;
       const warning = warnings.join('；');
       const textMsg = warning
         ? `已打开 Prism 工作台（安全提示：${warning}；已回退至安全目录：${listing.dir || initDir}）`
@@ -3725,14 +3905,14 @@ export function createPrismFilesServer({
 
     if (name === 'get_state') {
       const state = loadState();
-      const pinnedItems = state.pinnedPaths.map((p) => buildFileItem(p));
+      const pinnedItems = await Promise.all(state.pinnedPaths.map((p) => buildSafeFileItemAsync(p)));
       const res = { ok: true, state, pinnedItems, homeDir: home, brainDir, platformLabel };
       return { content: [{ type: 'text', text: JSON.stringify(state) }], structuredContent: res };
     }
 
     if (name === 'update_state') {
       const state = saveState(args || {});
-      const pinnedItems = state.pinnedPaths.map((p) => buildFileItem(p));
+      const pinnedItems = await Promise.all(state.pinnedPaths.map((p) => buildSafeFileItemAsync(p)));
       const res = { ok: true, state, pinnedItems, homeDir: home, brainDir, platformLabel };
       return { content: [{ type: 'text', text: JSON.stringify(state) }], structuredContent: res };
     }
@@ -3781,8 +3961,7 @@ export function createPrismFilesServer({
       });
       const res = {
         ok: true,
-        entry,
-        externalMemoryPrompt: handoffMemory.formatExternalMemoryStorePrompt(entry)
+        entry
       };
       return {
         content: [{ type: 'text', text: `已写入脱敏交接记忆 ${entry.slotTag} (${entry.id})：${entry.summary}` }],
@@ -3795,10 +3974,14 @@ export function createPrismFilesServer({
       if (cleanTag === 'catalog:master' && typeof handoffMemory.getMasterCatalog === 'function') {
         const cat = handoffMemory.getMasterCatalog({
           project: args.project || '',
-          limit: args.limit || 20
+          limit: args.limit || 20,
+          includeTainted: Boolean(args.includeTainted)
         });
         const text = cat.slots.length
-          ? cat.slots.map((s) => `- [${s.slotTag}] (${s.updatedAt}) 目录: ${s.cwd || '-'} | 摘要: ${s.summary || '-'}`).join('\n')
+          ? cat.slots.map((s) => {
+              const core = `[${s.slotTag}] (${s.updatedAt}) 目录: ${s.cwd || '-'} | 摘要: ${s.summary || '-'}`;
+              return s.tainted ? `- [EXTERNAL_UNTRUSTED_MEMORY] ${core}` : `- ${core}`;
+            }).join('\n')
           : '暂无已登记的 catalog:master 主目录槽位';
         return {
           content: [{ type: 'text', text }],
@@ -3809,10 +3992,14 @@ export function createPrismFilesServer({
         project: args.project || '',
         slot: args.slot || '',
         tag: args.tag || '',
-        limit: args.limit || 10
+        limit: args.limit || 10,
+        includeTainted: Boolean(args.includeTainted)
       });
       const summaryText = res.entries.length
-        ? res.entries.map((e) => `- [${e.slotTag}] (${e.createdAt}) ${e.summary}${e.nextAction ? ` | 下一步: ${e.nextAction}` : ''}`).join('\n')
+        ? res.entries.map((e) => {
+            const core = `[${e.slotTag}] (${e.createdAt}) ${e.summary}${e.nextAction ? ` | 下一步: ${e.nextAction}` : ''}`;
+            return e.tainted ? `- [EXTERNAL_UNTRUSTED_MEMORY] ${core}` : `- ${core}`;
+          }).join('\n')
         : '暂无匹配的槽位交接记忆';
       return {
         content: [{ type: 'text', text: summaryText }],
@@ -3826,10 +4013,14 @@ export function createPrismFilesServer({
         project: args.project || '',
         slot: args.slot || '',
         tag: args.tag || '',
-        limit: args.limit || 10
+        limit: args.limit || 10,
+        includeTainted: Boolean(args.includeTainted)
       });
       const summaryText = res.entries.length
-        ? res.entries.map((e) => `- [${e.slotTag}] (${e.createdAt}) ${e.summary}`).join('\n')
+        ? res.entries.map((e) => {
+            const core = `[${e.slotTag}] (${e.createdAt}) ${e.summary}`;
+            return e.tainted ? `- [EXTERNAL_UNTRUSTED_MEMORY] ${core}` : `- ${core}`;
+          }).join('\n')
         : `未检出匹配 "${args.query}" 的交接记忆`;
       return {
         content: [{ type: 'text', text: summaryText }],
@@ -4277,9 +4468,37 @@ export function createPrismFilesServer({
 
       if (!brokerRes.reachable) {
         const savedMouseMode = savedCuaSettings.mouseMode === 'strict_virtual' ? 'strict_virtual' : 'courteous';
+        if (ctx.pluginJsonDisabled || hostPluginEnabled === false || savedCuaSettings.toolsEnabled === false) {
+          const sleepMsg = '电脑操控插件默认休眠中（零端口监听、零令牌落盘），开启上方开关后自动启动';
+          const sleepingStatus = {
+            ...baseMeta,
+            ok: true,
+            brokerOnline: false,
+            brokerReachable: false,
+            sleeping: true,
+            toolsEnabled: false,
+            state: 'DISARMED',
+            controlState: 'locked',
+            stateLabelZh: '默认休眠中',
+            mouseMode: savedMouseMode,
+            remainingSeconds: 0,
+            expiresAtMs: 0,
+            nmHostRegistered: false,
+            nmConnected: false,
+            armedTabs: [],
+            windows: [],
+            offlineReason: '',
+            message: sleepMsg
+          };
+          return {
+            content: [{ type: 'text', text: sleepMsg }],
+            structuredContent: sleepingStatus
+          };
+        }
         const offline = {
           ...baseMeta,
           brokerOnline: false,
+          brokerReachable: false,
           controlState: 'locked',
           stateLabelZh: '未授权锁定',
           mouseMode: savedMouseMode,
@@ -4532,7 +4751,7 @@ export function createPrismFilesServer({
         return { jsonrpc: '2.0', id, result: { tools: getExposedToolsList() } };
       }
       if (method === 'tools/call') {
-        const result = await handleToolCall(params?.name, params?.arguments || {});
+        const result = await handleToolCall(params?.name, params?.arguments || {}, { fromStdio: true });
         return { jsonrpc: '2.0', id, result };
       }
       if (method === 'resources/list') {
@@ -4593,6 +4812,7 @@ export function createPrismFilesServer({
   return {
     handleRpc,
     handleToolCall,
+    getAppCapabilityToken: () => appCapabilityToken,
     listDirectory,
     readFilePreview,
     saveFileContent,

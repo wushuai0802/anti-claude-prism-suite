@@ -1,6 +1,6 @@
 ---
 name: prism-slot-relay
-description: 基于 Prism 内置本地记忆与额度同步工具（prism_memory_list、prism_memory_store、prism_memory_search、prism_quota_sync）执行多账号目录同步、固定槽位绑定、防误读时间倒序接力与脱敏切号交接。当用户提及“同步主号目录”、“绑定槽位”、“接力”、“继续”或“准备切号”时使用。
+description: 基于 Prism 内置本地记忆与额度同步工具（prism_memory_list、prism_memory_store、prism_memory_search、prism_quota_sync）执行多账号目录同步、固定槽位绑定、防误读时间倒序接力与脱敏切号交接。当用户提及“同步主号目录”、“绑定槽位”、“接力”或“准备切号”时使用。
 ---
 
 # Prism 多账号槽位接力与主目录同步规范

@@ -1,5 +1,5 @@
 /* ============================================================================
- * Anti-Claude Prism Suite v0.7.0 — Visual FX & Layout Polish (Clean-Room, MIT)
+ * Anti-Claude Prism Suite v0.9.4 — Visual FX & Layout Polish (Clean-Room, MIT)
  * Architecture:
  *   - Joins window.__agPrismBus (Frozen v4) safely regardless of script order
  *   - Single shared requestAnimationFrame scheduler (true 0fps idle/hidden/reduced)
@@ -59,7 +59,7 @@
     alwaysOutlineRail: true,
     switchReturnHelper: true,
     switchAutoReturn: false,
-    autoDismissOnboarding: true,
+    autoDismissOnboarding: false,
     quotaHandoffAlert: true
   };
 
@@ -3029,9 +3029,40 @@
       return matchesEn || matchesZh;
     }
 
+    function hasRecentAccountSwitchTimestamp(maxAgeMs = 300000) {
+      const now = Date.now();
+      const checkTs = (raw) => {
+        const ts = Number(raw);
+        return Number.isFinite(ts) && ts > 0 && now - ts >= -60000 && now - ts <= maxAgeMs;
+      };
+      try {
+        if (checkTs(localStorage.getItem('ag_prism_last_account_switch_at'))) return true;
+      } catch {}
+      try {
+        const sumRaw = localStorage.getItem('ag_prism_account_summary_v1');
+        if (sumRaw) {
+          const sum = JSON.parse(sumRaw);
+          if (sum && sum.pendingSwitchEmail && checkTs(sum.updatedAt)) return true;
+        }
+      } catch {}
+      if (canUseHostCookie()) {
+        try {
+          const prefix = 'ag_prism_last_sw=';
+          for (const part of String(document.cookie || '').split(';')) {
+            const seg = part.trim();
+            if (seg.startsWith(prefix) && checkTs(decodeURIComponent(seg.slice(prefix.length)))) {
+              return true;
+            }
+          }
+        } catch {}
+      }
+      return false;
+    }
+
     function tryDismissOnboardingDialog() {
       const now = Date.now();
       if (now - lastOnboardingDismissAt < 1200) return false;
+      if (!hasRecentAccountSwitchTimestamp(300000)) return false;
 
       const candidates = document.querySelectorAll('[role="dialog"], [role="alertdialog"], dialog, [aria-modal="true"]');
 
@@ -3751,6 +3782,7 @@
     let intentGhostHost = null;
     let intentGhostHostSetRel = false;
     let intentOpenBoxEl = null;
+    let lastIntentAcceptAt = 0;
 
     function setIntentConvEntry(convKey, entry) {
       if (!convKey) return;
@@ -3771,6 +3803,7 @@
     function isComposerEmpty(boxEl) {
       const ed = getComposerEditable(boxEl);
       if (!ed || intentComposing) return false;
+      if (ed.querySelector && ed.querySelector('[data-lexical-decorator="true"], img')) return false;
       const raw = (ed.value !== undefined ? ed.value : ed.textContent) || '';
       return raw.replace(/\u200B|\n/g, '').trim().length === 0;
     }
@@ -3787,7 +3820,10 @@
       }
 
       const vp = safeGetViewportEl() || document;
-      const respNodes = vp.querySelectorAll('[data-testid="planner-response-text"], [data-testid="agent-response"], [data-markdown-root]');
+      let respNodes = vp.querySelectorAll('[data-testid="planner-response-text"], [data-testid="agent-response"]');
+      if (!respNodes.length) {
+        respNodes = vp.querySelectorAll('[data-markdown-root]');
+      }
       let lastAssistantText = '';
       for (let i = respNodes.length - 1; i >= 0; i--) {
         const rn = respNodes[i];
@@ -3857,11 +3893,95 @@
         clearTimeout(intentCompEndTimer);
         intentCompEndTimer = 0;
       }
+      if (intentFallbackTimer) {
+        clearTimeout(intentFallbackTimer);
+        intentFallbackTimer = 0;
+      }
       intentComposing = false;
       detachIntentGhostHost();
       if (clearCache) {
         intentCacheByConv.clear();
       }
+    }
+
+    let intentFallbackTimer = 0;
+
+    function acceptIntentSuggestion(boxOverride = null) {
+      const now = Date.now();
+      if (now - lastIntentAcceptAt < 350) return false;
+      const boxEl = boxOverride || safeGetComposerEl();
+      if (!boxEl || !isComposerEmpty(boxEl)) return false;
+      const convKey = String(window.location.pathname || '');
+      const { turnCount } = extractIntentTurnContext();
+      const entry = intentCacheByConv.get(convKey);
+      const sug = entry && entry.turnCount === turnCount && !entry.dismissed ? entry.suggestion : '';
+      if (!sug) return false;
+      const ed = getComposerEditable(boxEl);
+      if (!ed) return false;
+
+      lastIntentAcceptAt = now;
+      hideIntentGhost();
+
+      ed.focus();
+      if (ed.tagName === 'TEXTAREA' || ed.tagName === 'INPUT') {
+        ed.value = sug;
+        ed.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+      }
+
+      try {
+        const sel = typeof window.getSelection === 'function' ? window.getSelection() : null;
+        if (sel && typeof document.createRange === 'function') {
+          const range = document.createRange();
+          range.selectNodeContents(ed);
+          range.collapse(false);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      } catch {}
+
+      let execCalled = false;
+      if (typeof document.execCommand === 'function') {
+        try {
+          document.execCommand('insertText', false, sug);
+          execCalled = true;
+        } catch {}
+      }
+
+      // Lexical reconciles EditorState -> DOM asynchronously on a microtask after execCommand('insertText').
+      // Never inspect ed.textContent synchronously here or dispatch a second beforeinput in the same tick!
+      const fallbackAfterReconcile = () => {
+        intentFallbackTimer = 0;
+        if (disposed || !ed.isConnected) return;
+        const curTxt = (ed.textContent || '').replace(/\u200B|\n/g, '').trim();
+        if (curTxt) return;
+        let handledByBeforeInput = false;
+        if (!execCalled && typeof InputEvent === 'function') {
+          try {
+            const ev = new InputEvent('beforeinput', {
+              bubbles: true,
+              cancelable: true,
+              inputType: 'insertText',
+              data: sug
+            });
+            handledByBeforeInput = ed.dispatchEvent(ev) === false;
+          } catch {}
+        }
+        if (!handledByBeforeInput) {
+          intentFallbackTimer = setTimeout(() => {
+            intentFallbackTimer = 0;
+            if (disposed || !ed.isConnected) return;
+            if (!((ed.textContent || '').replace(/\u200B|\n/g, '').trim())) {
+              ed.textContent = sug;
+              ed.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+          }, 0);
+        }
+      };
+
+      if (intentFallbackTimer) clearTimeout(intentFallbackTimer);
+      intentFallbackTimer = setTimeout(fallbackAfterReconcile, 24);
+      return true;
     }
 
     function renderIntentGhost(boxEl, text, isLoading) {
@@ -3885,11 +4005,21 @@
         intentGhostEl.className = 'ag-ps-intent-ghost';
         intentGhostEl.setAttribute('aria-hidden', 'true');
         intentGhostEl.setAttribute('data-ag-i18n-ignore', '1');
+        const sparkEl = document.createElement('span');
+        sparkEl.className = 'ag-ps-intent-spark';
+        sparkEl.textContent = '✦';
         intentGhostTextEl = document.createElement('span');
         intentGhostTextEl.className = 'ag-ps-intent-text';
         intentGhostKbdEl = document.createElement('kbd');
         intentGhostKbdEl.className = 'ag-ps-intent-tab';
         intentGhostKbdEl.textContent = 'Tab';
+        intentGhostKbdEl.title = '按 Tab 键或点击填入输入框（不会自动发送）';
+        intentGhostKbdEl.addEventListener('pointerdown', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          acceptIntentSuggestion(boxEl);
+        });
+        intentGhostEl.appendChild(sparkEl);
         intentGhostEl.appendChild(intentGhostTextEl);
         intentGhostEl.appendChild(intentGhostKbdEl);
         parent.appendChild(intentGhostEl);
@@ -3899,9 +4029,11 @@
         const pt = parseFloat(cs.paddingTop) || 0;
         const pl = parseFloat(cs.paddingLeft) || 0;
         const pr = parseFloat(cs.paddingRight) || 0;
+        const lh = parseFloat(cs.lineHeight) || 24;
         intentGhostEl.style.top = `${Math.round((ed.offsetTop || 0) + pt)}px`;
         intentGhostEl.style.left = `${Math.round((ed.offsetLeft || 0) + pl)}px`;
         intentGhostEl.style.right = `${Math.max(8, Math.round(pr + 8))}px`;
+        intentGhostEl.style.height = `${Math.round(lh)}px`;
         if (cs.fontSize) intentGhostEl.style.fontSize = cs.fontSize;
         if (cs.lineHeight && cs.lineHeight !== 'normal') intentGhostEl.style.lineHeight = cs.lineHeight;
       } catch {}
@@ -3921,7 +4053,14 @@
     }
 
     function syncIntentGhostVisibility(boxOverride = null) {
-      if (disposed || !getPrefs().composerIntentSuggest || document.hidden || !isConversationRoute() || safeIsBusy()) {
+      if (
+        disposed ||
+        !getPrefs().composerIntentSuggest ||
+        document.hidden ||
+        !isConversationRoute() ||
+        safeIsBusy() ||
+        Date.now() - lastIntentAcceptAt < 350
+      ) {
         hideIntentGhost();
         return;
       }
@@ -4062,6 +4201,14 @@
         scheduleIntentPrediction(160);
         return;
       }
+      if (reason === 'init' || reason === 'prefs') {
+        const entry = intentCacheByConv.get(curConvKey);
+        const { turnCount } = extractIntentTurnContext();
+        if (turnCount >= 1 && (!entry || entry.turnCount !== turnCount)) {
+          scheduleIntentPrediction(140);
+          return;
+        }
+      }
       syncIntentGhostVisibility();
     }
 
@@ -4069,6 +4216,7 @@
       if (disposed || !getPrefs().composerIntentSuggest || document.hidden) return;
       const t = e && e.target;
       if (!t || typeof t.closest !== 'function') return;
+      if (t.closest('.ag-ps-intent-tab')) return;
       const boxEl = t.closest('[id="antigravity.agentSidePanelInputBox"]');
       if (!boxEl || !isConversationRoute() || safeIsBusy()) return;
       if (!isComposerEmpty(boxEl)) {
@@ -4100,29 +4248,17 @@
       );
       if (!activeInBox) return;
 
-      if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && !e.isComposing) {
-        if (!isComposerEmpty(boxEl)) return;
-        const convKey = String(window.location.pathname || '');
-        const { turnCount } = extractIntentTurnContext();
-        const entry = intentCacheByConv.get(convKey);
-        const sug = entry && entry.turnCount === turnCount && !entry.dismissed ? entry.suggestion : '';
-        if (!sug) return;
-        const ed = getComposerEditable(boxEl);
-        if (!ed) return;
-        e.preventDefault();
-        e.stopPropagation();
-        ed.focus();
-        if (ed.tagName === 'TEXTAREA') {
-          ed.value = sug;
-          ed.dispatchEvent(new Event('input', { bubbles: true }));
-        } else {
-          try { document.execCommand('insertText', false, sug); } catch {}
-          if (!((ed.textContent || '').trim())) {
-            ed.textContent = sug;
-            ed.dispatchEvent(new Event('input', { bubbles: true }));
-          }
-        }
+      if (e.isComposing || e.key === 'Process' || e.keyCode === 229) {
+        cancelIntentInFlight();
         hideIntentGhost();
+        return;
+      }
+
+      if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        if (acceptIntentSuggestion(boxEl)) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
         return;
       }
 
@@ -4513,7 +4649,7 @@
                   <span>光学立体切面与分割线</span>
                   <span class="ag-ps-toggle-sub">全主题卡片层次 · 立体键帽 · 悬停分屏导引</span>
                 </div>
-                <button type="button" class="ag-ps-switch" data-fx-toggle="opticalFacets" data-on="${p.opticalFacets !== false ? '1' : '0'}" aria-label="光学立体切面与分割线"></button>
+                <button type="button" role="switch" aria-checked="${p.opticalFacets !== false ? 'true' : 'false'}" class="ag-ps-switch" data-fx-toggle="opticalFacets" data-on="${p.opticalFacets !== false ? '1' : '0'}" aria-label="光学立体切面与分割线"></button>
               </div>
 
               <div class="ag-ps-toggle-row">
@@ -4521,7 +4657,7 @@
                   <span>用户消息气泡着色</span>
                   <span class="ag-ps-toggle-sub">柔和融合 · 高浓度自动对比字色</span>
                 </div>
-                <button type="button" class="ag-ps-switch" data-fx-toggle="bubbleTint" data-on="${p.bubbleTint ? '1' : '0'}" aria-label="用户消息气泡着色"></button>
+                <button type="button" role="switch" aria-checked="${p.bubbleTint ? 'true' : 'false'}" class="ag-ps-switch" data-fx-toggle="bubbleTint" data-on="${p.bubbleTint ? '1' : '0'}" aria-label="用户消息气泡着色"></button>
               </div>
               ${
                 p.bubbleTint
@@ -4547,7 +4683,7 @@
                   <span>紧凑排版</span>
                   <span class="ag-ps-toggle-sub">行高 1.42 · 同屏信息密度更高</span>
                 </div>
-                <button type="button" class="ag-ps-switch" data-fx-toggle="compactLayout" data-on="${p.compactLayout ? '1' : '0'}" aria-label="紧凑排版"></button>
+                <button type="button" role="switch" aria-checked="${p.compactLayout ? 'true' : 'false'}" class="ag-ps-switch" data-fx-toggle="compactLayout" data-on="${p.compactLayout ? '1' : '0'}" aria-label="紧凑排版"></button>
               </div>
 
               <div class="ag-ps-subpanel ag-ps-font-subpanel">
@@ -4618,7 +4754,7 @@
                       }
                       <div class="ag-ps-toggle-row">
                         <span class="ag-ps-toggle-sub" data-ag-ps-tip="空闲时在输入框边缘显示剩余额度色弧（绿 / 黄 / 红），AI 回复或亮起余晖时自动让位">空闲显示剩余额度环</span>
-                        <button type="button" class="ag-ps-switch" data-fx-toggle="quotaRing" data-on="${p.quotaRing ? '1' : '0'}" aria-label="空闲显示剩余额度环"></button>
+                        <button type="button" role="switch" aria-checked="${p.quotaRing ? 'true' : 'false'}" class="ag-ps-switch" data-fx-toggle="quotaRing" data-on="${p.quotaRing ? '1' : '0'}" aria-label="空闲显示剩余额度环"></button>
                       </div>
                       ${
                         p.quotaRing
@@ -4641,7 +4777,7 @@
                   <span>思考粒子球</span>
                   <span class="ag-ps-toggle-sub">随 AI 思考与输出灵动变形</span>
                 </div>
-                <button type="button" class="ag-ps-switch" data-fx-toggle="thinkingOrb" data-on="${p.thinkingOrb ? '1' : '0'}" aria-label="思考粒子球"></button>
+                <button type="button" role="switch" aria-checked="${p.thinkingOrb ? 'true' : 'false'}" class="ag-ps-switch" data-fx-toggle="thinkingOrb" data-on="${p.thinkingOrb ? '1' : '0'}" aria-label="思考粒子球"></button>
               </div>
               ${
                 p.thinkingOrb
@@ -4665,7 +4801,7 @@
                       <span>系统关动画时仍保留动效</span>
                       <span class="ag-ps-toggle-sub">不受系统「减少动态效果」限制</span>
                     </div>
-                    <button type="button" class="ag-ps-switch" data-fx-toggle="ignoreReducedMotion" data-on="${p.ignoreReducedMotion ? '1' : '0'}" aria-label="系统关动画时仍保留动效"></button>
+                    <button type="button" role="switch" aria-checked="${p.ignoreReducedMotion ? 'true' : 'false'}" class="ag-ps-switch" data-fx-toggle="ignoreReducedMotion" data-on="${p.ignoreReducedMotion ? '1' : '0'}" aria-label="系统关动画时仍保留动效"></button>
                   </div>
                 </div>
               </details>
@@ -4715,7 +4851,7 @@
                   <span>保持右侧概览常开</span>
                   <span class="ag-ps-toggle-sub">切换对话时不自动收起右侧概览</span>
                 </div>
-                <button type="button" class="ag-ps-switch" data-fx-toggle="keepOverviewOpen" data-on="${p.keepOverviewOpen ? '1' : '0'}" aria-label="保持右侧概览常开"></button>
+                <button type="button" role="switch" aria-checked="${p.keepOverviewOpen ? 'true' : 'false'}" class="ag-ps-switch" data-fx-toggle="keepOverviewOpen" data-on="${p.keepOverviewOpen ? '1' : '0'}" aria-label="保持右侧概览常开"></button>
               </div>
 
               <div class="ag-ps-toggle-row">
@@ -4748,11 +4884,11 @@
             </div>
 
             <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="实验性：每轮回复完成后在空输入框给出浅灰续写建议，按 Tab 键填入（绝不自动发送），打字或按 Esc 立即消失；纯内存零落盘">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="实验性：每轮回复完成后在空输入框给出浅灰续写建议，按 Tab 键填入（绝不自动发送），打字或按 Esc 立即消失；配置模型中枢后（自动脱敏）由网关预测，未配置时使用纯本地启发式">
                 <span>输入框下一步提问建议</span>
-                <span class="ag-ps-toggle-sub">回复结束提示下步指令 · 按 Tab 填入不直发</span>
+                <span class="ag-ps-toggle-sub">配置模型中枢后（自动脱敏）由网关预测，未配置时使用纯本地启发式</span>
               </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="composerIntentSuggest" data-on="${p.composerIntentSuggest ? '1' : '0'}" aria-label="输入框下一步提问建议"></button>
+              <button type="button" role="switch" aria-checked="${p.composerIntentSuggest ? 'true' : 'false'}" class="ag-ps-switch" data-fx-toggle="composerIntentSuggest" data-on="${p.composerIntentSuggest ? '1' : '0'}" aria-label="输入框下一步提问建议"></button>
             </div>
 
             <div class="ag-ps-toggle-row">
@@ -4760,7 +4896,7 @@
                 <span>底栏实时额度百分比</span>
                 <span class="ag-ps-toggle-sub">输入框底部显示 5h · 7d 剩余比例</span>
               </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="compactQuotaPill" data-on="${p.compactQuotaPill !== false ? '1' : '0'}" aria-label="底栏实时额度百分比"></button>
+              <button type="button" role="switch" aria-checked="${p.compactQuotaPill !== false ? 'true' : 'false'}" class="ag-ps-switch" data-fx-toggle="compactQuotaPill" data-on="${p.compactQuotaPill !== false ? '1' : '0'}" aria-label="底栏实时额度百分比"></button>
             </div>
 
             <div class="ag-ps-toggle-row">
@@ -4768,7 +4904,7 @@
                 <span>额度见底温和提醒</span>
                 <span class="ag-ps-toggle-sub">7d≤5% 提示切号 · 5h≤10% 提示换模型</span>
               </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="quotaHandoffAlert" data-on="${p.quotaHandoffAlert ? '1' : '0'}" aria-label="额度见底温和提醒"></button>
+              <button type="button" role="switch" aria-checked="${p.quotaHandoffAlert ? 'true' : 'false'}" class="ag-ps-switch" data-fx-toggle="quotaHandoffAlert" data-on="${p.quotaHandoffAlert ? '1' : '0'}" aria-label="额度见底温和提醒"></button>
             </div>
 
             <div class="ag-ps-toggle-row">
@@ -4776,18 +4912,18 @@
                 <span>设置页切号后一键回原对话</span>
                 <span class="ag-ps-toggle-sub">进入设置页时顶部显示返回按钮</span>
               </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="switchReturnHelper" data-on="${p.switchReturnHelper ? '1' : '0'}" aria-label="设置页切号后一键回原对话"></button>
+              <button type="button" role="switch" aria-checked="${p.switchReturnHelper ? 'true' : 'false'}" class="ag-ps-switch" data-fx-toggle="switchReturnHelper" data-on="${p.switchReturnHelper ? '1' : '0'}" aria-label="设置页切号后一键回原对话"></button>
             </div>
             ${
               p.switchReturnHelper
                 ? `<div class="ag-ps-subpanel">
                     <div class="ag-ps-toggle-row">
                       <span class="ag-ps-toggle-sub" data-ag-ps-tip="在设置页无弹窗操作时启动 3 秒可取消倒计时，自动回到原对话">无弹窗 3s 自动返回</span>
-                      <button type="button" class="ag-ps-switch" data-fx-toggle="switchAutoReturn" data-on="${p.switchAutoReturn ? '1' : '0'}" aria-label="无弹窗 3s 自动返回"></button>
+                      <button type="button" role="switch" aria-checked="${p.switchAutoReturn ? 'true' : 'false'}" class="ag-ps-switch" data-fx-toggle="switchAutoReturn" data-on="${p.switchAutoReturn ? '1' : '0'}" aria-label="无弹窗 3s 自动返回"></button>
                     </div>
                     <div class="ag-ps-toggle-row">
-                      <span class="ag-ps-toggle-sub" data-ag-ps-tip="切换新账号弹出首次欢迎提示框时自动点继续，不改动任何隐私选项">自动跳过新号欢迎弹窗</span>
-                      <button type="button" class="ag-ps-switch" data-fx-toggle="autoDismissOnboarding" data-on="${p.autoDismissOnboarding ? '1' : '0'}" aria-label="自动跳过新号欢迎弹窗"></button>
+                      <span class="ag-ps-toggle-sub" data-ag-ps-tip="仅在近期切换账号（5 分钟内）弹出欢迎提示框时自动点继续，默认关闭且不改动任何隐私选项">自动跳过新号欢迎弹窗</span>
+                      <button type="button" role="switch" aria-checked="${p.autoDismissOnboarding ? 'true' : 'false'}" class="ag-ps-switch" data-fx-toggle="autoDismissOnboarding" data-on="${p.autoDismissOnboarding ? '1' : '0'}" aria-label="自动跳过新号欢迎弹窗"></button>
                     </div>
                   </div>`
                 : ''
@@ -4798,7 +4934,7 @@
                 <span>后台回复完成标题提醒</span>
                 <span class="ag-ps-toggle-sub">切回窗口自动清除未读数字</span>
               </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="unreadBadge" data-on="${p.unreadBadge ? '1' : '0'}" aria-label="后台回复完成标题提醒"></button>
+              <button type="button" role="switch" aria-checked="${p.unreadBadge ? 'true' : 'false'}" class="ag-ps-switch" data-fx-toggle="unreadBadge" data-on="${p.unreadBadge ? '1' : '0'}" aria-label="后台回复完成标题提醒"></button>
             </div>
           </div>
         `;
@@ -5020,9 +5156,16 @@
     /* ========================================================================
      * 13. Clean Disposal (Hot-Reload & Uninstall Safe)
      * ======================================================================== */
+    let unregisterBusCleanup = null;
+
     function dispose() {
       if (disposed) return;
       disposed = true;
+      if (typeof unregisterBusCleanup === 'function') {
+        const unreg = unregisterBusCleanup;
+        unregisterBusCleanup = null;
+        try { unreg(); } catch {}
+      }
 
       stopScheduler();
       stopHiddenUnreadPoll();
@@ -5099,7 +5242,7 @@
 
     window.__agPrismFxDispose = dispose;
     if (typeof bus.onCleanup === 'function') {
-      bus.onCleanup(dispose);
+      unregisterBusCleanup = bus.onCleanup(dispose);
     }
 
     // Initial sync

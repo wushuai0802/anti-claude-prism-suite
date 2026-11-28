@@ -1528,11 +1528,11 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.9.3');
-    assert.equal(pluginJson.version, '0.9.3');
+    assert.equal(pkgJson.version, '0.9.4');
+    assert.equal(pluginJson.version, pkgJson.version);
     assert.ok(Array.isArray(pluginJson.suggested_prompts) && pluginJson.suggested_prompts.length <= 3);
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
-    assert.match(jsSrc, /SUITE_VERSION = '0\.9\.3'/);
+    assert.ok(jsSrc.includes(`SUITE_VERSION = '${pkgJson.version}'`));
     assert.match(jsSrc, /COOKIE_PREFS_KEY = 'ag_prism_prefs_v1'/);
     assert.match(jsSrc, /getActiveInputBox/);
     assert.match(jsSrc, /getInputBoxEl: getActiveInputBox/);
@@ -1560,7 +1560,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(wfSrc, /composerFileDrop/);
     assert.match(jsSrc, /ag_claude_ux_quota_cache_v1/);
     assert.match(jsSrc, /readAntiClaudeQuotaCache/);
-    assert.match(inlineHtml, /version: '0\.9\.3'/);
+    assert.ok(inlineHtml.includes(`version: '${pkgJson.version}'`));
     assert.match(jsSrc, /__agPrismBridge/);
     assert.match(jsSrc, /bridge-ping/);
     assert.match(jsSrc, /bridge-pong/);
@@ -1592,7 +1592,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(csSrc, /EnsureDebugPortOnUserShortcuts/);
     assert.match(csSrc, /InstallKernel/);
     assert.match(csSrc, /prism-suite-00-prefs\.js/);
-    assert.match(csSrc, /v0\.9\.3/);
+    assert.ok(csSrc.includes(`v${pkgJson.version}`));
     const installPluginSlice = csSrc.slice(csSrc.indexOf('public static int InstallPlugin('), csSrc.indexOf('private static bool IsReparsePoint('));
     assert.doesNotMatch(installPluginSlice, /Directory\.Delete\(targetDir,\s*true\)/, 'InstallPlugin must update in-place without deleting prism-files root');
   } finally {
@@ -2801,8 +2801,9 @@ test('v0.8.0 prism-cua end-to-end broker/MCP roundtrip, batch_actions, safety/CA
 
     // 1. Strict 3-tool model visibility & default-disabled plugin manifest
     const cuaPluginJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'plugin-cua', 'plugin.json'), 'utf8'));
+    const expectedVer = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version;
     assert.equal(cuaPluginJson.name, 'prism-cua');
-    assert.equal(cuaPluginJson.version, '0.9.3');
+    assert.equal(cuaPluginJson.version, expectedVer);
     assert.equal(cuaPluginJson.disabled, true, 'prism-cua must ship disabled by default');
     assert.deepEqual(CUA_TOOLS.map((t) => t.name), ['cua_status', 'cua_observe', 'cua_act']);
 
@@ -2938,7 +2939,7 @@ test('v0.8.0 prism-cua end-to-end broker/MCP roundtrip, batch_actions, safety/CA
     });
     assert.equal(obsRes.structuredContent.ok, true);
     assert.equal(broker.state, 'ARMED_READONLY');
-    assert.match(obsRes.content[0].text, /\[UNTRUSTED_CUA_OBSERVATION source=cua tainted=true\]/);
+    assert.match(obsRes.content[0].text, /\[UNTRUSTED_CUA_OBSERVATION id=[0-9a-f]{16} source=cua tainted=true\]/);
     assert.doesNotMatch(obsRes.content[0].text, /super-secret/, 'Password value must never leak');
     assert.equal(obsRes.content[1].type, 'image');
 
@@ -3042,7 +3043,8 @@ test('v0.8.1 visual virtual cursor overlay, 4-tier non-intrusive mouse routing (
     assert.match(winCuaCs, /NativeMethods\.SetCursorPos\(origCursor\.X,\s*origCursor\.Y\)/);
 
     // 2. Browser Shadow DOM virtual cursor & Workbench toggle UI invariants
-    assert.match(contentAgentJs, /AGENT_VERSION = '0\.9\.3'/);
+    const expectedAgentVer = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version;
+    assert.ok(contentAgentJs.includes(`AGENT_VERSION = '${expectedAgentVer}'`));
     assert.match(contentAgentJs, /function pulseVirtualCursor\(/);
     assert.match(contentAgentJs, /__prism_cua_vcursor_host/);
     assert.match(contentAgentJs, /delivery:\s*'dom_virtual'/);
@@ -3181,16 +3183,31 @@ test('v0.8.1 visual virtual cursor overlay, 4-tier non-intrusive mouse routing (
     assert.equal(blockedCanvasAct.isError, true);
     assert.equal(blockedCanvasAct.structuredContent.code, 'PHYSICAL_CURSOR_REQUIRED');
 
-    // Per-call override back to courteous allows L4 courteous click with cursor restore
-    const courteousCanvasAct = await cuaServer.handleToolCall('cua_act', {
+    // [A-06] Model-supplied mouseMode: 'courteous' or 'physical' MUST NOT escalate out of user's strict_virtual preference!
+    const escalateAttempt = await cuaServer.handleToolCall('cua_act', {
       target: 'desktop',
       hwnd: '0x00300200',
       mouseMode: 'courteous',
+      actions: [{ op: 'click', x: 320, y: 240, mouseMode: 'physical' }]
+    });
+    assert.equal(escalateAttempt.isError, true, 'Model must never bypass strict_virtual via cua_act parameters');
+    assert.equal(escalateAttempt.structuredContent.code, 'PHYSICAL_CURSOR_REQUIRED');
+
+    // Only when user explicitly switches global mouseMode back to courteous via Workbench does L4 courteous click proceed
+    await filesServer.handleToolCall('cua_bridge_set_mouse_mode', {
+      mouseMode: 'courteous'
+    });
+    const courteousCanvasAct = await cuaServer.handleToolCall('cua_act', {
+      target: 'desktop',
+      hwnd: '0x00300200',
       actions: [{ op: 'click', x: 320, y: 240 }]
     });
     assert.equal(courteousCanvasAct.structuredContent.ok, true);
     assert.equal(courteousCanvasAct.structuredContent.stepResults[0].delivery, 'courteous_physical_restore');
-    assert.deepEqual(seenMouseModes, ['courteous', 'strict_virtual', 'courteous']);
+    assert.deepEqual(seenMouseModes, ['courteous', 'strict_virtual', 'strict_virtual', 'courteous']);
+    await filesServer.handleToolCall('cua_bridge_set_mouse_mode', {
+      mouseMode: 'strict_virtual'
+    });
 
     // 4. Issue #1 (--no-plugin, --no-file-card-rule, --no-skills, showWorkbenchBtn, granular MCP exposure) & sidebar @dnd-kit drag safety
     const suiteJsSrc = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite.js'), 'utf8');
@@ -4353,7 +4370,8 @@ test('v0.9.0 mini-dom runtime execution, [MS-SHLLINK] binary codec, AV-hygiene g
     agentSandbox.window.document = agentSandbox.document;
     vm.runInContext(contentAgentSrc, agentSandbox);
     const cuaAgent = agentSandbox.window.__prismCuaContentAgent;
-    assert.ok(cuaAgent && cuaAgent.version === '0.9.3');
+    const curPkgVer = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version;
+    assert.ok(cuaAgent && cuaAgent.version === curPkgVer);
 
     const pasteAttempt = await cuaAgent.act({ op: 'press_key', key: 'Ctrl+V' });
     assert.equal(pasteAttempt.ok, false);
@@ -4591,8 +4609,190 @@ test('v0.9.3 Anti-Claude v3.1.10 compat, placeholder-masked thought translation,
   assert.match(suiteJs, /clearTranslateCache/);
   assert.match(fxJs, /composerIntentSuggest/);
   assert.match(fxJs, /ag-ps-intent-ghost/);
+  assert.match(fxJs, /acceptIntentSuggestion/);
+  assert.match(fxJs, /lastIntentAcceptAt/);
+  assert.match(fxJs, /fallbackAfterReconcile/);
+  assert.match(fxJs, /ag-ps-intent-spark/);
   assert.match(fxCss, /\.ag-ps-intent-ghost/);
+  assert.match(fxCss, /\[data-ag-ps-intent-open="1"\]\s*\[data-lexical-placeholder="true"\]/);
   assert.doesNotMatch(fxCss, /\[data-testid="user-message"\]:not\(:has\(/, 'Image-only user messages must never match outer user-message wrapper tinting');
   assert.match(accMgr, /composerIntentSuggest/);
   assert.match(accMgr, /tokenUnit/);
+});
+
+test('v0.9.4 behavioral security & data-integrity suite: GBK non-corruption, _appToken capability enforcement, UNC/sensitive-dir guards, redaction matrix, WSL/IMDS guards, and .prism-managed symmetric uninstall', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-v094-audit-'));
+  try {
+    // 1. Single-source version parity across all 17 derived files
+    const syncOut = execFileSync(process.execPath, [path.join(REPO, 'scripts', 'sync-version.mjs'), '--check'], {
+      cwd: REPO,
+      encoding: 'utf8'
+    });
+    assert.match(syncOut, /OK: all \d+ versioned files match v0\.9\.4/);
+
+    // 2. [B-03] GBK file readable preview + strict save block (zero byte corruption) + UTF-8 BOM preservation
+    const srv = createPrismFilesServer({
+      dataDir: path.join(tmp, 'srv-data'),
+      defaultRoot: tmp,
+      accountStateDir: path.join(tmp, 'srv-state')
+    });
+    const gbkPath = path.join(tmp, 'legacy-script.bat');
+    // "echo 中文\r\n" in GBK: 65 63 68 6f 20 d6 d0 ce c4 0d 0a
+    const gbkOriginalBytes = Buffer.from([0x65, 0x63, 0x68, 0x6f, 0x20, 0xd6, 0xd0, 0xce, 0xc4, 0x0d, 0x0a]);
+    fs.writeFileSync(gbkPath, gbkOriginalBytes);
+
+    const gbkPrev = await srv.handleToolCall('read_file_preview', { path: gbkPath });
+    assert.equal(gbkPrev.structuredContent.ok, true);
+    assert.equal(gbkPrev.structuredContent.editable, false, 'GBK file must automatically lock to read-only');
+    assert.equal(gbkPrev.structuredContent.encoding, 'non-utf8');
+    assert.match(gbkPrev.structuredContent.text, /echo 中文/, 'GBK Chinese text must decode legibly without U+FFFD');
+    assert.ok(gbkPrev.structuredContent.readOnlyReason);
+
+    const gbkSaveAttempt = await srv.handleToolCall('save_file_content', {
+      path: gbkPath,
+      content: 'echo 改写\r\n',
+      expectedMtimeMs: gbkPrev.structuredContent.mtimeMs
+    });
+    assert.equal(gbkSaveAttempt.structuredContent.ok, false, 'Saving over a GBK file must be blocked');
+    assert.equal(gbkSaveAttempt.structuredContent.code, 'NON_UTF8_READONLY');
+    assert.deepEqual(fs.readFileSync(gbkPath), gbkOriginalBytes, 'Original GBK bytes on disk must remain 100% untouched');
+
+    // UTF-8 BOM roundtrip preservation
+    const bomPath = path.join(tmp, 'with-bom.txt');
+    fs.writeFileSync(bomPath, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('首行内容\n', 'utf8')]));
+    const bomPrev = await srv.handleToolCall('read_file_preview', { path: bomPath });
+    assert.equal(bomPrev.structuredContent.editable, true);
+    const bomSave = await srv.handleToolCall('save_file_content', {
+      path: bomPath,
+      content: '更新后内容\n',
+      expectedMtimeMs: bomPrev.structuredContent.mtimeMs,
+      baseHash: bomPrev.structuredContent.baseHash
+    });
+    assert.equal(bomSave.structuredContent.ok, true);
+    const savedBomBytes = fs.readFileSync(bomPath);
+    assert.deepEqual(savedBomBytes.subarray(0, 3), Buffer.from([0xef, 0xbb, 0xbf]), 'UTF-8 BOM must be preserved on save');
+
+    // 3. [B-01] Server-enforced 256-bit _appToken capability token on stdio transport
+    const utf8Path = path.join(tmp, 'normal.txt');
+    fs.writeFileSync(utf8Path, 'hello\n', 'utf8');
+    const normalPrev = await srv.handleToolCall('read_file_preview', { path: utf8Path });
+    const unauthorizedStdioSave = await srv.handleToolCall(
+      'save_file_content',
+      { path: utf8Path, content: 'pwned\n', expectedMtimeMs: normalPrev.structuredContent.mtimeMs },
+      { fromStdio: true }
+    );
+    assert.equal(unauthorizedStdioSave.isError, true, 'Model stdio call to app-only tool without _appToken must fail');
+    assert.equal(unauthorizedStdioSave.structuredContent.code, 'APP_ONLY_FORBIDDEN');
+    assert.equal(fs.readFileSync(utf8Path, 'utf8'), 'hello\n');
+
+    const authorizedStdioSave = await srv.handleToolCall(
+      'save_file_content',
+      {
+        path: utf8Path,
+        content: 'updated-by-ui\n',
+        expectedMtimeMs: normalPrev.structuredContent.mtimeMs,
+        baseHash: normalPrev.structuredContent.baseHash,
+        _appToken: srv.getAppCapabilityToken()
+      },
+      { fromStdio: true }
+    );
+    assert.equal(authorizedStdioSave.structuredContent.ok, true);
+    assert.equal(fs.readFileSync(utf8Path, 'utf8'), 'updated-by-ui\n');
+
+    // 4. [B-02 + B-06] show_files_inline UNC/SMB NTLM leak block & open_prism_files sensitive dir block
+    const uncInline = await srv.handleToolCall('show_files_inline', {
+      files: ['\\\\evil.example.com\\share\\ntlm-trap.txt']
+    });
+    assert.equal(uncInline.structuredContent.items[0].blocked, true, 'External UNC path in show_files_inline must be blocked before stat');
+    assert.equal(uncInline.structuredContent.items[0].exists, false);
+
+    const fakeSshDir = path.join(tmp, '.ssh');
+    fs.mkdirSync(fakeSshDir, { recursive: true });
+    fs.writeFileSync(path.join(fakeSshDir, 'id_ed25519'), 'PRIVATE', 'utf8');
+    const sshOpen = await srv.handleToolCall('open_prism_files', { dir: fakeSshDir });
+    assert.doesNotMatch(JSON.stringify(sshOpen), /id_ed25519/, 'open_prism_files must never leak filenames inside .ssh');
+
+    // 5. [B-04 + X-01 + X-05] Unified credential redaction matrix & IPv4-mapped IPv6 IMDS guard
+    const { redactSensitiveText, isSensitiveFilePath } = await import(
+      pathToFileURL(path.join(REPO, 'plugin', 'server', 'redact-shared.mjs')).href
+    );
+    const {
+      redactSensitiveOutboundText,
+      isAllowedModelHubEndpointUrl,
+      stripFastRestoreFlagsPreservingQuotes
+    } = await import(pathToFileURL(path.join(REPO, 'vendor', 'anti-claude', 'core', 'daemon.mjs')).href);
+
+    const SECRET_SAMPLES = [
+      ['password=Hunter2SecretPass', 'Hunter2SecretPass'],
+      ['DB_PASSWORD: SuperSecretValue99', 'SuperSecretValue99'],
+      ['{"password": "JsonPasswordValue123"}', 'JsonPasswordValue123'],
+      ['{"apiKey": "JsonApiKeySecretValue999"}', 'JsonApiKeySecretValue999'],
+      ['postgres://dbadmin:PgSecretPass88@db.example.com:5432/prod', 'PgSecretPass88'],
+      [`${'AKIA'}${'IOSFODNN7EXAMPLE'}`, 'IOSFODNN7EXAMPLE'],
+      [`${'ya29'}.a0AfH6SMBxSecretGoogleAccessToken123456`, 'SecretGoogleAccessToken123456'],
+      [`${'1//'}${'0gSecretGoogleRefreshTokenValue1234567890'}`, 'SecretGoogleRefreshTokenValue1234567890'],
+      [`${'hf'}_${'abcdefghijklmnopqrstuvwxyz123456'}`, 'abcdefghijklmnopqrstuvwxyz123456'],
+      [`${'rk'}_${'live'}_${'1234567890abcdefghijklmn'}`, '1234567890abcdefghijklmn'],
+      ['-----BEGIN PGP PRIVATE KEY BLOCK-----\nSecretKeyBody\n-----END PGP PRIVATE KEY BLOCK-----', 'SecretKeyBody']
+    ];
+    for (const [sample, needle] of SECRET_SAMPLES) {
+      assert.doesNotMatch(redactSensitiveText(sample), new RegExp(needle), `redactSensitiveText leaked: ${sample}`);
+      assert.doesNotMatch(redactSensitiveOutboundText(sample), new RegExp(needle), `redactSensitiveOutboundText leaked: ${sample}`);
+    }
+    assert.equal(isSensitiveFilePath('/home/alice/.kube/config'), true);
+    assert.equal(isSensitiveFilePath('/home/alice/.gemini/oauth_creds.json'), true);
+    assert.equal(isSensitiveFilePath('C:\\Users\\alice\\AWS~1\\credentials'), true);
+    assert.equal(isSensitiveFilePath('/home/alice/.bashrc', { forWrite: true }), true);
+    assert.equal(isSensitiveFilePath('/home/alice/.gemini/config/plugins/x/mcp_config.json', { forWrite: true }), true);
+
+    assert.equal(isAllowedModelHubEndpointUrl('http://[::ffff:169.254.169.254]/latest/meta-data/'), false, 'IPv6-mapped AWS IMDS must be blocked');
+    assert.equal(isAllowedModelHubEndpointUrl('http://100.100.100.200/latest/meta-data/'), false, 'Alibaba Cloud IMDS must be blocked');
+    assert.equal(isAllowedModelHubEndpointUrl('http://100.82.183.41:8787/v1/chat/completions'), true, 'Tailscale NAS CPA gateway must remain allowed');
+
+    // 6. [A-01 + A-07 + A-08] Strict WSL adapter match, quote-preserving shortcut flag strip & [MS-SHLLINK] relative path
+    const { discoverWslAdapterIpv4 } = await import(
+      pathToFileURL(path.join(REPO, 'vendor', 'anti-claude', 'core', 'cua-broker.mjs')).href
+    );
+    assert.equal(
+      discoverWslAdapterIpv4({
+        'vEthernet (External Switch)': [{ family: 'IPv4', internal: false, address: '192.168.1.23' }],
+        'vEthernet (Default Switch)': [{ family: 'IPv4', internal: false, address: '172.20.48.1' }],
+        'vEthernet (WSL (Hyper-V firewall))': [{ family: 'IPv4', internal: false, address: '172.29.0.1' }]
+      }),
+      '172.29.0.1',
+      'Must ignore Hyper-V External/Default switches and pick true WSL adapter'
+    );
+    assert.equal(
+      discoverWslAdapterIpv4({
+        'vEthernet (External Switch)': [{ family: 'IPv4', internal: false, address: '192.168.1.23' }]
+      }),
+      null,
+      'Must return null when only non-WSL vEthernet exists'
+    );
+    assert.equal(
+      stripFastRestoreFlagsPreservingQuotes('--user-data-dir="D:\\My  Data" --disable-renderer-backgrounding --remote-debugging-port=0'),
+      '--user-data-dir="D:\\My  Data" --remote-debugging-port=0'
+    );
+
+    // 7. [E-01 + E-03] .prism-managed prevents wiping unrelated parent/runtime on userDir ending in "user", and symmetric uninstall cleans prism-suite/
+    const userProjectRoot = path.join(tmp, 'myproject');
+    const unrelatedRuntimeFile = path.join(userProjectRoot, 'runtime', 'MY-IMPORTANT-DATA.txt');
+    fs.mkdirSync(path.dirname(unrelatedRuntimeFile), { recursive: true });
+    fs.writeFileSync(unrelatedRuntimeFile, 'DO_NOT_DELETE', 'utf8');
+    assert.throws(
+      () => installAll({ userDir: path.join(userProjectRoot, 'user'), pluginsDir: path.join(tmp, 'p1'), activateKernelDaemon: false }),
+      /unmanaged|runtime/i,
+      'installAll must refuse overwriting an unmanaged pre-existing runtime directory'
+    );
+    assert.equal(fs.readFileSync(unrelatedRuntimeFile, 'utf8'), 'DO_NOT_DELETE');
+
+    const cleanBox = path.join(tmp, 'cleanbox');
+    installAll({ userDir: path.join(cleanBox, 'user'), pluginsDir: path.join(cleanBox, 'plugins'), activateKernelDaemon: false });
+    assert.equal(fs.existsSync(path.join(cleanBox, 'runtime', '.prism-managed')), true);
+    uninstallAll({ userDir: path.join(cleanBox, 'user'), pluginsDir: path.join(cleanBox, 'plugins'), removeKernel: true, deactivateDaemon: false });
+    assert.equal(fs.existsSync(path.join(cleanBox, 'prism-suite', 'install-mode.json')), false, 'install-mode.json must be cleaned up on uninstall');
+    assert.equal(fs.existsSync(path.join(cleanBox, 'prism-suite')), false, 'Empty prism-suite directory must be removed on uninstall');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });

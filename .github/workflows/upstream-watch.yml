@@ -35,13 +35,36 @@ jobs:
           node -e '
             const fs = require("node:fs");
             const data = JSON.parse(fs.readFileSync("radar-output.json", "utf8"));
-            fs.writeFileSync("radar-report.md", data.markdown || "");
+            const sanitizeCommitMsg = (msg) => String(msg || "")
+              .replace(/`/g, "ˋ")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;")
+              .replace(/@(?!\u200B)/g, "@\u200B")
+              .replace(/\u200B?#(\d)/g, "\u200B#$1");
+            let md = String(data.markdown || "");
+            const rawTexts = new Set();
+            for (const r of (data.results || [])) {
+              for (const list of [r.commits, r.compatFixes, r.featureCandidates]) {
+                for (const c of (list || [])) {
+                  if (c && typeof c.message === "string" && c.message) rawTexts.add(c.message);
+                  if (c && typeof c.summaryZh === "string" && c.summaryZh) rawTexts.add(c.summaryZh);
+                }
+              }
+              for (const h of (r.zhReleaseHighlights || [])) {
+                if (typeof h === "string" && h) rawTexts.add(h);
+              }
+            }
+            for (const raw of Array.from(rawTexts).sort((a, b) => b.length - a.length)) {
+              const safe = sanitizeCommitMsg(raw);
+              if (safe !== raw) md = md.split(raw).join(safe);
+            }
+            fs.writeFileSync("radar-report.md", md);
             const high = Number(data.summary?.high || 0);
             const med = Number(data.summary?.medium || 0);
             const low = Number(data.summary?.low || 0);
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `high=${high}\nmedium=${med}\nlow=${low}\n`);
             if (process.env.GITHUB_STEP_SUMMARY) {
-              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, data.markdown || "");
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md);
             }
           '
 
@@ -52,12 +75,36 @@ jobs:
           script: |
             const fs = require('node:fs');
             const rawBody = fs.readFileSync('radar-report.md', 'utf8');
+            const sanitizeLineOutsideCode = (line) => {
+              const bqMatch = line.match(/^(\s*>+\s?)(.*)$/);
+              const prefix = bqMatch ? bqMatch[1] : '';
+              const rest = bqMatch ? bqMatch[2] : line;
+              const escaped = rest
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/@(?!\u200B)/g, '@\u200B')
+                .replace(/\u200B?#(\d)/g, '\u200B#$1');
+              return prefix + escaped;
+            };
             const sanitizeSegment = (seg) => seg
-              .replace(/(^|[^A-Za-z0-9_`@/])@([A-Za-z0-9][A-Za-z0-9-]{0,38})/g, '$1`@$2`')
-              .replace(/<(\/?(?:script|iframe|img|svg|object|embed|form|input|meta|link|style)[^>]*)>/gi, '&lt;$1&gt;');
+              .split('\n')
+              .map(sanitizeLineOutsideCode)
+              .join('\n');
             const safeBody = rawBody
               .split(/(```[\s\S]*?```|`[^`\n]+`)/g)
-              .map((part, idx) => (idx % 2 === 1 ? part : sanitizeSegment(part)))
+              .map((part, idx) => {
+                if (idx % 2 === 1) {
+                  if (part.startsWith('```')) return part;
+                  const inner = part.slice(1, -1)
+                    .replace(/`/g, 'ˋ')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/@(?!\u200B)/g, '@\u200B')
+                    .replace(/\u200B?#(\d)/g, '\u200B#$1');
+                  return `\`${inner}\``;
+                }
+                return sanitizeSegment(part);
+              })
               .join('');
             const MAX_ISSUE_CHARS = 60000;
             let body = safeBody;

@@ -17,7 +17,95 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const IGNORED_NAMES = new Set(['.DS_Store', 'Thumbs.db']);
+export const PRISM_MANAGED_MARKER = '.prism-managed';
 export const KERNEL_USER_LAYER_FILES = ['config.json', 'custom.css', 'custom.js', 'i18n.override.json'];
+
+const activeInProcessStateLocks = new Set();
+
+export function isPrismManagedRuntimeDir(runtimeDir) {
+  const st = fs.lstatSync(runtimeDir, { throwIfNoEntry: false });
+  if (!st || st.isSymbolicLink() || !st.isDirectory()) return false;
+  return (
+    fs.existsSync(path.join(runtimeDir, PRISM_MANAGED_MARKER)) ||
+    fs.existsSync(path.join(runtimeDir, 'core', 'daemon.mjs'))
+  );
+}
+
+function isTransientInstallerTempName(name) {
+  return (
+    name === PRISM_MANAGED_MARKER ||
+    name.startsWith('.prism-inst-') ||
+    name.startsWith('.prism-tmp-') ||
+    name.startsWith('.prism-write-')
+  );
+}
+
+function acquireInstallLock(stateDir) {
+  const resolvedState = path.resolve(stateDir);
+  if (activeInProcessStateLocks.has(resolvedState)) {
+    return { release() {} };
+  }
+  const lockPath = path.join(resolvedState, '.install.lock');
+  let owned = false;
+  try {
+    assertSafeDirectory(resolvedState, path.dirname(resolvedState));
+    fs.mkdirSync(resolvedState, { recursive: true, mode: 0o700 });
+    const tryCreate = () => {
+      const fd = fs.openSync(
+        lockPath,
+        fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY,
+        0o600
+      );
+      try {
+        fs.writeFileSync(fd, `${JSON.stringify({ pid: process.pid, ts: Date.now() })}\n`, 'utf8');
+      } finally {
+        fs.closeSync(fd);
+      }
+      owned = true;
+    };
+    try {
+      tryCreate();
+    } catch (err) {
+      if (err && err.code === 'EEXIST') {
+        let stale = false;
+        try {
+          const st = fs.lstatSync(lockPath, { throwIfNoEntry: false });
+          if (st && !st.isSymbolicLink() && st.isFile()) {
+            const raw = fs.readFileSync(lockPath, 'utf8');
+            const parsed = JSON.parse(raw);
+            const age = Date.now() - (Number(parsed?.ts) || st.mtimeMs || 0);
+            if (age > 60000) {
+              stale = true;
+            } else if (Number.isInteger(parsed?.pid) && parsed.pid > 0 && parsed.pid !== process.pid) {
+              try {
+                process.kill(parsed.pid, 0);
+              } catch (killErr) {
+                if (killErr && killErr.code === 'ESRCH') stale = true;
+              }
+            }
+          }
+        } catch {}
+        if (stale) {
+          try {
+            fs.rmSync(lockPath, { force: true });
+            tryCreate();
+          } catch {}
+        }
+      }
+    }
+  } catch {}
+  if (owned) {
+    activeInProcessStateLocks.add(resolvedState);
+  }
+  return {
+    release() {
+      if (!owned) return;
+      owned = false;
+      activeInProcessStateLocks.delete(resolvedState);
+      try { fs.rmSync(lockPath, { force: true }); } catch {}
+    }
+  };
+}
 
 export function buildNodeExecEnv(baseEnv = process.env) {
   const env = { ...baseEnv };
@@ -99,8 +187,37 @@ function copyFileInPlace(srcPath, destPath, anchorDir = '') {
   try {
     fs.copyFileSync(srcPath, tmpPath, fs.constants.COPYFILE_EXCL);
     createdTmp = true;
-    fs.renameSync(tmpPath, destPath);
-    createdTmp = false;
+    try {
+      fs.renameSync(tmpPath, destPath);
+      createdTmp = false;
+    } catch (renameErr) {
+      if (
+        process.platform === 'win32' &&
+        (renameErr?.code === 'EPERM' || renameErr?.code === 'EBUSY' || renameErr?.code === 'EACCES')
+      ) {
+        const curDest = fs.lstatSync(destPath, { throwIfNoEntry: false });
+        if (curDest && !curDest.isSymbolicLink() && !curDest.isDirectory()) {
+          const baseOldPath = `${destPath}.old`;
+          try { fs.rmSync(baseOldPath, { force: true }); } catch {}
+          const oldPath = fs.existsSync(baseOldPath)
+            ? `${destPath}.old.${process.pid}-${Date.now()}`
+            : baseOldPath;
+          fs.renameSync(destPath, oldPath);
+          try {
+            fs.renameSync(tmpPath, destPath);
+            createdTmp = false;
+          } catch (secondErr) {
+            try { fs.renameSync(oldPath, destPath); } catch {}
+            throw secondErr;
+          }
+          try { fs.rmSync(oldPath, { force: true }); } catch {}
+        } else {
+          throw renameErr;
+        }
+      } else {
+        throw renameErr;
+      }
+    }
   } catch (err) {
     if (createdTmp) {
       try { fs.rmSync(tmpPath, { force: true }); } catch {}
@@ -187,19 +304,26 @@ function syncDirInPlace(srcDir, destDir, installed) {
   const srcEntries = fs.readdirSync(srcDir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
   const wantedNames = new Set();
   for (const entry of srcEntries) {
-    if (!IGNORED_NAMES.has(entry.name)) {
+    if (!IGNORED_NAMES.has(entry.name) && !isTransientInstallerTempName(entry.name)) {
       wantedNames.add(entry.name);
     }
   }
 
   for (const existing of fs.readdirSync(destDir, { withFileTypes: true })) {
+    if (isTransientInstallerTempName(existing.name)) continue;
     if (!wantedNames.has(existing.name)) {
-      fs.rmSync(path.join(destDir, existing.name), { recursive: true, force: true });
+      try {
+        fs.rmSync(path.join(destDir, existing.name), { recursive: true, force: true });
+      } catch (err) {
+        if (!/\.old(?:\.[0-9a-z-]+)?$/i.test(existing.name) || (err?.code !== 'EPERM' && err?.code !== 'EBUSY')) {
+          throw err;
+        }
+      }
     }
   }
 
   for (const entry of srcEntries) {
-    if (IGNORED_NAMES.has(entry.name)) continue;
+    if (IGNORED_NAMES.has(entry.name) || isTransientInstallerTempName(entry.name)) continue;
     const srcPath = path.join(srcDir, entry.name);
     const destPath = path.join(destDir, entry.name);
     const destLst = fs.lstatSync(destPath, { throwIfNoEntry: false });
@@ -299,108 +423,125 @@ export function installKernel({
   const effectiveUserAnchor = userInsideState ? stateAnchor : userAnchor;
   assertSafeDirectory(resolvedUserDir, effectiveUserAnchor);
 
-  const installed = [];
-  syncDirInPlace(resolvedSrc, runtimeDir, installed);
+  const runtimeLst = fs.lstatSync(runtimeDir, { throwIfNoEntry: false });
+  if (runtimeLst && !isPrismManagedRuntimeDir(runtimeDir)) {
+    throw new Error(
+      `Refusing to sync kernel into unmanaged existing runtime directory (missing ${PRISM_MANAGED_MARKER} and core/daemon.mjs): ${runtimeDir}`
+    );
+  }
 
-  fs.mkdirSync(resolvedUserDir, { recursive: true });
-  fs.mkdirSync(baseDir, { recursive: true });
+  const lock = acquireInstallLock(resolvedStateDir);
+  try {
+    const installed = [];
+    syncDirInPlace(resolvedSrc, runtimeDir, installed);
+    writeTextInPlace(
+      path.join(runtimeDir, PRISM_MANAGED_MARKER),
+      `${JSON.stringify({ managedBy: 'anti-claude-prism-suite', schema: 1 }, null, 2)}\n`,
+      stateAnchor
+    );
 
-  const userLayer = { created: [], updated: [], merged: [], keptLocal: [] };
-  for (const fileName of KERNEL_USER_LAYER_FILES) {
-    const templatePath = path.join(resolvedSrc, 'user', fileName);
-    if (!fs.existsSync(templatePath)) continue;
-    const remoteText = fs.readFileSync(templatePath, 'utf8');
-    const livePath = path.join(resolvedUserDir, fileName);
-    const basePath = path.join(baseDir, fileName);
+    fs.mkdirSync(resolvedUserDir, { recursive: true });
+    fs.mkdirSync(baseDir, { recursive: true });
 
-    const liveLst = fs.lstatSync(livePath, { throwIfNoEntry: false });
-    const baseLst = fs.lstatSync(basePath, { throwIfNoEntry: false });
-    if ((liveLst && liveLst.isSymbolicLink()) || (baseLst && baseLst.isSymbolicLink())) {
-      throw new Error(`Refusing to modify symlinked user configuration file: ${livePath}`);
-    }
+    const userLayer = { created: [], updated: [], merged: [], keptLocal: [] };
+    for (const fileName of KERNEL_USER_LAYER_FILES) {
+      const templatePath = path.join(resolvedSrc, 'user', fileName);
+      if (!fs.existsSync(templatePath)) continue;
+      const remoteText = fs.readFileSync(templatePath, 'utf8');
+      const livePath = path.join(resolvedUserDir, fileName);
+      const basePath = path.join(baseDir, fileName);
 
-    if (!liveLst) {
-      writeTextInPlace(livePath, remoteText, effectiveUserAnchor);
-      writeTextInPlace(basePath, remoteText, stateAnchor);
-      userLayer.created.push(fileName);
-      continue;
-    }
-
-    const localText = fs.readFileSync(livePath, 'utf8');
-    const baseText = baseLst && baseLst.isFile() ? fs.readFileSync(basePath, 'utf8') : null;
-    if (localText === remoteText) {
-      if (baseText !== remoteText) writeTextInPlace(basePath, remoteText, stateAnchor);
-      continue;
-    }
-    if (baseText !== null && sha256Text(localText) === sha256Text(baseText)) {
-      writeTextInPlace(livePath, remoteText, effectiveUserAnchor);
-      writeTextInPlace(basePath, remoteText, stateAnchor);
-      userLayer.updated.push(fileName);
-      continue;
-    }
-    if (fileName.endsWith('.json') && baseText !== null) {
-      let parsedTriple = null;
-      try {
-        parsedTriple = {
-          base: JSON.parse(baseText),
-          local: JSON.parse(localText),
-          remote: JSON.parse(remoteText)
-        };
-      } catch {
-        parsedTriple = null;
+      const liveLst = fs.lstatSync(livePath, { throwIfNoEntry: false });
+      const baseLst = fs.lstatSync(basePath, { throwIfNoEntry: false });
+      if ((liveLst && liveLst.isSymbolicLink()) || (baseLst && baseLst.isSymbolicLink())) {
+        throw new Error(`Refusing to modify symlinked user configuration file: ${livePath}`);
       }
-      if (parsedTriple) {
-        const merged = threeWayMergeJsonObj(parsedTriple.base, parsedTriple.local, parsedTriple.remote);
-        const mergedText = `${JSON.stringify(merged, null, 2)}\n`;
-        if (mergedText !== localText) writeTextInPlace(livePath, mergedText, effectiveUserAnchor);
+
+      if (!liveLst) {
+        writeTextInPlace(livePath, remoteText, effectiveUserAnchor);
         writeTextInPlace(basePath, remoteText, stateAnchor);
-        userLayer.merged.push(fileName);
+        userLayer.created.push(fileName);
         continue;
       }
+
+      const localText = fs.readFileSync(livePath, 'utf8');
+      const baseText = baseLst && baseLst.isFile() ? fs.readFileSync(basePath, 'utf8') : null;
+      if (localText === remoteText) {
+        if (baseText !== remoteText) writeTextInPlace(basePath, remoteText, stateAnchor);
+        continue;
+      }
+      if (baseText !== null && sha256Text(localText) === sha256Text(baseText)) {
+        writeTextInPlace(livePath, remoteText, effectiveUserAnchor);
+        writeTextInPlace(basePath, remoteText, stateAnchor);
+        userLayer.updated.push(fileName);
+        continue;
+      }
+      if (fileName.endsWith('.json') && baseText !== null) {
+        let parsedTriple = null;
+        try {
+          parsedTriple = {
+            base: JSON.parse(baseText),
+            local: JSON.parse(localText),
+            remote: JSON.parse(remoteText)
+          };
+        } catch {
+          parsedTriple = null;
+        }
+        if (parsedTriple) {
+          const merged = threeWayMergeJsonObj(parsedTriple.base, parsedTriple.local, parsedTriple.remote);
+          const mergedText = `${JSON.stringify(merged, null, 2)}\n`;
+          if (mergedText !== localText) writeTextInPlace(livePath, mergedText, effectiveUserAnchor);
+          writeTextInPlace(basePath, remoteText, stateAnchor);
+          userLayer.merged.push(fileName);
+          continue;
+        }
+      }
+      if (baseText !== remoteText) {
+        writeTextInPlace(path.join(incomingDir, fileName), remoteText, stateAnchor);
+      }
+      userLayer.keptLocal.push(fileName);
     }
-    if (baseText !== remoteText) {
-      writeTextInPlace(path.join(incomingDir, fileName), remoteText, stateAnchor);
+
+    let daemonActivated = false;
+    let daemonNote = '';
+    if (activateDaemon) {
+      let keepAgentsRule = false;
+      try {
+        const stRaw = fs.readFileSync(path.join(resolvedStateDir, 'install-state.json'), 'utf8');
+        const st = JSON.parse(stRaw);
+        keepAgentsRule = st?.options?.agentsRule === true;
+      } catch {}
+
+      const runtimeInstallScript = path.join(runtimeDir, 'install.mjs');
+      const args = [runtimeInstallScript, 'install', '--no-auto-update'];
+      if (!keepAgentsRule) args.push('--no-agents-rule');
+      try {
+        // Use stdio: 'ignore' so detached grandchild daemon on Windows never inherits open stdout/stderr pipes
+        execFileSync(process.execPath, args, {
+          cwd: runtimeDir,
+          env: buildNodeExecEnv({ ...process.env, ANTI_CLAUDE_NO_NETWORK: '1' }),
+          timeout: 35000,
+          windowsHide: true,
+          stdio: 'ignore'
+        });
+        daemonActivated = true;
+      } catch (err) {
+        daemonNote = String(err?.message || err).split('\n')[0];
+      }
     }
-    userLayer.keptLocal.push(fileName);
+
+    return {
+      stateDir: resolvedStateDir,
+      runtimeDir,
+      userDir: resolvedUserDir,
+      installed,
+      userLayer,
+      daemonActivated,
+      daemonNote
+    };
+  } finally {
+    lock.release();
   }
-
-  let daemonActivated = false;
-  let daemonNote = '';
-  if (activateDaemon) {
-    let keepAgentsRule = false;
-    try {
-      const stRaw = fs.readFileSync(path.join(resolvedStateDir, 'install-state.json'), 'utf8');
-      const st = JSON.parse(stRaw);
-      keepAgentsRule = st?.options?.agentsRule === true;
-    } catch {}
-
-    const runtimeInstallScript = path.join(runtimeDir, 'install.mjs');
-    const args = [runtimeInstallScript, 'install', '--no-auto-update'];
-    if (!keepAgentsRule) args.push('--no-agents-rule');
-    try {
-      // Use stdio: 'ignore' so detached grandchild daemon on Windows never inherits open stdout/stderr pipes
-      execFileSync(process.execPath, args, {
-        cwd: runtimeDir,
-        env: buildNodeExecEnv({ ...process.env, ANTI_CLAUDE_NO_NETWORK: '1' }),
-        timeout: 35000,
-        windowsHide: true,
-        stdio: 'ignore'
-      });
-      daemonActivated = true;
-    } catch (err) {
-      daemonNote = String(err?.message || err).split('\n')[0];
-    }
-  }
-
-  return {
-    stateDir: resolvedStateDir,
-    runtimeDir,
-    userDir: resolvedUserDir,
-    installed,
-    userLayer,
-    daemonActivated,
-    daemonNote
-  };
 }
 
 export function installExtensions({ userDir = resolveUserDir(), srcDir = path.join(__dirname, 'extensions') } = {}) {
@@ -574,50 +715,55 @@ export function installAll({
     ? Boolean(skipKernel)
     : (onlyExt || onlyPlugin || argv.includes('--no-kernel'));
 
-  let kernel = null;
-  if (!noKernel && fs.existsSync(path.join(kernelSrcDir, 'install.mjs'))) {
-    const defaultHostUserDir = path.join(os.homedir(), '.gemini', 'antigravity', 'anti-claude', 'user');
-    const isCustomSandbox =
-      userDir !== undefined ||
-      Boolean(readArgValue(argv, '--user-dir')) ||
-      Boolean(process.env.ANTI_CLAUDE_USER_DIR) ||
-      Boolean(process.env.ANTI_CLAUDE_STATE_DIR);
-    const isCrossMountOnLinux = process.platform === 'linux' && /^\/mnt\/[a-z]\//i.test(resolvedUserDir);
-    const shouldActivate = activateKernelDaemon !== undefined
-      ? Boolean(activateKernelDaemon)
-      : (!isCustomSandbox && !isCrossMountOnLinux && !argv.includes('--no-kernel-daemon') && path.resolve(resolvedUserDir) === path.resolve(defaultHostUserDir));
+  const lock = onlyPlugin ? { release() {} } : acquireInstallLock(resolveStateDirFromUserDir(resolvedUserDir));
+  try {
+    let kernel = null;
+    if (!noKernel && fs.existsSync(path.join(kernelSrcDir, 'install.mjs'))) {
+      const defaultHostUserDir = path.join(os.homedir(), '.gemini', 'antigravity', 'anti-claude', 'user');
+      const isCustomSandbox =
+        userDir !== undefined ||
+        Boolean(readArgValue(argv, '--user-dir')) ||
+        Boolean(process.env.ANTI_CLAUDE_USER_DIR) ||
+        Boolean(process.env.ANTI_CLAUDE_STATE_DIR);
+      const isCrossMountOnLinux = process.platform === 'linux' && /^\/mnt\/[a-z]\//i.test(resolvedUserDir);
+      const shouldActivate = activateKernelDaemon !== undefined
+        ? Boolean(activateKernelDaemon)
+        : (!isCustomSandbox && !isCrossMountOnLinux && !argv.includes('--no-kernel-daemon') && path.resolve(resolvedUserDir) === path.resolve(defaultHostUserDir));
 
-    kernel = installKernel({
-      userDir: resolvedUserDir,
-      srcDir: kernelSrcDir,
-      activateDaemon: shouldActivate
+      kernel = installKernel({
+        userDir: resolvedUserDir,
+        srcDir: kernelSrcDir,
+        activateDaemon: shouldActivate
+      });
+    }
+
+    const extensions = onlyPlugin ? null : installExtensions({ userDir: resolvedUserDir, srcDir: extensionsSrcDir });
+    const chromeBridge = onlyPlugin ? null : installChromeBridge({ userDir: resolvedUserDir, srcDir: chromeBridgeSrcDir });
+    const defaultPluginSrc = path.resolve(path.join(__dirname, 'plugin'));
+    const effectiveCuaSrc = path.resolve(pluginSrcDir) === defaultPluginSrc ? pluginCuaSrcDir : undefined;
+    const plugin = noPlugin ? null : installPlugin({
+      pluginsDir: resolvedPluginsDir,
+      srcDir: pluginSrcDir,
+      skipFileCardRule: noFileCardRule,
+      skipSkills: noSkills,
+      ...(effectiveCuaSrc !== undefined ? { cuaSrcDir: effectiveCuaSrc } : {})
     });
+
+    if (!onlyPlugin && chromeBridge?.targetDir) {
+      try {
+        const suiteDir = path.dirname(chromeBridge.targetDir);
+        writeTextInPlace(
+          path.join(suiteDir, 'install-mode.json'),
+          `${JSON.stringify({ schema: 1, noPlugin, noFileCardRule, noSkills, updatedAt: new Date().toISOString() }, null, 2)}\n`,
+          path.dirname(suiteDir)
+        );
+      } catch {}
+    }
+
+    return { kernel, extensions, chromeBridge, plugin };
+  } finally {
+    lock.release();
   }
-
-  const extensions = onlyPlugin ? null : installExtensions({ userDir: resolvedUserDir, srcDir: extensionsSrcDir });
-  const chromeBridge = onlyPlugin ? null : installChromeBridge({ userDir: resolvedUserDir, srcDir: chromeBridgeSrcDir });
-  const defaultPluginSrc = path.resolve(path.join(__dirname, 'plugin'));
-  const effectiveCuaSrc = path.resolve(pluginSrcDir) === defaultPluginSrc ? pluginCuaSrcDir : undefined;
-  const plugin = noPlugin ? null : installPlugin({
-    pluginsDir: resolvedPluginsDir,
-    srcDir: pluginSrcDir,
-    skipFileCardRule: noFileCardRule,
-    skipSkills: noSkills,
-    ...(effectiveCuaSrc !== undefined ? { cuaSrcDir: effectiveCuaSrc } : {})
-  });
-
-  if (!onlyPlugin && chromeBridge?.targetDir) {
-    try {
-      const suiteDir = path.dirname(chromeBridge.targetDir);
-      writeTextInPlace(
-        path.join(suiteDir, 'install-mode.json'),
-        `${JSON.stringify({ schema: 1, noPlugin, noFileCardRule, noSkills, updatedAt: new Date().toISOString() }, null, 2)}\n`,
-        path.dirname(suiteDir)
-      );
-    } catch {}
-  }
-
-  return { kernel, extensions, chromeBridge, plugin };
 }
 
 function printHelp() {

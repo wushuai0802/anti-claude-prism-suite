@@ -24,10 +24,15 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { redactSensitiveText } from './redact-shared.mjs';
 
 const MAX_ENTRY_BYTES = 8192;
+const MAX_REMOTE_MCP_RESPONSE_BYTES = 1024 * 1024;
+const JSONL_LOCK_STALE_MS = 15_000;
+const JSONL_LOCK_WAIT_BUDGET_MS = 1500;
 
 const UNSAFE_MOUNT_FS_TYPES = new Set([
   'drvfs',
@@ -47,7 +52,8 @@ const UNTRUSTED_SOURCES = new Set([
   'browser',
   'cua',
   'window-uia',
-  'external-untrusted'
+  'external-untrusted',
+  'remote-mcp'
 ]);
 
 const DANGEROUS_AUTH_ENV_NAMES = new Set([
@@ -79,7 +85,17 @@ const DANGEROUS_AUTH_ENV_NAMES = new Set([
   'SSL_CERT_DIR',
   'SSH_AUTH_SOCK',
   'WSL_DISTRO_NAME',
-  'WSL_INTEROP'
+  'WSL_INTEROP',
+  'ANTIGRAVITY_CSRF_TOKEN',
+  'ANTIGRAVITY_LS_ADDRESS',
+  'GITHUB_TOKEN',
+  'GH_TOKEN',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_ACCESS_KEY_ID',
+  'NPM_TOKEN',
+  'AZURE_CLIENT_SECRET',
+  'GOOGLE_APPLICATION_CREDENTIALS'
 ]);
 
 const FTS_RESERVED_WORDS = new Set(['AND', 'OR', 'NOT', 'NEAR']);
@@ -145,34 +161,7 @@ function loadNodeSqliteCapability() {
 /* ---------------- Secret Redaction ---------------- */
 
 export function redactMemoryText(text) {
-  let out = String(text ?? '');
-  if (!out) return '';
-  // Private keys
-  out = out.replace(
-    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g,
-    '[REDACTED_PRIVATE_KEY]'
-  );
-  // URL embedded credentials: https://user:pass@host -> https://[REDACTED_AUTH]@host
-  out = out.replace(
-    /\b([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^/\s@'"`]+(?::[^/\s@'"`]*)?)@(?=[A-Za-z0-9.-]|\[)/g,
-    '$1[REDACTED_AUTH]@'
-  );
-  // sk-... OpenAI / Anthropic / Stripe keys
-  out = out.replace(/\bsk-(?:proj-|ant-|live-|test-)?[A-Za-z0-9_-]{12,}\b/g, '[REDACTED_API_KEY]');
-  // GitHub tokens
-  out = out.replace(/\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GH_TOKEN]');
-  // Google API keys
-  out = out.replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, '[REDACTED_GOOGLE_KEY]');
-  // Standard 3-segment JWTs
-  out = out.replace(/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[REDACTED_JWT]');
-  // Bearer tokens
-  out = out.replace(/\b(Bearer[ \t]+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1[REDACTED_TOKEN]');
-  // key=value / key: value credential assignments (including x-api-key and quoted JSON keys)
-  out = out.replace(
-    /((?:["'])?\b[A-Za-z0-9_.-]*(?:x-api-key|api[_-]?key|password|passwd|token|secret|client[_-]?secret|access[_-]?key)(?:["'])?[ \t]*[:=][ \t]*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;'"`}\]]+)/gi,
-    '$1[REDACTED]'
-  );
-  return out;
+  return redactSensitiveText(text);
 }
 
 /* ---------------- 9P / DrvFS / Network Mount Guard ---------------- */
@@ -688,6 +677,83 @@ function scrubSecretFromError(err, secret = '') {
 
 /* ---------------- Remote Bridge Config Validation ---------------- */
 
+const REMOTE_METADATA_HOSTS = new Set([
+  'metadata.google.internal',
+  'metadata.goog',
+  'instance-data',
+  'metadata'
+]);
+
+function classifyRemoteHostSafety(rawHostname) {
+  let host = String(rawHostname || '').trim().toLowerCase();
+  if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
+  host = host.replace(/\.+$/, '');
+  if (!host || host.includes('%')) return { blocked: true, isPrivateOrLocal: false };
+  if (REMOTE_METADATA_HOSTS.has(host)) return { blocked: true, isPrivateOrLocal: false };
+
+  if (host === 'localhost') {
+    return { blocked: false, isPrivateOrLocal: true };
+  }
+
+  if (net.isIPv4(host)) {
+    const [a, b, c, d] = host.split('.').map((x) => Number(x));
+    if (a === 0 || (a === 169 && b === 254) || (a === 100 && b === 100 && c === 100 && d === 200) || a >= 224) {
+      return { blocked: true, isPrivateOrLocal: false };
+    }
+    const isPriv =
+      a === 127 ||
+      a === 10 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127);
+    return { blocked: false, isPrivateOrLocal: isPriv };
+  }
+
+  if (net.isIPv6(host)) {
+    let norm = host;
+    const v4Tail = norm.match(/^(.*:)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+    if (v4Tail && net.isIPv4(v4Tail[2])) {
+      const oct = v4Tail[2].split('.').map((x) => Number(x));
+      norm = `${v4Tail[1]}${((oct[0] << 8) | oct[1]).toString(16)}:${((oct[2] << 8) | oct[3]).toString(16)}`;
+    }
+    const halves = norm.split('::');
+    if (halves.length > 2) return { blocked: true, isPrivateOrLocal: false };
+    const L = halves[0] ? halves[0].split(':') : [];
+    const R = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+    const missing = halves.length === 2 ? 8 - (L.length + R.length) : 0;
+    const full = halves.length === 2 ? [...L, ...Array(Math.max(0, missing)).fill('0'), ...R] : L;
+    if (full.length !== 8 || full.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) {
+      return { blocked: true, isPrivateOrLocal: false };
+    }
+    const w = full.map((g) => parseInt(g, 16));
+    if (w.every((x) => x === 0) || (w[0] & 0xffc0) === 0xfe80 || (w[0] & 0xff00) === 0xff00) {
+      return { blocked: true, isPrivateOrLocal: false };
+    }
+    if (w[0] === 0xfd00 && w[1] === 0x0ec2 && w[2] === 0 && w[3] === 0 && w[4] === 0 && w[5] === 0 && w[6] === 0 && w[7] === 0x0254) {
+      return { blocked: true, isPrivateOrLocal: false };
+    }
+    const z5 = w[0] === 0 && w[1] === 0 && w[2] === 0 && w[3] === 0 && w[4] === 0;
+    if (z5 && w[5] === 0 && w[6] === 0 && w[7] === 1) {
+      return { blocked: false, isPrivateOrLocal: true };
+    }
+    if ((z5 && w[5] === 0xffff) || (w[0] === 0x0064 && w[1] === 0xff9b && w[2] === 0 && w[3] === 0 && w[4] === 0 && w[5] === 0)) {
+      const embeddedV4 = `${(w[6] >> 8) & 0xff}.${w[6] & 0xff}.${(w[7] >> 8) & 0xff}.${w[7] & 0xff}`;
+      return classifyRemoteHostSafety(embeddedV4);
+    }
+    if ((w[0] & 0xfe00) === 0xfc00) {
+      return { blocked: false, isPrivateOrLocal: true };
+    }
+    return { blocked: false, isPrivateOrLocal: false };
+  }
+
+  const isLocalDomain =
+    host.endsWith('.local') ||
+    host.endsWith('.lan') ||
+    host.endsWith('.home.arpa') ||
+    host.endsWith('.ts.net');
+  return { blocked: false, isPrivateOrLocal: isLocalDomain };
+}
+
 function resolveValidatedRemoteConfig(getRemoteConfigFn, staticRemoteConfig) {
   let raw = null;
   try {
@@ -739,6 +805,24 @@ function resolveValidatedRemoteConfig(getRemoteConfigFn, staticRemoteConfig) {
     };
   }
 
+  const hostCheck = classifyRemoteHostSafety(parsed.hostname);
+  if (hostCheck.blocked) {
+    return {
+      enabled: true,
+      valid: false,
+      code: 'BLOCKED_METADATA_ENDPOINT',
+      error: `安全拦截：禁止将云元数据或保留地址配置为远程 Memory 端点 (${parsed.hostname})`
+    };
+  }
+  if (parsed.protocol === 'http:' && !hostCheck.isPrivateOrLocal) {
+    return {
+      enabled: true,
+      valid: false,
+      code: 'INSECURE_REMOTE_HTTP',
+      error: '安全拦截：非本机/局域网的远程 Memory 端点必须使用 https: 加密协议'
+    };
+  }
+
   let bearerToken = '';
   const authEnv = String(raw.authEnv || '').trim();
   if (authEnv) {
@@ -766,6 +850,52 @@ function resolveValidatedRemoteConfig(getRemoteConfigFn, staticRemoteConfig) {
   };
 }
 
+async function readBoundedRemoteResponseText(res, maxBytes = MAX_REMOTE_MCP_RESPONSE_BYTES) {
+  const declared = Number(res?.headers?.get?.('content-length') || 0);
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    try { await res.body?.cancel?.(); } catch {}
+    throw Object.assign(new Error(`远程 MCP 响应体超过 1MB 安全上限 (${declared} bytes)`), {
+      code: 'REMOTE_RESPONSE_TOO_LARGE'
+    });
+  }
+  if (res?.body && typeof res.body.getReader === 'function') {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    const parts = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        const chunk = value instanceof Uint8Array ? value : Buffer.from(value);
+        total += chunk.byteLength;
+        if (total > maxBytes) {
+          try { await reader.cancel(); } catch {}
+          throw Object.assign(new Error('远程 MCP 响应体超过 1MB 安全上限'), {
+            code: 'REMOTE_RESPONSE_TOO_LARGE'
+          });
+        }
+        parts.push(decoder.decode(chunk, { stream: true }));
+      }
+      parts.push(decoder.decode());
+      return parts.join('');
+    } finally {
+      try { reader.releaseLock?.(); } catch {}
+    }
+  }
+  if (typeof res?.text === 'function') {
+    const raw = await res.text();
+    if (Buffer.byteLength(raw, 'utf8') > maxBytes) {
+      throw Object.assign(new Error('远程 MCP 响应体超过 1MB 安全上限'), {
+        code: 'REMOTE_RESPONSE_TOO_LARGE'
+      });
+    }
+    return raw;
+  }
+  return null;
+}
+
 async function invokeRemoteMcpRpc(fetchFn, cfg, toolName, toolArgs) {
   if (typeof fetchFn !== 'function') {
     throw new Error('当前运行环境未提供可用的 fetch 实现');
@@ -789,6 +919,7 @@ async function invokeRemoteMcpRpc(fetchFn, cfg, toolName, toolArgs) {
 
   const res = await fetchFn(cfg.url, {
     method: 'POST',
+    redirect: 'error',
     headers,
     body,
     signal: AbortSignal.timeout(4500)
@@ -804,21 +935,27 @@ async function invokeRemoteMcpRpc(fetchFn, cfg, toolName, toolArgs) {
     : '';
 
   let payload = null;
-  if (contentType.includes('text/event-stream') && typeof res.text === 'function') {
-    const sseText = await res.text();
-    const dataLines = sseText
-      .split(/\r?\n/)
-      .filter((l) => l.startsWith('data:'))
-      .map((l) => l.slice(5).trim())
-      .filter((l) => l && l !== '[DONE]');
-    if (dataLines.length) {
-      payload = JSON.parse(dataLines[dataLines.length - 1]);
+  const rawBodyText = await readBoundedRemoteResponseText(res, MAX_REMOTE_MCP_RESPONSE_BYTES);
+  if (rawBodyText !== null) {
+    if (contentType.includes('text/event-stream')) {
+      const dataLines = rawBodyText
+        .split(/\r?\n/)
+        .filter((l) => l.startsWith('data:'))
+        .map((l) => l.slice(5).trim())
+        .filter((l) => l && l !== '[DONE]');
+      if (dataLines.length) {
+        payload = JSON.parse(dataLines[dataLines.length - 1]);
+      }
+    } else {
+      payload = rawBodyText ? JSON.parse(rawBodyText) : {};
     }
   } else if (typeof res.json === 'function') {
     payload = await res.json();
-  } else if (typeof res.text === 'function') {
-    const raw = await res.text();
-    payload = raw ? JSON.parse(raw) : {};
+    if (Buffer.byteLength(JSON.stringify(payload ?? {}), 'utf8') > MAX_REMOTE_MCP_RESPONSE_BYTES) {
+      throw Object.assign(new Error('远程 MCP 响应体超过 1MB 安全上限'), {
+        code: 'REMOTE_RESPONSE_TOO_LARGE'
+      });
+    }
   }
 
   if (payload?.error) {
@@ -1291,7 +1428,101 @@ export function createHandoffMemoryStore(options = {}) {
       .run(JSON.stringify({ importedCount, totalParsed: parsedItems.length, migratedAt: new Date(now).toISOString() }), now);
   }
 
-  /* ---------------- JSONL Fallback Helpers ---------------- */
+  /* ---------------- JSONL Fallback Helpers & File Lock ---------------- */
+
+  const jsonlLockPath = path.join(requestedStateDir, 'handoff-memories.lock');
+  const waitSleepBuf = typeof SharedArrayBuffer === 'function' ? new Int32Array(new SharedArrayBuffer(4)) : null;
+  let jsonlLockDepth = 0;
+
+  function isLockPidAlive(pid) {
+    const p = Number(pid);
+    if (!Number.isInteger(p) || p <= 0) return false;
+    try {
+      process.kill(p, 0);
+      return true;
+    } catch (err) {
+      return err && err.code !== 'ESRCH';
+    }
+  }
+
+  function withJsonlFileLock(fn) {
+    if (jsonlLockDepth > 0) {
+      return fn();
+    }
+    fs.mkdirSync(requestedStateDir, { recursive: true, mode: 0o700 });
+    const lockToken = crypto.randomBytes(16).toString('hex');
+    const deadline = Date.now() + JSONL_LOCK_WAIT_BUDGET_MS;
+    let acquired = false;
+
+    while (!acquired) {
+      const payload = JSON.stringify({
+        pid: process.pid,
+        hostname: os.hostname(),
+        createdAt: Date.now(),
+        lockToken
+      });
+      try {
+        fs.writeFileSync(jsonlLockPath, payload, { flag: 'wx', mode: 0o600 });
+        acquired = true;
+        break;
+      } catch (err) {
+        if (!err || err.code !== 'EEXIST') throw err;
+        let stale = false;
+        let staleToken = '';
+        try {
+          const existing = JSON.parse(fs.readFileSync(jsonlLockPath, 'utf8'));
+          staleToken = typeof existing?.lockToken === 'string' ? existing.lockToken : '';
+          const age = Date.now() - Number(existing.createdAt || 0);
+          const sameHost = !existing.hostname || existing.hostname === os.hostname();
+          if (age > JSONL_LOCK_STALE_MS || (sameHost && !isLockPidAlive(existing.pid))) {
+            stale = true;
+          }
+        } catch {
+          try {
+            const st = fs.statSync(jsonlLockPath);
+            if (Date.now() - Number(st.mtimeMs || 0) > 2500) stale = true;
+          } catch {}
+        }
+
+        if (stale) {
+          const staleTmp = `${jsonlLockPath}.stale-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+          try {
+            fs.renameSync(jsonlLockPath, staleTmp);
+            try {
+              const moved = JSON.parse(fs.readFileSync(staleTmp, 'utf8'));
+              if (staleToken && moved?.lockToken && moved.lockToken !== staleToken) {
+                try { fs.linkSync(staleTmp, jsonlLockPath); } catch {}
+              }
+            } catch {}
+            try { fs.rmSync(staleTmp, { force: true }); } catch {}
+          } catch {}
+          continue;
+        }
+
+        if (Date.now() >= deadline) {
+          throw Object.assign(new Error('获取交接记忆文件锁超时，请稍后重试'), { code: 'MEMORY_LOCK_BUSY' });
+        }
+        if (waitSleepBuf) {
+          try { Atomics.wait(waitSleepBuf, 0, 0, 15); } catch {}
+        }
+      }
+    }
+
+    jsonlLockDepth += 1;
+    try {
+      return fn();
+    } finally {
+      jsonlLockDepth -= 1;
+      try {
+        if (fs.existsSync(jsonlLockPath)) {
+          const cur = JSON.parse(fs.readFileSync(jsonlLockPath, 'utf8'));
+          if (cur && cur.lockToken === lockToken) {
+            fs.rmSync(jsonlLockPath, { force: true });
+          }
+        }
+      } catch {}
+    }
+  }
 
   function readAllNewestFirstJsonl() {
     if (!fs.existsSync(filePath)) return [];
@@ -1504,25 +1735,27 @@ export function createHandoffMemoryStore(options = {}) {
         pruneOverflowSqlite(txDb);
       });
     } else {
-      const existing = readAllNewestFirstJsonl();
-      const next = [entry, ...existing].slice(0, maxEntries);
-      writeJsonlAtomic0600(filePath, next);
-      if (!entry.tainted) {
-        upsertCatalogSlotJsonl(
-          {
-            project: entry.project,
-            slot: entry.slot,
-            cwd: entry.cwd,
-            summary: entry.summary,
-            gitBranch: entry.gitBranch,
-            activeAccount,
-            status: 'active',
-            updatedAtMs: entry.createdAtMs,
-            lastMemoryId: entry.id
-          },
-          { respectNewerExisting: true }
-        );
-      }
+      withJsonlFileLock(() => {
+        const existing = readAllNewestFirstJsonl();
+        const next = [entry, ...existing].slice(0, maxEntries);
+        writeJsonlAtomic0600(filePath, next);
+        if (!entry.tainted) {
+          upsertCatalogSlotJsonl(
+            {
+              project: entry.project,
+              slot: entry.slot,
+              cwd: entry.cwd,
+              summary: entry.summary,
+              gitBranch: entry.gitBranch,
+              activeAccount,
+              status: 'active',
+              updatedAtMs: entry.createdAtMs,
+              lastMemoryId: entry.id
+            },
+            { respectNewerExisting: true }
+          );
+        }
+      });
     }
 
     fireAndForgetRemotePush(entry);
@@ -1699,13 +1932,15 @@ export function createHandoffMemoryStore(options = {}) {
       return { ok: true, removed };
     }
 
-    const existing = readAllNewestFirstJsonl();
-    const filtered = existing.filter((e) => e.id !== cleanId);
-    if (filtered.length === existing.length) {
-      return { ok: true, removed: false };
-    }
-    writeJsonlAtomic0600(filePath, filtered);
-    return { ok: true, removed: true };
+    return withJsonlFileLock(() => {
+      const existing = readAllNewestFirstJsonl();
+      const filtered = existing.filter((e) => e.id !== cleanId);
+      if (filtered.length === existing.length) {
+        return { ok: true, removed: false };
+      }
+      writeJsonlAtomic0600(filePath, filtered);
+      return { ok: true, removed: true };
+    });
   }
 
   function upsertCatalogSlot(input = {}) {
@@ -1736,7 +1971,7 @@ export function createHandoffMemoryStore(options = {}) {
     if (database) {
       return withWriteTx((txDb) => upsertCatalogSlotRowSqlite(txDb, normalized, { respectNewerExisting: false }));
     }
-    return upsertCatalogSlotJsonl(normalized, { respectNewerExisting: false });
+    return withJsonlFileLock(() => upsertCatalogSlotJsonl(normalized, { respectNewerExisting: false }));
   }
 
   function getMasterCatalog({ project = '', limit = 30, includeTainted = false } = {}) {
@@ -1899,7 +2134,7 @@ export function createHandoffMemoryStore(options = {}) {
                 verified: item.verified || meta.verified || '',
                 nextAction: item.nextAction || meta.nextAction || '',
                 content: item.content || '',
-                tainted: false
+                tainted: true
               })
             );
             if (candidate.summary || candidate.content || candidate.verified || candidate.nextAction) {
@@ -1925,7 +2160,7 @@ export function createHandoffMemoryStore(options = {}) {
       if (database) {
         withWriteTx(applyItems);
       } else {
-        applyItems(null);
+        withJsonlFileLock(() => applyItems(null));
       }
 
       remoteState.pullCount += 1;
@@ -2018,9 +2253,10 @@ export function createHandoffMemoryStore(options = {}) {
 
   function formatResumePrompt(entry) {
     if (!entry) return '';
+    const taintBanner = entry.tainted ? '[EXTERNAL_UNTRUSTED_MEMORY] ' : '';
     return [
-      `接力 [${entry.slot}]`,
-      `已对齐 [${entry.slotTag}]（来自 ${entry.createdAt} 交接）｜工作目录：${entry.cwd || '(保持当前)'}｜上次进度：${entry.verified || entry.summary}｜现在继续：${entry.nextAction || '按上次进度继续'}`
+      `${taintBanner}接力 [${entry.slot}]`,
+      `${taintBanner}已对齐 [${entry.slotTag}]（来自 ${entry.createdAt} 交接）｜工作目录：${entry.cwd || '(保持当前)'}｜上次进度：${entry.verified || entry.summary}｜现在继续：${entry.nextAction || '按上次进度继续'}`
     ].join('\n');
   }
 

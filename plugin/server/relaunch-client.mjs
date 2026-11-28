@@ -20,7 +20,7 @@ import {
 } from './account-vault.mjs';
 
 function psSingleQuote(val) {
-  return `'${String(val ?? '').replace(/'/g, "''")}'`;
+  return `'${String(val ?? '').replace(/\0/g, '').replace(/['\u2018\u2019\u201a\u201b]/g, '$&$&')}'`;
 }
 
 function resolvePowerShellExe(isWsl) {
@@ -70,7 +70,8 @@ $ErrorActionPreference = 'SilentlyContinue'
 $target = ''
 $hasDebug = $false
 $debugPort = ''
-$mainProc = Get-CimInstance Win32_Process -Filter "Name='Antigravity.exe'" | Where-Object { $_.ExecutablePath -and ($_.CommandLine -notmatch '--type=') } | Select-Object -First 1
+$currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+$mainProc = Get-CimInstance Win32_Process -Filter "Name='Antigravity.exe'" | Where-Object { $_.SessionId -eq $currentSessionId -and $_.ExecutablePath -and ($_.CommandLine -notmatch '--type=') } | Select-Object -First 1
 if ($mainProc) {
   $target = [string]$mainProc.ExecutablePath
   $cmdStr = [string]$mainProc.CommandLine
@@ -128,15 +129,16 @@ export function buildWinRelaunchWorkerScript({
     `Start-Sleep -Milliseconds ${safeDelay}`,
     `$target = ${psSingleQuote(targetPath)}`,
     '$targetDir = Split-Path -Parent $target',
+    '$currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId',
     'function Get-AgyTargetProcs {',
     "  @(Get-CimInstance Win32_Process -Filter \"Name='Antigravity.exe'\" | Where-Object {",
-    '    -not $_.ExecutablePath -or $_.ExecutablePath.Equals($target, [System.StringComparison]::OrdinalIgnoreCase)',
+    '    $_.SessionId -eq $currentSessionId -and $_.ExecutablePath -and $_.ExecutablePath.Equals($target, [System.StringComparison]::OrdinalIgnoreCase)',
     '  })',
     '}',
     '$origPids = @((Get-AgyTargetProcs) | ForEach-Object { [int]$_.ProcessId } | Where-Object { $_ -gt 0 })',
     'function Get-AgyOrigRemaining {',
     '  if ($origPids.Count -eq 0) { return @() }',
-    "  @(Get-Process -Name 'Antigravity' -ErrorAction SilentlyContinue | Where-Object { $origPids -contains $_.Id })",
+    "  @(Get-Process -Name 'Antigravity' -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $currentSessionId -and ($origPids -contains $_.Id) })",
     '}',
     "foreach ($p in (Get-AgyOrigRemaining)) {",
     '  if ($p.MainWindowHandle -ne 0) { [void]$p.CloseMainWindow() }',
